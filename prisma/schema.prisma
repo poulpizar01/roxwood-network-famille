@@ -1,0 +1,242 @@
+// Schéma Prisma / PostgreSQL du bot.
+//
+// Convention : les timestamps métier (mouvements, échéances, cooldowns...)
+// sont des `DateTime` Postgres (TIMESTAMPTZ), pas des entiers millisecondes
+// bruts — plus idiomatique côté Postgres/Prisma. La couche src/db.ts est la
+// SEULE à convertir entre `Date` et millisecondes (Date.now()/getTime()) ;
+// tout le reste du bot manipule des nombres, comme avec l'ancien SQLite.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ═══ CONFIGURATION (pilotée par /config, lue par src/config-store.ts) ═══
+
+model Setting {
+  key   String @id
+  value String
+
+  @@map("settings")
+}
+
+/// Items de coffre suivis. Le nom doit correspondre exactement (accents,
+/// casse) à ce qu'écrit le bot de jeu FiveM dans les logs de coffre — voir
+/// /config item add. stockGroup fusionne plusieurs items sous un même
+/// libellé dans le message de stock (ex. "Drogue à vendre"). vente/
+/// ventePaiement pilotent le cycle de vente automatique (modules/ventes.ts).
+model Item {
+  name          String  @id
+  stockGroup    String? @map("stock_group")
+  vente         Boolean @default(false)
+  ventePaiement Boolean @default(false) @map("vente_paiement")
+  displayOrder  Int     @default(0) @map("display_order")
+
+  @@map("items")
+}
+
+/// Registre central des activités déclarables (boutons de quotas, cooldowns
+/// personnels, limite hebdomadaire de braquage, minuterie de labo). Voir
+/// /config activite. `quotaType` est libre : une nouvelle valeur crée
+/// automatiquement une nouvelle catégorie de quota (voir QuotaTarget).
+model ActivityType {
+  key                  String  @id
+  label                String
+  quotaType            String? @map("quota_type")
+  cooldownMs           Int?    @map("cooldown_ms")
+  partners             Boolean @default(false)
+  braquageWeeklyLimit  Int?    @map("braquage_weekly_limit")
+  labo                 Boolean @default(false)
+  laboChannelId        String? @map("labo_channel_id")
+  quantity             Boolean @default(false)
+  /// false pour une activité créditée par un autre module (ex. "vente", créditée
+  /// par ventes.ts au moment d'une vente confirmée) plutôt que déclarée via un
+  /// bouton du panneau /config quotas.
+  panelButton          Boolean @default(true) @map("panel_button")
+  displayOrder         Int     @default(0) @map("display_order")
+
+  @@map("activity_types")
+}
+
+/// Objectif hebdomadaire par catégorie de quota. Une catégorie sans ligne
+/// ici est suivie mais sans objectif affiché/alerté.
+model QuotaTarget {
+  quotaType    String @id @map("quota_type")
+  weeklyTarget Int    @map("weekly_target")
+
+  @@map("quota_targets")
+}
+
+/// Types d'armes proposés à l'ajout dans l'armurerie.
+model ArmeType {
+  key          String @id
+  label        String
+  displayOrder Int    @default(0) @map("display_order")
+
+  @@map("arme_types")
+}
+
+// ═══ DONNÉES MÉTIER (génériques, indépendantes de la config ci-dessus) ═══
+
+model Stock {
+  item     String @id
+  quantite Int    @default(0)
+
+  @@map("stocks")
+}
+
+model StockHistory {
+  id         Int      @id @default(autoincrement())
+  timestamp  DateTime @default(now())
+  joueur     String
+  action     String
+  item       String
+  quantite   Int
+  stockAvant Int      @map("stock_avant")
+  stockApres Int      @map("stock_apres")
+
+  @@index([item])
+  @@map("stock_history")
+}
+
+model Transaction {
+  id           Int      @id @default(autoincrement())
+  userId       String   @map("user_id")
+  username     String   @default("")
+  action       String
+  quantite     Float    @default(0)
+  type         String?
+  partenaires  String   @default("[]")
+  tempsRestant String?  @map("temps_restant")
+  timestamp    DateTime @default(now())
+  deleted      Boolean  @default(false)
+  deletedBy    String?  @map("deleted_by")
+
+  @@index([action])
+  @@index([timestamp])
+  @@map("transactions")
+}
+
+model Stat {
+  userId String @map("user_id")
+  action String
+  count  Float  @default(0)
+  points Float  @default(0)
+
+  @@id([userId, action])
+  @@map("stats")
+}
+
+model Cooldown {
+  userId    String   @map("user_id")
+  action    String
+  expiresAt DateTime @map("expires_at")
+  notified  Boolean  @default(false)
+
+  @@id([userId, action])
+  @@map("cooldowns")
+}
+
+/// Fenêtre glissante de 7 jours sur les actions de braquage.
+model Braquage {
+  id        Int      @id @default(autoincrement())
+  userId    String   @map("user_id")
+  action    String
+  timestamp DateTime @default(now())
+
+  @@index([action, timestamp])
+  @@map("braquages")
+}
+
+model Taxe {
+  id          Int      @id @default(autoincrement())
+  nom         String
+  type        String
+  telephone   String?
+  echeance    DateTime
+  motDePasse  String?  @map("mot_de_passe")
+  actif       Boolean  @default(true)
+  alerteSent  Boolean  @default(false) @map("alerte_sent")
+  paye        Boolean  @default(true)
+
+  @@map("taxes")
+}
+
+model Arme {
+  id        Int     @id @default(autoincrement())
+  nom       String
+  reference String  @unique
+  statut    String  @default("en_stock")
+  preteeA   String? @map("pretee_a")
+  type      String?
+
+  @@map("armurerie")
+}
+
+model UserMapping {
+  gameName  String @map("game_name")
+  discordId String @map("discord_id")
+
+  @@id([gameName, discordId])
+  @@map("user_mapping")
+}
+
+model PendingSale {
+  id         Int      @id @default(autoincrement())
+  joueur     String
+  discordId  String?  @map("discord_id")
+  item       String
+  quantite   Int
+  timestamp  DateTime @default(now())
+  statut     String   @default("en_attente")
+  montant    Int?
+  prixPochon Float?   @map("prix_pochon")
+  messageId  String?  @map("message_id")
+  channelId  String?  @map("channel_id")
+  confirmed  Boolean  @default(false)
+
+  @@map("pending_sales")
+}
+
+/// État courant de chaque véhicule : qui l'a sorti en dernier, du garage ou
+/// de la fourrière. Un rangement propre efface le responsable (discordId/
+/// joueur = null). Alimenté par modules/garages.ts depuis logs_garages.
+model Vehicule {
+  plaque    String   @id
+  modele    String?
+  discordId String?  @map("discord_id")
+  joueur    String?
+  timestamp DateTime @default(now())
+
+  @@map("vehicules")
+}
+
+/// Historique des mises en fourrière facturées, imputées au dernier
+/// responsable connu du véhicule.
+model Fourriere {
+  id        Int      @id @default(autoincrement())
+  discordId String?  @map("discord_id")
+  joueur    String
+  plaque    String
+  modele    String?
+  timestamp DateTime @default(now())
+
+  @@map("fourrieres")
+}
+
+/// Déclarations de vente de munitions (suivi indicatif — modules/armurerie.ts).
+model MunitionVente {
+  id              Int      @id @default(autoincrement())
+  timestamp       DateTime @default(now())
+  vendeurId       String   @map("vendeur_id")
+  vendeurUsername String   @default("") @map("vendeur_username")
+  acheteurId      String   @map("acheteur_id")
+  quantite        Int
+  prix            Float
+
+  @@map("munitions_ventes")
+}
