@@ -12,8 +12,8 @@
  *  - "sorti du garage" / "sorti de son garage public" → responsable = ce joueur.
  *  - "rangé dans le garage" → responsable effacé.
  *  - "sorti de la fourrière" → si un responsable était déjà enregistré, un
- *    événement de fourrière est enregistré à son nom ; le montant configuré
- *    via `/config fourriere` est purement indicatif (aucune facturation
+ *    événement de fourrière est enregistré à son nom ; le montant fixe
+ *    {@link MONTANT_FOURRIERE} est purement indicatif (aucune facturation
  *    automatique, ni ici ni dans le classement) ; puis le responsable devient
  *    celui qui vient de la récupérer.
  *
@@ -26,6 +26,9 @@ import { EmbedBuilder, SlashCommandBuilder, MessageFlags, type Client, type Mess
 import * as db from '../db';
 import * as configStore from '../config-store';
 import { isAdmin } from '../permissions';
+
+/** Amende indicative par mise en fourrière — valeur fixe, ne bouge jamais. */
+const MONTANT_FOURRIERE = 350;
 
 const RE_SORTIE_FOURRIERE = /^\*\*(.+?)\*\* a sorti un\(e\) (.+?) de la fourrière ?: \*\*(.+?)\*\*$/im;
 const RE_SORTIE_GARAGE = /^\*\*(.+?)\*\* a sorti un\(e\) (.+?) (?:du garage \d+|de son garage public) ?: \*\*(.+?)\*\*$/im;
@@ -180,7 +183,7 @@ async function notifierFourriere(client: Client, facturation: Facturation): Prom
   const channel = await client.channels.fetch(c.CHANNELS.admin).catch(() => null);
   if (!channel || !channel.isSendable()) return;
 
-  const montant = c.MONTANT_FOURRIERE;
+  const montant = MONTANT_FOURRIERE;
   const qui = facturation.discordId ? `<@${facturation.discordId}>` : `**${facturation.joueur}**`;
   const embed = new EmbedBuilder()
     .setTitle('🚗 Mise en fourrière')
@@ -206,7 +209,7 @@ const CLASSEMENT_TITLE = '🚗 Classement des fourrières';
  * le montant configuré n'est affiché qu'à titre indicatif (footer).
  */
 async function buildClassementEmbed(): Promise<EmbedBuilder> {
-  const montant = configStore.get().MONTANT_FOURRIERE;
+  const montant = MONTANT_FOURRIERE;
   const classement = await db.getFourriereClassement();
 
   const lignes = classement.map((c, i) => {

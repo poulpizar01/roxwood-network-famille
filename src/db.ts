@@ -177,22 +177,22 @@ export async function getAllQuotaTargets() {
   return prisma.quotaTarget.findMany();
 }
 
-// ─── ARME TYPES (config) ─────────────────────────────────────────────────────
+// ─── SALARY RATES (config) ───────────────────────────────────────────────────
 
-export async function upsertArmeType(data: { key: string; label: string; display_order?: number }): Promise<void> {
-  await prisma.armeType.upsert({
-    where: { key: data.key },
-    create: { key: data.key, label: data.label, displayOrder: data.display_order ?? 0 },
-    update: { label: data.label, displayOrder: data.display_order ?? 0 },
+export async function setSalaryRate(quotaType: string, amount: number): Promise<void> {
+  await prisma.salaryRate.upsert({
+    where: { quotaType },
+    create: { quotaType, amount },
+    update: { amount },
   });
 }
 
-export async function deleteArmeType(key: string): Promise<void> {
-  await prisma.armeType.deleteMany({ where: { key } });
+export async function deleteSalaryRate(quotaType: string): Promise<void> {
+  await prisma.salaryRate.deleteMany({ where: { quotaType } });
 }
 
-export async function getAllArmeTypes() {
-  return prisma.armeType.findMany({ orderBy: [{ displayOrder: 'asc' }, { key: 'asc' }] });
+export async function getAllSalaryRates() {
+  return prisma.salaryRate.findMany();
 }
 
 // ─── STOCKS ─────────────────────────────────────────────────────────────────
@@ -342,13 +342,6 @@ export async function getAllUserTotals(): Promise<Array<{ user_id: string; total
   return rows
     .map(r => ({ user_id: r.userId, total_points: r._sum.points ?? 0 }))
     .sort((a, b) => b.total_points - a.total_points);
-}
-
-export async function getAllUserActionTotals(action: string): Promise<Array<{ user_id: string; total: number }>> {
-  const rows = await prisma.stat.groupBy({ by: ['userId'], where: { action }, _sum: { count: true } });
-  return rows
-    .map(r => ({ user_id: r.userId, total: r._sum.count ?? 0 }))
-    .sort((a, b) => b.total - a.total);
 }
 
 /**

@@ -196,41 +196,79 @@ async function buildQuotaEmbed(userId: string, member: GuildMember | null): Prom
   return embed;
 }
 
-/** Embed de paie personnelle : salaire = ventes × SALAIRE_PAR_VENTE. */
-async function buildPayEmbed(userId: string, member: GuildMember | null): Promise<EmbedBuilder> {
-  const c = configStore.get();
-  const vente = (await db.getUserStatMap(userId))['vente']?.count || 0;
-  const salaire = Math.round(vente * c.SALAIRE_PAR_VENTE);
-  const allTotals = await db.getAllUserActionTotals('vente');
-  const rank = allTotals.findIndex(u => u.user_id === userId) + 1;
-
-  return new EmbedBuilder()
-    .setTitle(`💰 Ma Paie — ${member?.displayName || userId}`)
-    .setColor(0xFEE75C)
-    .addFields(
-      { name: '💊 Vente (unités)', value: vente.toLocaleString('fr-FR'), inline: true },
-      { name: '💵 Salaire', value: `${salaire.toLocaleString('fr-FR')} $`, inline: true },
-      { name: '🏆 Classement', value: rank ? `#${rank}` : 'N/A', inline: true },
-    );
+/**
+ * Salaire total à partir des taux configurés (`/config salaire`) : somme,
+ * pour chaque catégorie ayant un taux, de `compte de cette catégorie × taux`.
+ * Une catégorie sans taux configuré ne contribue rien — voir docstring de
+ * fichier.
+ */
+function computeSalaire(byQuotaType: Record<string, number>, rates: Record<string, number>): number {
+  return Object.entries(rates).reduce((sum, [qt, rate]) => sum + (byQuotaType[qt] ?? 0) * rate, 0);
 }
 
-/** Embed du classement de groupe trié par volume de ventes. */
+/**
+ * Classement de tous les membres suivis par salaire total décroissant,
+ * uniquement ceux dont le salaire est > 0 (aucun taux configuré ou aucune
+ * activité payante déclarée → absent du classement, pas juste à 0$).
+ */
+async function getSalaryRanking(): Promise<Array<{ userId: string; salaire: number; byQuotaType: Record<string, number> }>> {
+  const rates = configStore.get().SALARY_RATES;
+  const userIds = await db.getAllTrackedUserIds();
+  const results: Array<{ userId: string; salaire: number; byQuotaType: Record<string, number> }> = [];
+  for (const userId of userIds) {
+    const { byQuotaType } = await getUserQuotaSummary(userId);
+    const salaire = computeSalaire(byQuotaType, rates);
+    if (salaire > 0) results.push({ userId, salaire, byQuotaType });
+  }
+  return results.sort((a, b) => b.salaire - a.salaire);
+}
+
+/** Embed de paie personnelle : détail par catégorie payante + salaire total + classement. */
+async function buildPayEmbed(userId: string, member: GuildMember | null): Promise<EmbedBuilder> {
+  const rates = configStore.get().SALARY_RATES;
+  const { byQuotaType } = await getUserQuotaSummary(userId);
+  const salaire = computeSalaire(byQuotaType, rates);
+
+  const embed = new EmbedBuilder().setTitle(`💰 Ma Paie — ${member?.displayName || userId}`).setColor(0xFEE75C);
+
+  const categories = Object.keys(rates).sort();
+  if (!categories.length) {
+    embed.setDescription("*Aucun taux de paie configuré (voir `/config salaire set`).*");
+    return embed;
+  }
+
+  const detail = categories
+    .map(qt => `• ${capitalize(qt)} : ${byQuotaType[qt] ?? 0} × ${rates[qt]}$ = **${Math.round((byQuotaType[qt] ?? 0) * rates[qt]).toLocaleString('fr-FR')}$**`)
+    .join('\n');
+
+  const ranking = await getSalaryRanking();
+  const rank = ranking.findIndex(r => r.userId === userId) + 1;
+
+  embed.addFields(
+    { name: '📋 Détail', value: detail },
+    { name: '💵 Salaire total', value: `${Math.round(salaire).toLocaleString('fr-FR')} $`, inline: true },
+    { name: '🏆 Classement', value: rank ? `#${rank}` : 'N/A', inline: true },
+  );
+  return embed;
+}
+
+/** Embed du classement de groupe trié par salaire total décroissant. */
 async function buildClassementEmbed(client: Client): Promise<EmbedBuilder> {
-  const allTotals = await db.getAllUserActionTotals('vente');
+  const ranking = await getSalaryRanking();
   const lines: string[] = [];
 
-  for (let i = 0; i < allTotals.length; i++) {
-    const u = allTotals[i];
+  for (let i = 0; i < ranking.length; i++) {
+    const r = ranking[i];
     const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i + 1}.`;
-    const member = await client.guilds.cache.first()?.members.fetch(u.user_id).catch(() => null);
-    const name = member?.displayName || `<@${u.user_id}>`;
-    lines.push(`${medal} ${name} — **${u.total.toLocaleString('fr-FR')}** unités vendues`);
+    const member = await client.guilds.cache.first()?.members.fetch(r.userId).catch(() => null);
+    const name = member?.displayName || `<@${r.userId}>`;
+    lines.push(`${medal} ${name} — **${Math.round(r.salaire).toLocaleString('fr-FR')}** $`);
   }
 
   return new EmbedBuilder()
     .setTitle('🏆 Classement du Groupe')
     .setColor(0xFEE75C)
-    .setDescription(lines.length ? lines.join('\n') : '*Aucune donnée*')
+    .setDescription(lines.length ? lines.join('\n') : '*Aucune donnée (voir /config salaire set)*')
     .setTimestamp();
 }
 
@@ -873,26 +911,24 @@ export async function weeklyReset(client: Client, sinceTs?: number): Promise<voi
     }
 
     if (c.CHANNELS.paie) {
-      const allTotals = await db.getAllUserActionTotals('vente');
+      const ranking = await getSalaryRanking();
       const paieChannel = await client.channels.fetch(c.CHANNELS.paie).catch(() => null);
       const guild = client.guilds.cache.first();
 
-      if (paieChannel?.isSendable() && allTotals.length) {
+      if (paieChannel?.isSendable() && ranking.length) {
+        const targets = c.QUOTA_TARGETS;
         const lines: string[] = [];
-        for (let i = 0; i < allTotals.length; i++) {
-          const u = allTotals[i];
-          const member = guild ? await guild.members.fetch(u.user_id).catch(() => null) : null;
-          const name = member?.displayName || `<@${u.user_id}>`;
+        for (let i = 0; i < ranking.length; i++) {
+          const r = ranking[i];
+          const member = guild ? await guild.members.fetch(r.userId).catch(() => null) : null;
+          const name = member?.displayName || `<@${r.userId}>`;
           const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i + 1}.`;
-          const salaire = Math.round(u.total * c.SALAIRE_PAR_VENTE);
-          const { byQuotaType } = await getUserQuotaSummary(u.user_id);
-          const targets = c.QUOTA_TARGETS;
           const quotaLine = Object.keys(targets).sort()
-            .map(qt => `${capitalize(qt)} ${byQuotaType[qt] ?? 0}/${targets[qt]}`)
+            .map(qt => `${capitalize(qt)} ${r.byQuotaType[qt] ?? 0}/${targets[qt]}`)
             .join(' | ');
 
           lines.push(
-            `${medal} **${name}** — 💊 ${u.total.toLocaleString('fr-FR')} unités — 💵 ${salaire.toLocaleString('fr-FR')} $\n` +
+            `${medal} **${name}** — 💵 ${Math.round(r.salaire).toLocaleString('fr-FR')} $\n` +
             (quotaLine ? `    ${quotaLine}` : ''),
           );
         }

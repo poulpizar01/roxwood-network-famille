@@ -1,9 +1,13 @@
 /**
  * @file src/modules/config.ts
  * @description Commande `/config` — toute la configuration métier du bot
- * (salons, rôles, items, activités déclarables, objectifs de quota, types
- * d'armes, salaire, plafonds munitions) se fait depuis Discord, en base,
- * sans jamais éditer de fichier ni redémarrer le process.
+ * (salons, rôles, items, activités déclarables, objectifs de quota, taux de
+ * paie) se fait depuis Discord, en base, sans jamais éditer de fichier ni
+ * redémarrer le process. Les types d'armes, les types de taxe, les plafonds
+ * de munitions et le montant de la fourrière, eux, restent fixes dans le
+ * code (voir src/modules/armurerie.ts, src/modules/taxes.ts et
+ * src/modules/garages.ts) — valeurs qui ne bougent jamais, pas besoin d'une
+ * commande dédiée pour les changer.
  *
  * Toujours réservée aux administrateurs Discord natifs (permission
  * `Administrator`), et non au rôle `ADMIN_ROLE_ID` configurable par cette
@@ -135,44 +139,18 @@ export function getCommands() {
     .addSubcommand(s => s.setName('list').setDescription('Liste les objectifs configurés')));
 
   cmd.addSubcommandGroup(g => g
-    .setName('arme')
-    .setDescription("Types d'armes proposés dans l'armurerie")
+    .setName('salaire')
+    .setDescription('Taux de paie ($ par unité) par catégorie de quota')
     .addSubcommand(s => s
-      .setName('add')
-      .setDescription("Ajoute ou remplace un type d'arme")
-      .addStringOption(o => o.setName('cle').setDescription('Identifiant court').setRequired(true))
-      .addStringOption(o => o.setName('label').setDescription('Libellé affiché').setRequired(true)))
+      .setName('set')
+      .setDescription("Fixe le taux de paie ($ par unité) d'une catégorie de quota")
+      .addStringOption(o => o.setName('quota_type').setDescription('Catégorie de quota (voir /config activite list)').setRequired(true))
+      .addNumberOption(o => o.setName('valeur').setDescription('Montant en $ par unité').setRequired(true).setMinValue(0)))
     .addSubcommand(s => s
       .setName('remove')
-      .setDescription("Retire un type d'arme")
-      .addStringOption(o => o.setName('cle').setDescription('Type à retirer').setRequired(true).setAutocomplete(true)))
-    .addSubcommand(s => s.setName('list').setDescription("Liste les types d'armes configurés")));
-
-  cmd.addSubcommandGroup(g => g
-    .setName('salaire')
-    .setDescription('Paie')
-    .addSubcommand(s => s
-      .setName('set')
-      .setDescription('Fixe le salaire ($) par unité de drogue vendue')
-      .addNumberOption(o => o.setName('valeur').setDescription('Montant en $').setRequired(true).setMinValue(0))));
-
-  cmd.addSubcommandGroup(g => g
-    .setName('fourriere')
-    .setDescription('Amende de mise en fourrière')
-    .addSubcommand(s => s
-      .setName('set')
-      .setDescription('Fixe le montant ($) facturé par mise en fourrière')
-      .addIntegerOption(o => o.setName('valeur').setDescription('Montant en $').setRequired(true).setMinValue(0))));
-
-  cmd.addSubcommandGroup(g => g
-    .setName('munitions')
-    .setDescription('Plafonds indicatifs hebdomadaires de munitions')
-    .addSubcommand(s => s
-      .setName('set')
-      .setDescription('Fixe un plafond indicatif hebdomadaire de munitions')
-      .addStringOption(o => o.setName('type').setDescription('Fabrication ou vente').setRequired(true)
-        .addChoices({ name: 'Fabrication', value: 'fabrication' }, { name: 'Vente', value: 'vente' }))
-      .addIntegerOption(o => o.setName('valeur').setDescription('Plafond hebdomadaire').setRequired(true).setMinValue(0))));
+      .setDescription("Retire le taux de paie d'une catégorie de quota (elle ne génère plus de paie)")
+      .addStringOption(o => o.setName('quota_type').setDescription('Catégorie de quota').setRequired(true)))
+    .addSubcommand(s => s.setName('list').setDescription('Liste les taux de paie configurés')));
 
   return [{ data: cmd }];
 }
@@ -202,10 +180,7 @@ export async function handleCommand(interaction: ChatInputCommandInteraction): P
   if (group === 'item') return handleItem(interaction, sub);
   if (group === 'activite') return handleActivite(interaction, sub);
   if (group === 'quota') return handleQuota(interaction, sub);
-  if (group === 'arme') return handleArme(interaction, sub);
   if (group === 'salaire') return handleSalaire(interaction, sub);
-  if (group === 'fourriere') return handleFourriere(interaction, sub);
-  if (group === 'munitions') return handleMunitions(interaction, sub);
 }
 
 async function handleChannel(interaction: ChatInputCommandInteraction, sub: string): Promise<void> {
@@ -369,57 +344,29 @@ async function handleQuota(interaction: ChatInputCommandInteraction, sub: string
   }
 }
 
-async function handleArme(interaction: ChatInputCommandInteraction, sub: string): Promise<void> {
-  if (sub === 'add') {
-    const cle = slugify(interaction.options.getString('cle', true));
-    const label = interaction.options.getString('label', true);
-    if (!cle) {
-      await interaction.reply({ content: '❌ Clé invalide.', flags: MessageFlags.Ephemeral });
-      return;
-    }
-    await configStore.mutate(() => db.upsertArmeType({ key: cle, label }));
-    await interaction.reply({ content: `✅ Type d'arme **${label}** enregistré.`, flags: MessageFlags.Ephemeral });
+async function handleSalaire(interaction: ChatInputCommandInteraction, sub: string): Promise<void> {
+  if (sub === 'set') {
+    const quotaType = interaction.options.getString('quota_type', true);
+    const valeur = interaction.options.getNumber('valeur', true);
+    await configStore.mutate(() => db.setSalaryRate(quotaType, valeur));
+    await interaction.reply({ content: `✅ Taux de paie **${quotaType}** → ${valeur}$/unité.`, flags: MessageFlags.Ephemeral });
     return;
   }
   if (sub === 'remove') {
-    const cle = interaction.options.getString('cle', true);
-    await configStore.mutate(() => db.deleteArmeType(cle));
-    await interaction.reply({ content: `✅ Type d'arme **${cle}** retiré.`, flags: MessageFlags.Ephemeral });
+    const quotaType = interaction.options.getString('quota_type', true);
+    await configStore.mutate(() => db.deleteSalaryRate(quotaType));
+    await interaction.reply({ content: `✅ Taux de paie **${quotaType}** retiré.`, flags: MessageFlags.Ephemeral });
     return;
   }
   if (sub === 'list') {
-    const rows = await db.getAllArmeTypes();
-    if (rows.length === 0) {
-      await interaction.reply({ content: "Aucun type d'arme configuré.", flags: MessageFlags.Ephemeral });
+    const rates = await db.getAllSalaryRates();
+    if (rates.length === 0) {
+      await interaction.reply({ content: 'Aucun taux de paie configuré.', flags: MessageFlags.Ephemeral });
       return;
     }
-    const embed = new EmbedBuilder().setTitle("⚙️ Types d'armes").setDescription(rows.map(r => `**${r.key}** — ${r.label}`).join('\n')).setColor(0x5865f2);
+    const lines = rates.map(r => `**${r.quotaType}** : ${r.amount}$/unité`);
+    const embed = new EmbedBuilder().setTitle('⚙️ Taux de paie').setDescription(lines.join('\n')).setColor(0x5865f2);
     await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
-  }
-}
-
-async function handleSalaire(interaction: ChatInputCommandInteraction, sub: string): Promise<void> {
-  if (sub === 'set') {
-    const valeur = interaction.options.getNumber('valeur', true);
-    await configStore.mutate(() => db.setSetting('salaire_par_vente', valeur));
-    await interaction.reply({ content: `✅ Salaire par vente → ${valeur}$.`, flags: MessageFlags.Ephemeral });
-  }
-}
-
-async function handleFourriere(interaction: ChatInputCommandInteraction, sub: string): Promise<void> {
-  if (sub === 'set') {
-    const valeur = interaction.options.getInteger('valeur', true);
-    await configStore.mutate(() => db.setSetting('fourriere_montant', valeur));
-    await interaction.reply({ content: `✅ Amende de fourrière → ${valeur}$.`, flags: MessageFlags.Ephemeral });
-  }
-}
-
-async function handleMunitions(interaction: ChatInputCommandInteraction, sub: string): Promise<void> {
-  if (sub === 'set') {
-    const type = interaction.options.getString('type', true);
-    const valeur = interaction.options.getInteger('valeur', true);
-    await configStore.mutate(() => db.setSetting(`munitions_${type}_quota_hebdo`, valeur));
-    await interaction.reply({ content: `✅ Plafond munitions (${type}) → ${valeur}/semaine.`, flags: MessageFlags.Ephemeral });
   }
 }
 
@@ -432,7 +379,6 @@ export async function handleAutocomplete(interaction: AutocompleteInteraction): 
   let source: string[] = [];
   if (group === 'item') source = (await db.getAllItems()).map(i => i.name);
   if (group === 'activite') source = (await db.getAllActivityTypes()).map(a => a.key);
-  if (group === 'arme') source = (await db.getAllArmeTypes()).map(a => a.key);
 
   const results = source.filter(v => v.toLowerCase().includes(query)).slice(0, 25);
   await interaction.respond(results.map(v => ({ name: v, value: v }))).catch(() => null);

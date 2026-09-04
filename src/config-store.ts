@@ -59,13 +59,10 @@ export interface BotConfig {
   VENTE_ARGENT_ITEMS: string[];
   ACTIVITY_TYPES: Record<string, ActivityTypeConfig>;
   QUOTA_TARGETS: Record<string, number>;
-  ARME_TYPES: Array<{ key: string; label: string }>;
   ADMIN_ROLE_ID: string | null;
   TAXES_ROLE_ID: string | null;
-  SALAIRE_PAR_VENTE: number;
-  MUNITIONS_FABRICATION_QUOTA_HEBDO: number;
-  MUNITIONS_VENTE_QUOTA_HEBDO: number;
-  MONTANT_FOURRIERE: number;
+  /** $ par unité, par catégorie de quota — voir `/config salaire` et `computeSalaire` dans quotas.ts. Catégorie absente = aucune paie pour elle. */
+  SALARY_RATES: Record<string, number>;
 }
 
 let cache: BotConfig | null = null;
@@ -121,17 +118,11 @@ export async function reload(): Promise<BotConfig> {
   const QUOTA_TARGETS: Record<string, number> = {};
   for (const row of await db.getAllQuotaTargets()) QUOTA_TARGETS[row.quotaType] = row.weeklyTarget;
 
-  const ARME_TYPES = (await db.getAllArmeTypes()).map(r => ({ key: r.key, label: r.label }));
+  const SALARY_RATES: Record<string, number> = {};
+  for (const row of await db.getAllSalaryRates()) SALARY_RATES[row.quotaType] = row.amount;
 
   const rolesByTarget: Record<string, string> = {};
   for (const r of await db.getAllDiscordRoles()) rolesByTarget[r.target] = r.roleId;
-
-  const [salaire, munFab, munVente, montantFourriere] = await Promise.all([
-    db.getSetting('salaire_par_vente'),
-    db.getSetting('munitions_fabrication_quota_hebdo'),
-    db.getSetting('munitions_vente_quota_hebdo'),
-    db.getSetting('fourriere_montant'),
-  ]);
 
   cache = {
     CHANNELS,
@@ -142,13 +133,9 @@ export async function reload(): Promise<BotConfig> {
     VENTE_ARGENT_ITEMS,
     ACTIVITY_TYPES,
     QUOTA_TARGETS,
-    ARME_TYPES,
     ADMIN_ROLE_ID: rolesByTarget.admin ?? null,
     TAXES_ROLE_ID: rolesByTarget.taxes ?? null,
-    SALAIRE_PAR_VENTE: Number(salaire || 0),
-    MUNITIONS_FABRICATION_QUOTA_HEBDO: Number(munFab || 0),
-    MUNITIONS_VENTE_QUOTA_HEBDO: Number(munVente || 0),
-    MONTANT_FOURRIERE: Number(montantFourriere || 350),
+    SALARY_RATES,
   };
   return cache;
 }

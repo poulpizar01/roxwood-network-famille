@@ -1,8 +1,8 @@
 # Bot Famille — Bot Discord RP FiveM (illégal), 100% configurable
 
-Bot Discord (TypeScript / discord.js v14 / PostgreSQL via Prisma) pour la gestion d'une organisation RP FiveM illégale : stocks de coffre, quotas hebdomadaires, braquages, cooldowns, taxes & racket, armurerie (armes + munitions), fourrière véhicules, cycle de vente de drogue, synchronisation optionnelle vers un site web.
+Bot Discord (TypeScript / discord.js v14 / PostgreSQL via Prisma) pour la gestion d'une organisation RP FiveM illégale : stocks de coffre, quotas hebdomadaires, braquages, cooldowns, taxes & racket, armurerie (armes + munitions), fourrière véhicules, cycle de vente de drogue.
 
-Contrairement à un bot figé pour un serveur précis, **toute la structure métier est configurable depuis Discord** via la commande `/config` : items suivis, activités déclarables (quotas, cooldowns, limites de braquage, labos), objectifs de quota, types d'armes, salons, rôles, salaire, plafonds de munitions, amende de fourrière. Aucune de ces valeurs n'est codée en dur — un changement prend effet immédiatement, sans redémarrage.
+Contrairement à un bot figé pour un serveur précis, **toute la structure métier est configurable depuis Discord** via la commande `/config` : items suivis, activités déclarables (quotas, cooldowns, limites de braquage, labos), objectifs de quota, taux de paie, salons, rôles. Aucune de ces valeurs n'est codée en dur — un changement prend effet immédiatement, sans redémarrage. À l'inverse, certaines valeurs restent volontairement fixes dans le code car elles ne bougent jamais une fois le bot déployé pour une organisation donnée : types d'armes, types de taxe, plafonds de munitions, amende de fourrière (voir "Modules" plus bas).
 
 Le bot reste **mono-serveur** (un déploiement = un serveur Discord), mais devient réutilisable pour n'importe quelle organisation RP illégale sans toucher au code : après avoir invité le bot, tout se configure via `/config`.
 
@@ -78,12 +78,11 @@ Un joueur progresse dans la catégorie de quota `quota_type` d'une activité à 
 Objectif hebdomadaire par catégorie de quota (les catégories sont celles utilisées par `/config activite`, par exemple `vente`, `labos`, `actions`, `recolte` — libres, ce sont juste des exemples). **Une catégorie sans objectif défini n'apparaît dans aucun affichage de quota** (panneau perso, `/listquota`, paie hebdomadaire) même si des activités lui sont rattachées — seul le détail par activité la montre encore.
 - `/config quota set <quota_type> <valeur>` / `remove` / `list`
 
-### `/config arme`
-Types d'armes proposés dans l'armurerie.
-- `/config arme add <cle> <label>` / `remove` (autocomplete) / `list`
+### `/config salaire`
+Taux de paie ($ par unité) par catégorie de quota — mêmes catégories que `/config activite`/`/config quota`. **Une catégorie sans taux configuré ne génère aucune paie**, même si des activités lui sont rattachées : "Ma Paie", le classement de groupe et la paie hebdomadaire n'affichent que les catégories ayant un taux.
+- `/config salaire set <quota_type> <valeur>` / `remove` / `list`
 
-### `/config salaire`, `/config munitions`, `/config fourriere`
-Scalaires : salaire ($) par unité de drogue vendue, plafonds indicatifs hebdomadaires de munitions (fabrication/vente), amende ($) par mise en fourrière.
+Exemple : `/config salaire set vente 30` → chaque unité vendue rapporte 30$. On peut faire pareil pour `labos`, `recolte`, etc. — indépendamment des objectifs fixés par `/config quota` (une catégorie peut avoir un objectif sans taux de paie, un taux sans objectif, ou les deux).
 
 ---
 
@@ -99,13 +98,13 @@ Panneau de boutons **généré dynamiquement** à partir des activités configur
 Notifie l'expiration des cooldowns personnels, publie la disponibilité des slots de braquage, renomme les salons "labo" (🔴/🟢) selon disponibilité — pour toute activité configurée avec `labo_salon`, pas seulement les labos d'origine.
 
 ### `src/modules/garages.ts` — Fourrière véhicules
-Déduit les mises en fourrière à partir des logs du salon garages (aucune mise en fourrière n'est loggée explicitement) : si un véhicule ressort de la fourrière, le dernier joueur à l'avoir sorti sans l'avoir rangé est facturé (montant configurable via `/config fourriere`).
+Déduit les mises en fourrière à partir des logs du salon garages (aucune mise en fourrière n'est loggée explicitement) : si un véhicule ressort de la fourrière, le dernier joueur à l'avoir sorti sans l'avoir rangé est enregistré comme responsable — un montant fixe (350$, dans le code) est affiché à titre indicatif, sans aucune facturation automatique. Le classement cumulé se consulte à la demande via `/fourrieres` (admin) et reste posté en archive hebdomadaire dans `bilan`.
 
 ### `src/modules/taxes.ts` — Taxes & racket
-Types fixes avec leur propre bouton : `sporex`, `heroine`, `vente`, `fertilisant`. Plus un bouton **Taxe Zone** qui demande d'abord de choisir une zone (Roxwood Village, Grapeseed Valley, Richman, Cinéma, Hawick, Carson) avant d'afficher le même formulaire — le nom de la zone est directement stocké comme `type` de la taxe (une seule taxe active par zone à la fois). Ces types restent codés en dur (contrairement à items/activités/quotas) car chacun a des champs de modal hétérogènes — les rendre dynamiques demanderait un moteur de formulaire générique, hors du périmètre de généralisation de ce projet. Seuls le salon, le rôle d'accès et les échéances sont configurables.
+Types fixes avec leur propre bouton : `sporex`, `heroine`, `vente`, `fertilisant`. Plus un bouton **Taxe Zone** qui demande d'abord de choisir une zone (Roxwood Village, Grapeseed Valley, Richman, Cinéma, Hawick, Carson) avant d'afficher le même formulaire — le nom de la zone est directement stocké comme `type` de la taxe. Une seule taxe active à la fois par type (zones incluses) — une taxe expirée mais pas supprimée ne bloque pas une nouvelle création. Ces types restent codés en dur (contrairement à items/activités/quotas) car chacun a des champs de modal hétérogènes — les rendre dynamiques demanderait un moteur de formulaire générique, hors du périmètre de généralisation de ce projet. Seuls le salon, le rôle d'accès et les échéances sont configurables.
 
 ### `src/modules/armurerie.ts` — Armurerie & munitions
-Inventaire d'armes individuelles (nom, référence unique, statut `en_stock`/`pretee`/`perdue`), types configurables via `/config arme`. Munitions : ligne de stock + deux déclarations indicatives (Fabrication / Vente) avec compteur hebdomadaire, plafonds configurables via `/config munitions`.
+Inventaire d'armes individuelles (nom, référence unique, statut `en_stock`/`pretee`/`perdue`). Types d'armes fixes dans le code (constante `ARME_TYPES` en tête de fichier, à compléter selon le serveur — pas de `/config` dédié, cette liste ne bouge jamais une fois posée). Munitions : ligne de stock + deux déclarations indicatives (Fabrication / Vente) avec compteur hebdomadaire, plafonds fixes (5000/5000) dans le code.
 
 ### `src/modules/ventes.ts` — Cycle de vie des ventes de drogue
 Un retrait de coffre sur un item marqué `vente: true` crée une vente en attente et alerte dans le salon `ventes_drogue`. Confirmation automatique dès le dépôt d'un item marqué `paiement: true` (fenêtre de 3h), log dans `log_ventes`, mise à jour des stats/quota.
@@ -116,7 +115,7 @@ Un retrait de coffre sur un item marqué `vente: true` crée une vente en attent
 
 PostgreSQL via [Prisma](https://www.prisma.io/) (`prisma/schema.prisma`). Voir `npx prisma studio` pour explorer les données, `npx prisma migrate dev` pour appliquer une évolution de schéma en développement, `npx prisma migrate deploy` en production.
 
-Tables de configuration (pilotées par `/config`) : `channels` (rôle fonctionnel → salon(s)), `discord_roles` (admin/taxes → rôle Discord), `items`, `activity_types`, `quota_targets`, `arme_types`, et `settings` pour les scalaires isolés (salaire, plafonds munitions, amende fourrière).
+Tables de configuration (pilotées par `/config`) : `channels` (rôle fonctionnel → salon(s)), `discord_roles` (admin/taxes → rôle Discord), `items`, `activity_types`, `quota_targets`, `salary_rates`.
 Tables métier (génériques) : `stocks`, `stock_history`, `transactions`, `stats`, `cooldowns`, `braquages`, `taxes`, `armurerie`, `user_mapping`, `pending_sales`, `vehicules`, `fourrieres`, `munitions_ventes`.
 
 ---

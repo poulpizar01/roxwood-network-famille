@@ -99,13 +99,15 @@ model QuotaTarget {
   @@map("quota_targets")
 }
 
-/// Types d'armes proposés à l'ajout dans l'armurerie.
-model ArmeType {
-  key          String @id
-  label        String
-  displayOrder Int    @default(0) @map("display_order")
+/// Taux de paie ($ par unité) pour une catégorie de quota. Une catégorie sans
+/// ligne ici ne génère aucune paie — voir `computeSalaire` dans
+/// src/modules/quotas.ts. Indépendant de QuotaTarget : une catégorie peut
+/// avoir un objectif sans taux de paie, un taux sans objectif, ou les deux.
+model SalaryRate {
+  quotaType String @id @map("quota_type")
+  amount    Float
 
-  @@map("arme_types")
+  @@map("salary_rates")
 }
 
 // ═══ DONNÉES MÉTIER (génériques, indépendantes de la config ci-dessus) ═══

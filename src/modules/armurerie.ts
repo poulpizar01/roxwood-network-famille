@@ -2,16 +2,15 @@
  * @file src/modules/armurerie.ts
  * @description Gestion de l'inventaire d'armes de l'organisation (contexte RP FiveM).
  *
- * Chaque arme a un statut ('en_stock' | 'pretee' | 'perdue') et un `type`,
- * dont la liste vient de `/config arme` (voir src/modules/config.ts) au lieu
- * d'un tableau `ARME_TYPES` codé en dur. Le champ `type` stocké en base est la
- * CLÉ du type (stable même si son libellé est renommé plus tard), pas son
+ * Chaque arme a un statut ('en_stock' | 'pretee' | 'perdue') et un `type`.
+ * Contrairement à items/activités/quotas, les types d'armes restent une
+ * liste fixe dans le code ({@link ARME_TYPES} ci-dessous, pas de `/config
+ * arme`) — le champ `type` stocké en base est la CLÉ du type, pas son
  * libellé affiché.
  *
  * Un message permanent dans le salon `armurerie` expose : Ajouter, Perdu,
  * Prêter, Rendu, Liste des Pertes, et deux déclarations indicatives de
- * munitions (Fabrication / Vente, plafonds configurables via `/config
- * munitions`) — Historique.
+ * munitions (Fabrication / Vente, plafonds fixes ci-dessous) — Historique.
  */
 import {
   EmbedBuilder,
@@ -31,6 +30,15 @@ import {
 } from 'discord.js';
 import * as db from '../db';
 import * as configStore from '../config-store';
+
+/** Types d'armes proposés à l'ajout — liste fixe (voir docstring de fichier). */
+const ARME_TYPES: Array<{ key: string; label: string }> = [
+  // À compléter avec la liste fournie par l'utilisateur.
+];
+
+/** Plafonds indicatifs hebdomadaires de munitions — valeurs fixes, ne bougent jamais. */
+const MUNITIONS_FABRICATION_QUOTA_HEBDO = 5000;
+const MUNITIONS_VENTE_QUOTA_HEBDO = 5000;
 
 // ─── AUTO-DELETE HELPERS ──────────────────────────────────────────────────────
 
@@ -87,7 +95,6 @@ function comparerNomsNaturel(a: { nom: string }, b: { nom: string }): number {
 type Arme = Awaited<ReturnType<typeof db.getAllArmes>>[number];
 
 async function buildArmurierieEmbed(armes: Arme[]): Promise<EmbedBuilder> {
-  const c = configStore.get();
   const embed = new EmbedBuilder().setTitle('🔫 Armurerie').setColor(0xFEE75C).setTimestamp().setFooter({ text: 'Mis à jour' });
 
   const munitions = await db.getStock('munitions de pistolet');
@@ -95,7 +102,7 @@ async function buildArmurierieEmbed(armes: Arme[]): Promise<EmbedBuilder> {
   const fabriquees = await db.getMunitionsFabriqueesDepuis(sinceReset);
   const vendues = await db.getMunitionsVenduesDepuis(sinceReset);
   const blocs = [
-    `__Munitions de pistolet__\n🧰 ${munitions} balles en stock\n🛠️ ${fabriquees} / ${c.MUNITIONS_FABRICATION_QUOTA_HEBDO} fabriquées cette semaine\n💰 ${vendues} / ${c.MUNITIONS_VENTE_QUOTA_HEBDO} vendues cette semaine`,
+    `__Munitions de pistolet__\n🧰 ${munitions} balles en stock\n🛠️ ${fabriquees} / ${MUNITIONS_FABRICATION_QUOTA_HEBDO} fabriquées cette semaine\n💰 ${vendues} / ${MUNITIONS_VENTE_QUOTA_HEBDO} vendues cette semaine`,
   ];
 
   if (!armes.length) {
@@ -104,7 +111,7 @@ async function buildArmurierieEmbed(armes: Arme[]): Promise<EmbedBuilder> {
   }
 
   const groupes = new Map<string, Arme[]>();
-  for (const t of c.ARME_TYPES) groupes.set(t.key, []);
+  for (const t of ARME_TYPES) groupes.set(t.key, []);
   const sansType: Arme[] = [];
 
   for (const a of armes) {
@@ -117,7 +124,7 @@ async function buildArmurierieEmbed(armes: Arme[]): Promise<EmbedBuilder> {
 
   const ligneArme = (a: Arme) => `**${a.nom}** \`${a.reference}\` — ${statutLabel(a)}`;
 
-  for (const t of c.ARME_TYPES) {
+  for (const t of ARME_TYPES) {
     const liste = groupes.get(t.key)!;
     if (!liste.length) continue;
     liste.sort(comparerNomsNaturel);
@@ -187,9 +194,9 @@ export async function handleButton(interaction: ButtonInteraction): Promise<void
   const id = interaction.customId;
 
   if (id === 'arm_ajouter') {
-    const types = configStore.get().ARME_TYPES;
+    const types = ARME_TYPES;
     if (!types.length) {
-      return replyAutoDelete(interaction, "❌ Aucun type d'arme configuré (voir /config arme add).");
+      return replyAutoDelete(interaction, "❌ Aucun type d'arme défini dans le code (ARME_TYPES est vide dans src/modules/armurerie.ts).");
     }
     const select = new StringSelectMenuBuilder()
       .setCustomId('arm_select_ajouter_type')
@@ -288,7 +295,7 @@ export async function handleSelect(interaction: StringSelectMenuInteraction): Pr
 
   if (id === 'arm_select_ajouter_type') {
     const typeKey = interaction.values[0];
-    const type = configStore.get().ARME_TYPES.find(t => t.key === typeKey);
+    const type = ARME_TYPES.find(t => t.key === typeKey);
     if (!type) return updateAutoDelete(interaction, { content: '❌ Type invalide.', components: [] });
 
     const modal = new ModalBuilder()
@@ -416,7 +423,7 @@ export async function handleModal(interaction: ModalSubmitInteraction): Promise<
 
   if (id.startsWith('modal_arm_ajouter_')) {
     const typeKey = id.replace('modal_arm_ajouter_', '');
-    const type = configStore.get().ARME_TYPES.find(t => t.key === typeKey);
+    const type = ARME_TYPES.find(t => t.key === typeKey);
     const nom = interaction.fields.getTextInputValue('nom').trim();
     const reference = interaction.fields.getTextInputValue('reference').trim().toUpperCase();
 
