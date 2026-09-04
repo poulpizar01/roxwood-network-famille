@@ -16,6 +16,12 @@
  * c'est `/config activite add --quota_type` qui décide entièrement quelles
  * activités comptent dans quelle catégorie (pas de règle cachée dans le code).
  *
+ * Une catégorie de quota n'apparaît dans AUCUN affichage (panneau perso,
+ * `/listquota`, paie hebdomadaire) tant qu'elle n'a pas d'objectif défini via
+ * `/config quota set <quota_type> <valeur>` — une activité rattachée à une
+ * catégorie sans objectif compte quand même dans le détail par activité, mais
+ * la catégorie elle-même reste invisible tant qu'elle n'est pas "paramétrée".
+ *
  * Exception documentée : le rappel du dimanche (`checkQuotaReminder`) reste
  * spécifique à la catégorie de quota `vente`, parce qu'il est couplé au cycle
  * de vente de drogue (modules/ventes.ts) — un rappel générique par catégorie
@@ -157,15 +163,21 @@ async function buildMainEmbed(): Promise<EmbedBuilder> {
   return embed;
 }
 
-/** Embed de quota personnel d'un membre : une ligne par catégorie de quota configurée. */
+/**
+ * Embed de quota personnel d'un membre : une ligne par catégorie de quota
+ * — uniquement celles ayant un objectif configuré via `/config quota set`.
+ * Une catégorie utilisée par une activité (`quota_type`) mais sans objectif
+ * défini n'apparaît nulle part dans les affichages de quota (voir docstring
+ * de fichier).
+ */
 async function buildQuotaEmbed(userId: string, member: GuildMember | null): Promise<EmbedBuilder> {
   const { byQuotaType, map } = await getUserQuotaSummary(userId);
   const activityTypes = configStore.get().ACTIVITY_TYPES;
   const targets = configStore.get().QUOTA_TARGETS;
 
-  const quotaFields = Object.keys(byQuotaType).sort().map(qt => ({
+  const quotaFields = Object.keys(targets).sort().map(qt => ({
     name: `📌 ${capitalize(qt)}`,
-    value: targets[qt] != null ? `${byQuotaType[qt]}/${targets[qt]}` : `${byQuotaType[qt]}`,
+    value: `${byQuotaType[qt] ?? 0}/${targets[qt]}`,
     inline: true,
   }));
 
@@ -875,8 +887,8 @@ export async function weeklyReset(client: Client, sinceTs?: number): Promise<voi
           const salaire = Math.round(u.total * c.SALAIRE_PAR_VENTE);
           const { byQuotaType } = await getUserQuotaSummary(u.user_id);
           const targets = c.QUOTA_TARGETS;
-          const quotaLine = Object.keys(byQuotaType).sort()
-            .map(qt => `${capitalize(qt)} ${byQuotaType[qt]}${targets[qt] != null ? `/${targets[qt]}` : ''}`)
+          const quotaLine = Object.keys(targets).sort()
+            .map(qt => `${capitalize(qt)} ${byQuotaType[qt] ?? 0}/${targets[qt]}`)
             .join(' | ');
 
           lines.push(
@@ -931,8 +943,8 @@ export async function handleListQuotaCommand(interaction: ChatInputCommandIntera
   rows.sort((a, b) => (a.complete !== b.complete ? (a.complete ? 1 : -1) : b.venteCount - a.venteCount));
 
   const lines = rows.map(r => {
-    const detail = Object.keys(r.byQuotaType).sort()
-      .map(qt => `${capitalize(qt)} ${r.byQuotaType[qt]}${targets[qt] != null ? `/${targets[qt]}` : ''}`)
+    const detail = Object.keys(targets).sort()
+      .map(qt => `${capitalize(qt)} ${r.byQuotaType[qt] ?? 0}/${targets[qt]}`)
       .join(' | ');
     return `${r.complete ? '✅' : '❌'} **${r.name}** — ${detail}`;
   });

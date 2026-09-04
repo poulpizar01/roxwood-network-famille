@@ -75,7 +75,7 @@ Registre des activités déclarables dans le panneau de quotas : chaque activit�
 Un joueur progresse dans la catégorie de quota `quota_type` d'une activité à chaque déclaration — c'est cette option qui décide entièrement quelles activités comptent dans quel quota, pas une règle cachée dans le code. `sans_bouton` sert aux activités créditées par un autre module plutôt que par un bouton du panneau (ex. `vente`, créditée automatiquement par le cycle de vente).
 
 ### `/config quota`
-Objectif hebdomadaire par catégorie de quota (les catégories sont celles utilisées par `/config activite`).
+Objectif hebdomadaire par catégorie de quota (les catégories sont celles utilisées par `/config activite`, par exemple `vente`, `labos`, `actions`, `recolte` — libres, ce sont juste des exemples). **Une catégorie sans objectif défini n'apparaît dans aucun affichage de quota** (panneau perso, `/listquota`, paie hebdomadaire) même si des activités lui sont rattachées — seul le détail par activité la montre encore.
 - `/config quota set <quota_type> <valeur>` / `remove` / `list`
 
 ### `/config arme`
