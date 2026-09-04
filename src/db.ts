@@ -410,11 +410,6 @@ export async function resetAllStats(): Promise<void> {
   await prisma.stat.deleteMany();
 }
 
-/** Toutes les lignes de stats, tous joueurs confondus — utilisé par sync-supabase. */
-export async function getAllStatsRows() {
-  return prisma.stat.findMany();
-}
-
 // ─── COOLDOWNS ───────────────────────────────────────────────────────────────
 
 export async function getCooldown(userId: string, action: string): Promise<number> {
@@ -470,12 +465,6 @@ export async function getOldestBraquage(action: string): Promise<number | null> 
     orderBy: { timestamp: 'asc' },
   });
   return row ? toMs(row.timestamp) : null;
-}
-
-/** Braquages depuis `sinceTs` (pas de filtre sur l'action) — utilisé par sync-supabase. */
-export async function getRecentBraquages(sinceTs: number) {
-  const rows = await prisma.braquage.findMany({ where: { timestamp: { gte: new Date(sinceTs) } } });
-  return rows.map(r => ({ id: r.id, user_id: r.userId, action: r.action, timestamp: toMs(r.timestamp) }));
 }
 
 // ─── TAXES ───────────────────────────────────────────────────────────────────
@@ -663,12 +652,6 @@ export async function getPendingSaleRepose(joueur: string, item: string, since: 
     orderBy: { timestamp: 'desc' },
   });
   return row ? mapPendingSale(row) : undefined;
-}
-
-/** Ventes en attente depuis `sinceTs`, tous joueurs/statuts confondus — utilisé par sync-supabase. */
-export async function getRecentPendingSales(sinceTs: number) {
-  const rows = await prisma.pendingSale.findMany({ where: { timestamp: { gte: new Date(sinceTs) } } });
-  return rows.map(mapPendingSale);
 }
 
 export async function getExpiredPendingSales(before: number) {

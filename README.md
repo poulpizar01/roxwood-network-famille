@@ -29,7 +29,6 @@ npm install
 
 cp .env.example .env
 # Éditer .env : TOKEN, CLIENT_ID, GUILD_ID, DATABASE_URL
-# (optionnel) SUPABASE_URL, SUPABASE_SERVICE_KEY, ANNONCES_CHANNEL_ID
 
 # Crée les tables dans la base PostgreSQL
 npx prisma migrate dev --name init
@@ -111,9 +110,6 @@ Inventaire d'armes individuelles (nom, référence unique, statut `en_stock`/`pr
 ### `src/modules/ventes.ts` — Cycle de vie des ventes de drogue
 Un retrait de coffre sur un item marqué `vente: true` crée une vente en attente et alerte dans le salon `ventes_drogue`. Confirmation automatique dès le dépôt d'un item marqué `paiement: true` (fenêtre de 3h), log dans `log_ventes`, mise à jour des stats/quota.
 
-### `src/modules/sync-supabase.ts` — Synchronisation site web (optionnel)
-Copie en lecture seule, toutes les 5 minutes, les données du bot vers Supabase. Se désactive proprement si `SUPABASE_URL`/`SUPABASE_SERVICE_KEY` sont absents du `.env`. Le schéma de tables `bot_*` attendu est spécifique à un site web consommateur — ce module illustre le pattern de synchronisation, à adapter à votre propre site.
-
 ---
 
 ## Base de données
@@ -142,8 +138,7 @@ bot-famille/
 │       ├── garages.ts
 │       ├── taxes.ts
 │       ├── armurerie.ts
-│       ├── ventes.ts
-│       └── sync-supabase.ts
+│       └── ventes.ts
 ├── prisma/schema.prisma
 ├── .env / .env.example
 ├── package.json / tsconfig.json
@@ -161,4 +156,3 @@ bot-famille/
 | Un mouvement de coffre est ignoré | L'item n'est probablement pas dans `/config item list`, ou son orthographe (accents/casse) diffère du log FiveM |
 | Erreur `Cannot rename channel` | Le bot a besoin de la permission `Manage Channels` sur les salons "labo" |
 | Erreur Prisma au démarrage | Vérifier `DATABASE_URL` dans `.env` et que PostgreSQL est accessible ; `npx prisma migrate deploy` |
-| Synchro Supabase inactive | Vérifier `SUPABASE_URL`/`SUPABASE_SERVICE_KEY` dans `.env` (le module se désactive silencieusement sinon) |

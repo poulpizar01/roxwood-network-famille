@@ -62,8 +62,7 @@ Chaque module avec un message permanent (stock, quotas, armurerie, taxes) expose
 
 ## Sécurité / secrets
 
-- `.env` (TOKEN, DATABASE_URL, SUPABASE_SERVICE_KEY) ne doit **jamais** être committé (déjà dans `.gitignore`).
-- `sync-supabase.ts` ne synchronise volontairement pas les champs sensibles des taxes (téléphone, mot de passe) vers le site web.
+- `.env` (TOKEN, DATABASE_URL) ne doit **jamais** être committé (déjà dans `.gitignore`).
 - `/config` est toujours réservée à la permission Discord native `Administrator`, indépendamment du rôle `ADMIN_ROLE_ID` configurable — évite un problème d'œuf-et-poule sur un serveur fraîchement configuré (voir docstring en tête de `src/modules/config.ts`).
 
 ## Conventions de code

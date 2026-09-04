@@ -135,9 +135,6 @@ client.once('clientReady', async (readyClient) => {
   });
 
   console.log('✅ Tâches cron démarrées');
-
-  // ── Synchronisation optionnelle vers un site web (désactivée si env absent) ──
-  (await import('./modules/sync-supabase')).start(client);
 });
 
 // ─── RÉACTION 🗑️ → SUPPRESSION DU MESSAGE DU BOT ────────────────────────────
