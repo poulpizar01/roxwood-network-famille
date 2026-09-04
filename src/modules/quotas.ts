@@ -2,19 +2,21 @@
  * @file src/modules/quotas.ts
  * @description Panneau d'activités déclarables + quotas hebdomadaires.
  *
- * Contrairement à la source dont ce projet s'inspire (registre `ACTIONS` figé
- * dans le code), toutes les activités déclarables — leur libellé, catégorie de
- * quota, cooldown personnel, limite de braquage partagée, mode "labo", champ
- * quantité — viennent de `configStore.get().ACTIVITY_TYPES` (piloté par
- * `/config activite`, voir src/modules/config.ts). Les boutons du panneau, les
- * champs de quota, le détail par activité et le bilan hebdomadaire sont donc
- * générés dynamiquement à partir de ce registre : ajouter une activité ne
- * demande aucune modification de code.
+ * Toutes les activités déclarables — leur libellé, catégorie de quota,
+ * cooldown personnel, limite de braquage partagée, mode "labo", champ
+ * quantité — viennent du registre fixe `ACTIVITY_TYPES` défini dans
+ * src/config-store.ts (pas de `/config` dédié : ces activités ne changent
+ * quasiment jamais une fois le bot déployé pour une organisation donnée, voir
+ * la docstring de ce fichier). Les boutons du panneau, les champs de quota,
+ * le détail par activité et le bilan hebdomadaire sont générés dynamiquement
+ * à partir de ce registre.
  *
  * Règle d'agrégation des quotas : un joueur progresse dans la catégorie de
- * quota `quotaType` d'une activité pour chaque déclaration de cette activité —
- * c'est `/config activite add --quota_type` qui décide entièrement quelles
- * activités comptent dans quelle catégorie (pas de règle cachée dans le code).
+ * quota `quotaType` d'une activité pour chaque déclaration de cette activité
+ * — c'est ce champ, dans le registre fixe, qui décide quelles activités
+ * comptent dans quelle catégorie. Les OBJECTIFS par catégorie, eux, restent
+ * pilotables via `/config quota` (voir src/modules/config.ts) — c'est la
+ * seule partie de ce système qui peut changer sans toucher au code.
  *
  * Une catégorie de quota n'apparaît dans AUCUN affichage (panneau perso,
  * `/listquota`, paie hebdomadaire) tant qu'elle n'a pas d'objectif défini via
@@ -340,7 +342,7 @@ function buildButtonRows() {
   const direct = declarable.slice(0, MAX_DIRECT_BUTTONS);
   const overflow = declarable.slice(MAX_DIRECT_BUTTONS, MAX_DIRECT_BUTTONS + 25);
   if (declarable.length > MAX_DIRECT_BUTTONS + 25) {
-    console.warn(`[quotas] ${declarable.length - MAX_DIRECT_BUTTONS - 25} activité(s) supplémentaire(s) ne tiennent plus dans le panneau (limite Discord) — voir /config activite list.`);
+    console.warn(`[quotas] ${declarable.length - MAX_DIRECT_BUTTONS - 25} activité(s) supplémentaire(s) ne tiennent plus dans le panneau (limite Discord) — voir ACTIVITY_TYPES dans src/config-store.ts.`);
   }
 
   const rows: ActionRowBuilder<ButtonBuilder | UserSelectMenuBuilder>[] = [];

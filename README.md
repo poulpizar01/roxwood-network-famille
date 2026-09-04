@@ -67,19 +67,15 @@ Items de coffre suivis. **L'orthographe doit correspondre exactement** (accents,
 - `/config item add <nom> [vente] [paiement] [groupe]` — `vente` = déclarable en vente de drogue, `paiement` = compte comme règlement d'une vente, `groupe` = libellé de regroupement dans le message de stock (ex. "Drogue à vendre").
 - `/config item remove <nom>` (autocomplete) / `/config item list [filtre]`
 
-### `/config activite`
-Registre des activités déclarables dans le panneau de quotas : chaque activité définit son libellé, sa catégorie de quota, un cooldown personnel optionnel, une limite hebdomadaire partagée (braquage), un mode "labo" (minuterie + renommage de salon 🔴/🟢), et un champ quantité optionnel.
-- `/config activite add <cle> <label> [quota_type] [cooldown_heures] [partenaires] [limite_braquage] [labo_salon] [quantite] [sans_bouton]`
-- `/config activite remove <cle>` (autocomplete) / `/config activite list`
-
-Un joueur progresse dans la catégorie de quota `quota_type` d'une activité à chaque déclaration — c'est cette option qui décide entièrement quelles activités comptent dans quel quota, pas une règle cachée dans le code. `sans_bouton` sert aux activités créditées par un autre module plutôt que par un bouton du panneau (ex. `vente`, créditée automatiquement par le cycle de vente).
+### Activités déclarables — fixes dans le code, pas de `/config`
+Le panneau de quotas (ATM, Cambu, Supérette, Go Fast, Fleeca, Armurerie, Bijouterie, Pinebank, Vente, Récolte, Labo Héroïne, Labo Sporex) est un registre **fixe** dans `src/config-store.ts` (`ACTIVITY_TYPES_FIXED`), pas piloté depuis Discord — ces activités, leurs cooldowns et leurs limites de braquage ne changent quasiment jamais une fois le bot déployé. Pour ajouter/retirer/modifier une activité, éditer directement ce fichier. Les salons des deux labos (`labo_heroine`/`labo_sporex`) restent configurables comme n'importe quel autre salon : `/config channel set labo_heroine <#salon>`.
 
 ### `/config quota`
-Objectif hebdomadaire par catégorie de quota (les catégories sont celles utilisées par `/config activite`, par exemple `vente`, `labos`, `actions`, `recolte` — libres, ce sont juste des exemples). **Une catégorie sans objectif défini n'apparaît dans aucun affichage de quota** (panneau perso, `/listquota`, paie hebdomadaire) même si des activités lui sont rattachées — seul le détail par activité la montre encore.
+Objectif hebdomadaire par catégorie de quota (`actions`, `vente`, `recolte`, `labos` — celles utilisées par le registre d'activités ci-dessus). C'est la seule partie du système de quotas qui reste pilotable depuis Discord, parce que les objectifs peuvent être renégociés. **Une catégorie sans objectif défini n'apparaît dans aucun affichage de quota** (panneau perso, `/listquota`, paie hebdomadaire) même si des activités lui sont rattachées — seul le détail par activité la montre encore.
 - `/config quota set <quota_type> <valeur>` / `remove` / `list`
 
 ### `/config salaire`
-Taux de paie ($ par unité) par catégorie de quota — mêmes catégories que `/config activite`/`/config quota`. **Une catégorie sans taux configuré ne génère aucune paie**, même si des activités lui sont rattachées : "Ma Paie", le classement de groupe et la paie hebdomadaire n'affichent que les catégories ayant un taux.
+Taux de paie ($ par unité) par catégorie de quota — mêmes catégories que `/config quota`. **Une catégorie sans taux configuré ne génère aucune paie**, même si des activités lui sont rattachées : "Ma Paie", le classement de groupe et la paie hebdomadaire n'affichent que les catégories ayant un taux.
 - `/config salaire set <quota_type> <valeur>` / `remove` / `list`
 
 Exemple : `/config salaire set vente 30` → chaque unité vendue rapporte 30$. On peut faire pareil pour `labos`, `recolte`, etc. — indépendamment des objectifs fixés par `/config quota` (une catégorie peut avoir un objectif sans taux de paie, un taux sans objectif, ou les deux).
@@ -92,7 +88,7 @@ Exemple : `/config salaire set vente 30` → chaque unité vendue rapporte 30$. 
 Parse les logs des salons de coffre suivis, met à jour la table `stocks` et le message permanent du salon `stock_general`. Gère le rattrapage au démarrage et un resync complet à la demande (`/sync-stock`). `/set-stock` et `/historique-stock` utilisent l'autocomplete (la liste d'items peut dépasser la limite de 25 choix Discord).
 
 ### `src/modules/quotas.ts` — Activités & quotas hebdomadaires
-Panneau de boutons **généré dynamiquement** à partir des activités configurées (`/config activite`) : jusqu'à 3 rangées de boutons directs, un menu déroulant de repli au-delà, puis la rangée fixe des vues (mon quota, ma paie, classement, bilan, minuterie). Reset automatique chaque dimanche 19h (bilan + paie envoyés, stats remises à zéro), auto-réparant si le bot était arrêté au moment du cron.
+Panneau de boutons **généré dynamiquement** à partir du registre fixe `ACTIVITY_TYPES` (`src/config-store.ts`) : jusqu'à 3 rangées de boutons directs, un menu déroulant de repli au-delà, puis la rangée fixe des vues (mon quota, ma paie, classement, bilan, minuterie). Reset automatique chaque dimanche 19h (bilan + paie envoyés, stats remises à zéro), auto-réparant si le bot était arrêté au moment du cron.
 
 ### `src/modules/alertes.ts` — Cooldowns, braquages, statut labo
 Notifie l'expiration des cooldowns personnels, publie la disponibilité des slots de braquage, renomme les salons "labo" (🔴/🟢) selon disponibilité — pour toute activité configurée avec `labo_salon`, pas seulement les labos d'origine.
@@ -115,7 +111,7 @@ Un retrait de coffre sur un item marqué `vente: true` crée une vente en attent
 
 PostgreSQL via [Prisma](https://www.prisma.io/) (`prisma/schema.prisma`). Voir `npx prisma studio` pour explorer les données, `npx prisma migrate dev` pour appliquer une évolution de schéma en développement, `npx prisma migrate deploy` en production.
 
-Tables de configuration (pilotées par `/config`) : `channels` (rôle fonctionnel → salon(s)), `discord_roles` (admin/taxes → rôle Discord), `items`, `activity_types`, `quota_targets`, `salary_rates`.
+Tables de configuration (pilotées par `/config`) : `channels` (rôle fonctionnel → salon(s)), `discord_roles` (admin/taxes → rôle Discord), `items`, `quota_targets`, `salary_rates`. Le registre des activités déclarables n'a pas de table — c'est une constante fixe dans `src/config-store.ts` (voir plus haut).
 Tables métier (génériques) : `stocks`, `stock_history`, `transactions`, `stats`, `cooldowns`, `braquages`, `taxes`, `armurerie`, `user_mapping`, `pending_sales`, `vehicules`, `fourrieres`, `munitions_ventes`.
 
 ---

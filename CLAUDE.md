@@ -24,8 +24,9 @@ Toute écriture de config passe par `configStore.mutate(() => db.xxx(...))` plut
 
 ## Portée de la généralisation (décisions de conception)
 
-- **Configurables via `/config`** : items, activités déclarables (quotas/cooldowns/limites de braquage/labos), objectifs de quota, taux de paie, salons, rôles.
+- **Configurables via `/config`** : items, objectifs de quota, taux de paie, salons, rôles — tout ce qui peut réellement changer/être renégocié après le déploiement du bot.
 - **Restent fixes dans le code, volontairement pas de `/config` dédié** — valeurs jugées suffisamment stables une fois le bot déployé pour une organisation donnée :
+  - Registre des activités déclarables (`ACTIVITY_TYPES_FIXED` dans `src/config-store.ts`) : ATM, Cambu, Supérette, Go Fast, Fleeca, Armurerie, Bijouterie, Pinebank, Vente, Récolte, Labo Héroïne, Labo Sporex — libellé, cooldown, limite de braquage, mode labo, catégorie de quota. Repris tel quel du bot d'origine. Seuls les salons `labo_heroine`/`labo_sporex` restent configurables via `/config channel` (des IDs propres à chaque serveur Discord, pas des valeurs métier).
   - Types de taxe (`sporex`/`heroine`/`vente`/`fertilisant` + les taxes de zone) : chacun a des champs de modal hétérogènes (zone a téléphone + sélection préalable de zone, les autres non) — les rendre dynamiques demanderait un moteur de formulaire générique. Seuls salon/rôle/échéances sont configurables pour les taxes. Les taxes de zone stockent le nom de la zone directement dans le champ `type` (voir `ZONES`/`ZONE_BY_KEY` dans `src/modules/taxes.ts`), pas de colonne séparée.
   - Types d'armes (`ARME_TYPES` en tête de `src/modules/armurerie.ts`) — à remplir avec la liste réelle du serveur.
   - Plafonds indicatifs de munitions et amende de fourrière (`src/modules/armurerie.ts`, `src/modules/garages.ts`) — purement informatifs, aucune facturation automatique nulle part dans le bot.
@@ -56,7 +57,7 @@ Chaque module avec un message permanent (stock, quotas, armurerie, taxes) expose
 
 - **25 choix max** sur un `.addChoices()` de slash command → passer en `.setAutocomplete(true)` + handler `interactionCreate` (`isAutocomplete()`) dès que la liste peut dépasser 25 (ex. items, activités).
 - **25 options max** sur un `StringSelectMenuBuilder` → pattern « modal de recherche avant select » (armurerie, taxes) : demander un texte de recherche optionnel, filtrer, puis afficher le select avec au plus 25 résultats.
-- **5 boutons max par `ActionRow`, 5 rows max par message** → le panneau de quotas (`quotas.ts`, `buildButtonRows`) gère ça dynamiquement : jusqu'à 3 rangées de boutons directs (15 activités), un menu déroulant de repli au-delà (`act_more_select`, 25 de plus), puis la rangée fixe des vues. Si `/config activite` dépasse ces capacités (40 activités avec bouton), les activités en trop n'apparaissent plus dans le panneau — un `console.warn` le signale.
+- **5 boutons max par `ActionRow`, 5 rows max par message** → le panneau de quotas (`quotas.ts`, `buildButtonRows`) gère ça dynamiquement : jusqu'à 3 rangées de boutons directs (15 activités), un menu déroulant de repli au-delà (`act_more_select`, 25 de plus), puis la rangée fixe des vues. Si `ACTIVITY_TYPES_FIXED` (config-store.ts) dépasse ces capacités (40 activités avec bouton), les activités en trop n'apparaissent plus dans le panneau — un `console.warn` le signale.
 - Un renommage de salon est limité à 2 fois / 10 min / salon (statut labo 🔴/🟢, voir `alertes.ts`).
 - Éditer un message (`msg.edit`) remplace entièrement ses `components` — pas besoin de « reconstruire » le message pour qu'un changement de couleur de bouton soit pris en compte.
 

@@ -115,50 +115,6 @@ export async function getAllItems() {
   return prisma.item.findMany({ orderBy: [{ displayOrder: 'asc' }, { name: 'asc' }] });
 }
 
-// ─── ACTIVITY TYPES (config) ─────────────────────────────────────────────────
-
-export interface ActivityTypeInput {
-  key: string;
-  label: string;
-  quota_type?: string | null;
-  cooldown_ms?: number | null;
-  partners?: boolean;
-  braquage_weekly_limit?: number | null;
-  labo?: boolean;
-  labo_channel_id?: string | null;
-  quantity?: boolean;
-  panel_button?: boolean;
-  display_order?: number;
-}
-
-export async function upsertActivityType(data: ActivityTypeInput): Promise<void> {
-  const shared = {
-    label: data.label,
-    quotaType: data.quota_type ?? null,
-    cooldownMs: data.cooldown_ms ?? null,
-    partners: !!data.partners,
-    braquageWeeklyLimit: data.braquage_weekly_limit ?? null,
-    labo: !!data.labo,
-    laboChannelId: data.labo_channel_id ?? null,
-    quantity: !!data.quantity,
-    panelButton: data.panel_button !== false,
-    displayOrder: data.display_order ?? 0,
-  };
-  await prisma.activityType.upsert({
-    where: { key: data.key },
-    create: { key: data.key, ...shared },
-    update: shared,
-  });
-}
-
-export async function deleteActivityType(key: string): Promise<void> {
-  await prisma.activityType.deleteMany({ where: { key } });
-}
-
-export async function getAllActivityTypes() {
-  return prisma.activityType.findMany({ orderBy: [{ displayOrder: 'asc' }, { key: 'asc' }] });
-}
-
 // ─── QUOTA TARGETS (config) ──────────────────────────────────────────────────
 
 export async function setQuotaTarget(quotaType: string, weeklyTarget: number): Promise<void> {

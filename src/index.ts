@@ -116,9 +116,8 @@ client.once('clientReady', async (readyClient) => {
   cron.schedule('*/10 * * * *', () => ventes.cleanupExpiredSales(client));
 
   // ── CRON : Nettoyage braquages anciens (toutes les heures) ────────────────
-  // Liste des activités "braquage" dérivée dynamiquement de la config (au lieu
-  // d'un tableau de clés en dur) : toute activité avec une limite hebdomadaire
-  // configurée via /config activite.
+  // Liste des activités "braquage" dérivée du registre ACTIVITY_TYPES (voir
+  // config-store.ts) plutôt qu'un tableau de clés en dur ici.
   cron.schedule('0 * * * *', async () => {
     const braquageActions = Object.entries(configStore.get().ACTIVITY_TYPES)
       .filter(([, cfg]) => cfg.braquageWeeklyLimit)

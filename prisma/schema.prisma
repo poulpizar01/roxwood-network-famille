@@ -67,29 +67,6 @@ model Item {
   @@map("items")
 }
 
-/// Registre central des activités déclarables (boutons de quotas, cooldowns
-/// personnels, limite hebdomadaire de braquage, minuterie de labo). Voir
-/// /config activite. `quotaType` est libre : une nouvelle valeur crée
-/// automatiquement une nouvelle catégorie de quota (voir QuotaTarget).
-model ActivityType {
-  key                  String  @id
-  label                String
-  quotaType            String? @map("quota_type")
-  cooldownMs           Int?    @map("cooldown_ms")
-  partners             Boolean @default(false)
-  braquageWeeklyLimit  Int?    @map("braquage_weekly_limit")
-  labo                 Boolean @default(false)
-  laboChannelId        String? @map("labo_channel_id")
-  quantity             Boolean @default(false)
-  /// false pour une activité créditée par un autre module (ex. "vente", créditée
-  /// par ventes.ts au moment d'une vente confirmée) plutôt que déclarée via un
-  /// bouton du panneau /config quotas.
-  panelButton          Boolean @default(true) @map("panel_button")
-  displayOrder         Int     @default(0) @map("display_order")
-
-  @@map("activity_types")
-}
-
 /// Objectif hebdomadaire par catégorie de quota. Une catégorie sans ligne
 /// ici est suivie mais sans objectif affiché/alerté.
 model QuotaTarget {

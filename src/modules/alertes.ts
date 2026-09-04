@@ -2,9 +2,8 @@
  * @file src/modules/alertes.ts
  * @description Alertes automatiques : cooldowns personnels expirés, disponibilité
  * des slots de braquage, et statut des salons "labo" (🔴/🟢) — entièrement
- * pilotées par le registre `ACTIVITY_TYPES` (voir src/config-store.ts), donc
- * valables pour n'importe quelle activité configurée via `/config activite`,
- * pas seulement celles d'origine (fleeca, labo héroïne...).
+ * pilotées par le registre fixe `ACTIVITY_TYPES` (voir src/config-store.ts),
+ * pas de valeurs dupliquées ici.
  *
  * Contrainte Discord : les renommages de salon sont limités à 2 toutes les 10
  * minutes par channel. Les vérifications "déjà rouge/vert" et la restauration
