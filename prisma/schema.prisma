@@ -183,6 +183,10 @@ model Braquage {
 model Taxe {
   id          Int      @id @default(autoincrement())
   nom         String
+  /// Type fixe ('sporex', 'heroine', 'vente', 'fertilisant') OU, pour une
+  /// taxe de zone, le nom exact de la zone (ex. 'Roxwood Village') — le
+  /// regroupement par zone se fait uniquement via ce champ, pas de colonne
+  /// séparée. Voir ZONES dans src/modules/taxes.ts.
   type        String
   telephone   String?
   echeance    DateTime

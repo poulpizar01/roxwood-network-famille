@@ -25,7 +25,7 @@ Toute écriture de config passe par `configStore.mutate(() => db.xxx(...))` plut
 ## Portée de la généralisation (décisions de conception)
 
 - **Configurables via `/config`** : items, activités déclarables (quotas/cooldowns/limites de braquage/labos), objectifs de quota, types d'armes, salons, rôles, salaire, plafonds munitions, amende fourrière.
-- **Restent fixes dans le code** : les 4 types de taxe (`roxwood`/`sporex`/`vente`/`fertilisant`), car chacun a des champs de modal hétérogènes (Roxwood a téléphone+mot de passe, les autres non) — les rendre dynamiques demanderait un moteur de formulaire générique. Seuls salon/rôle/échéances sont configurables pour les taxes.
+- **Restent fixes dans le code** : les types de taxe (`sporex`/`heroine`/`vente`/`fertilisant` + les taxes de zone), car chacun a des champs de modal hétérogènes (zone a téléphone + sélection préalable de zone, les autres non) — les rendre dynamiques demanderait un moteur de formulaire générique. Seuls salon/rôle/échéances sont configurables pour les taxes. Les taxes de zone stockent le nom de la zone directement dans le champ `type` (voir `ZONES`/`ZONE_BY_KEY` dans `src/modules/taxes.ts`), pas de colonne séparée.
 - **Le rappel de quota du dimanche** (`quotas.checkQuotaReminder`) reste spécifique à la catégorie de quota `vente` (couplé au cycle de vente de drogue) — pas de règle non-arbitraire pour généraliser à "n'importe quelle catégorie".
 - Le bot reste **mono-serveur** (un déploiement = un serveur Discord) mais réutilisable pour n'importe quelle organisation RP illégale sans toucher au code, via `/config`.
 

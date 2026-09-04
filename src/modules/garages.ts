@@ -11,16 +11,21 @@
  * Logique d'état, par plaque :
  *  - "sorti du garage" / "sorti de son garage public" → responsable = ce joueur.
  *  - "rangé dans le garage" → responsable effacé.
- *  - "sorti de la fourrière" → si un responsable était déjà enregistré, il est
- *    facturé d'une fourrière (montant configurable via `/config fourriere`) ;
- *    puis le responsable devient celui qui vient de la récupérer.
+ *  - "sorti de la fourrière" → si un responsable était déjà enregistré, un
+ *    événement de fourrière est enregistré à son nom ; le montant configuré
+ *    via `/config fourriere` est purement indicatif (aucune facturation
+ *    automatique, ni ici ni dans le classement) ; puis le responsable devient
+ *    celui qui vient de la récupérer.
  *
- * Un classement cumulé (jamais remis à zéro tant que non explicitement reset)
- * est maintenu en direct dans le salon `admin`, mettant en avant le top 3.
+ * Le classement cumulé (jamais remis à zéro tant que non explicitement reset)
+ * n'est plus affiché en permanence : il se consulte à la demande via la
+ * commande `/fourrieres` (admin), et reste posté en archive hebdomadaire dans
+ * `bilan` au moment du reset (voir `resetFourrieresHebdo`).
  */
-import { EmbedBuilder, type Client, type Message } from 'discord.js';
+import { EmbedBuilder, SlashCommandBuilder, MessageFlags, type Client, type Message, type ChatInputCommandInteraction } from 'discord.js';
 import * as db from '../db';
 import * as configStore from '../config-store';
+import { isAdmin } from '../permissions';
 
 const RE_SORTIE_FOURRIERE = /^\*\*(.+?)\*\* a sorti un\(e\) (.+?) de la fourrière ?: \*\*(.+?)\*\*$/im;
 const RE_SORTIE_GARAGE = /^\*\*(.+?)\*\* a sorti un\(e\) (.+?) (?:du garage \d+|de son garage public) ?: \*\*(.+?)\*\*$/im;
@@ -105,10 +110,7 @@ export async function handleMessage(message: Message): Promise<void> {
 
   for (const ligne of lignes) {
     const facturation = await traiterLigne(ligne, true);
-    if (facturation) {
-      await notifierFourriere(message.client, facturation);
-      await updateClassementMessage(message.client);
-    }
+    if (facturation) await notifierFourriere(message.client, facturation);
   }
 }
 
@@ -183,26 +185,26 @@ async function notifierFourriere(client: Client, facturation: Facturation): Prom
   const embed = new EmbedBuilder()
     .setTitle('🚗 Mise en fourrière')
     .setColor(0xED4245)
-    .setDescription(`${qui} a laissé un véhicule finir en fourrière — ${montant.toLocaleString('fr-FR')} $ à sa charge.`)
+    .setDescription(`${qui} a laissé un véhicule finir en fourrière.`)
     .addFields(
       { name: 'Véhicule', value: facturation.modele || '?', inline: true },
       { name: 'Plaque', value: facturation.plaque, inline: true },
+      { name: 'Coût indicatif', value: `${montant.toLocaleString('fr-FR')} $`, inline: true },
     )
     .setTimestamp();
 
   await channel.send({ embeds: [embed] }).catch(() => null);
 }
 
-// ─── CLASSEMENT PERSISTANT ────────────────────────────────────────────────────
+// ─── CLASSEMENT ────────────────────────────────────────────────────────────────
 
 const CLASSEMENT_TITLE = '🚗 Classement des fourrières';
 
-/** Indique si un message Discord est le classement des fourrières (via le titre de son embed). */
-export function isClassementMessage(message: Message): boolean {
-  return message.embeds?.[0]?.title === CLASSEMENT_TITLE;
-}
-
-/** Construit l'embed du classement : top 3 avec le montant à payer (nb × montant configuré). */
+/**
+ * Construit l'embed du classement : nombre de fourrières par personne, du
+ * plus élevé au moins élevé. Purement informatif — personne n'est facturé,
+ * le montant configuré n'est affiché qu'à titre indicatif (footer).
+ */
 async function buildClassementEmbed(): Promise<EmbedBuilder> {
   const montant = configStore.get().MONTANT_FOURRIERE;
   const classement = await db.getFourriereClassement();
@@ -210,49 +212,30 @@ async function buildClassementEmbed(): Promise<EmbedBuilder> {
   const lignes = classement.map((c, i) => {
     const qui = c.discord_id ? `<@${c.discord_id}>` : `**${c.joueur}**`;
     const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i + 1}.`;
-    const base = `${medal} ${qui} — **${c.total}** fourrière${c.total > 1 ? 's' : ''}`;
-    return i < 3 ? `${base} → amende : **${(c.total * montant).toLocaleString('fr-FR')} $**` : base;
+    return `${medal} ${qui} — **${c.total}** fourrière${c.total > 1 ? 's' : ''}`;
   });
 
   return new EmbedBuilder()
     .setTitle(CLASSEMENT_TITLE)
     .setColor(0xED4245)
     .setDescription(lignes.length ? lignes.join('\n') : '*Aucune fourrière enregistrée pour le moment.*')
-    .setFooter({ text: `${montant}$ par fourrière — seul le top 3 est facturé` })
+    .setFooter({ text: `Coût indicatif : ${montant.toLocaleString('fr-FR')}$ par fourrière — aucune facturation automatique` })
     .setTimestamp();
 }
 
-/** S'assure que le classement existe sur Discord et le retourne, en le recréant s'il a disparu. */
-async function ensureClassementMessage(client: Client): Promise<Message | null> {
-  const c = configStore.get();
-  if (!c.CHANNELS.admin) return null;
-  const channel = await client.channels.fetch(c.CHANNELS.admin).catch(() => null);
-  if (!channel || !channel.isSendable()) return null;
-
-  const messageId = await db.getSetting('fourriere_classement_message_id');
-  if (messageId) {
-    const existing = await channel.messages.fetch(messageId).catch(() => null);
-    if (existing) return existing;
-  }
-
-  const top3 = (await db.getFourriereClassement()).slice(0, 3).filter(x => x.discord_id);
-  const content = top3.length ? top3.map(x => `<@${x.discord_id}>`).join(' ') : '';
-  const msg = await channel.send({ content, embeds: [await buildClassementEmbed()] });
-  await db.setSetting('fourriere_classement_message_id', msg.id);
-  return msg;
+export function getCommands() {
+  return [
+    { data: new SlashCommandBuilder().setName('fourrieres').setDescription('Classement des fourrières (admin)') },
+  ];
 }
 
-/** Met à jour le classement des fourrières dans `admin` (le crée s'il n'existe pas encore ou a disparu). */
-export async function updateClassementMessage(client: Client): Promise<void> {
-  try {
-    const msg = await ensureClassementMessage(client);
-    if (!msg) return;
-    const top3 = (await db.getFourriereClassement()).slice(0, 3).filter(x => x.discord_id);
-    const content = top3.length ? top3.map(x => `<@${x.discord_id}>`).join(' ') : '';
-    await msg.edit({ content, embeds: [await buildClassementEmbed()] });
-  } catch (err) {
-    console.error('[garages] updateClassementMessage:', (err as Error).message);
+/** Gère la commande `/fourrieres` (admin) : affiche le classement à la demande. */
+export async function handleClassementCommand(interaction: ChatInputCommandInteraction): Promise<void> {
+  if (!isAdmin(interaction.member)) {
+    await interaction.reply({ content: '❌ Commande réservée aux administrateurs.', flags: MessageFlags.Ephemeral });
+    return;
   }
+  await interaction.reply({ embeds: [await buildClassementEmbed()], flags: MessageFlags.Ephemeral });
 }
 
 /**
@@ -273,7 +256,6 @@ export async function resetFourrieresHebdo(client: Client, entete: string): Prom
     }
 
     await db.clearFourrieres();
-    await updateClassementMessage(client);
     console.log(`[garages] Classement des fourrières remis à zéro — ${entete}.`);
   } catch (err) {
     console.error('[garages] resetFourrieresHebdo:', (err as Error).message);

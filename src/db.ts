@@ -537,18 +537,30 @@ export async function getTaxe(id: number) {
   return row ? mapTaxe(row) : undefined;
 }
 
+/**
+ * Taxe active ET non expirée pour un type donné, ou undefined — utilisé pour
+ * bloquer la création d'une nouvelle taxe tant qu'une autre du même type est
+ * encore en cours. `actif` (soft-delete) ne suffit pas seul : une taxe
+ * expirée mais pas encore supprimée ne doit PAS bloquer une nouvelle
+ * création, d'où le filtre supplémentaire sur `echeance`.
+ */
+export async function getActiveTaxeByType(type: string) {
+  const row = await prisma.taxe.findFirst({ where: { type, actif: true, echeance: { gt: new Date() } } });
+  return row ? mapTaxe(row) : undefined;
+}
+
 export async function getAllTaxes() {
   const rows = await prisma.taxe.findMany({ where: { actif: true }, orderBy: { echeance: 'asc' } });
   return rows.map(mapTaxe);
 }
 
-/** Taxes actives et expirées, en excluant un type au cycle géré différemment (ex. 'roxwood'). */
-export async function getExpiredTaxes(excludeType: string | null = null) {
+/** Taxes actives et expirées, en excluant les types au cycle géré différemment (ex. les zones). */
+export async function getExpiredTaxes(excludeTypes: string[] = []) {
   const rows = await prisma.taxe.findMany({
     where: {
       actif: true,
       echeance: { lte: new Date() },
-      ...(excludeType ? { type: { not: excludeType } } : {}),
+      ...(excludeTypes.length ? { type: { notIn: excludeTypes } } : {}),
     },
   });
   return rows.map(mapTaxe);

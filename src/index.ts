@@ -68,6 +68,7 @@ async function deployCommands(): Promise<void> {
     ...taxes.getCommands(),
     ...stocks.getCommands(),
     ...ventes.getCommands(),
+    ...garages.getCommands(),
     ...configModule.getCommands(),
   ].map(c => c.data.toJSON());
 
@@ -96,7 +97,6 @@ client.once('clientReady', async (readyClient) => {
   await taxes.initPermanentMessage(client);
   await alertes.initLaboTimers(client);
   await garages.catchUpMissedMessages(client);
-  await garages.updateClassementMessage(client);
 
   // ── CRON : Reset hebdomadaire (dimanche 19h Europe/Paris), auto-réparant ──
   await quotas.checkWeeklyReset(client);
@@ -169,7 +169,6 @@ client.on('messageReactionAdd', async (reaction, user) => {
   if (noDeleteChannels.includes(message.channelId)) return;
 
   if (quotas.isQuotaReminderMessage(message)) return;
-  if (garages.isClassementMessage(message)) return;
 
   if (message.components?.length) return;
 
@@ -193,8 +192,7 @@ client.on('messageCreate', async (message) => {
   if (
     message.author.id === client.user?.id &&
     !noTrashChannels.includes(message.channelId) &&
-    !quotas.isQuotaReminderMessage(message) &&
-    !garages.isClassementMessage(message)
+    !quotas.isQuotaReminderMessage(message)
   ) {
     if (!message.components?.length) message.react('🗑️').catch(() => null);
   }
@@ -220,6 +218,7 @@ client.on('interactionCreate', async (interaction) => {
       if (interaction.commandName === 'adduser') return await ventes.handleAddUserCommand(interaction);
       if (interaction.commandName === 'removeuser') return await ventes.handleRemoveUserCommand(interaction);
       if (interaction.commandName === 'listusers') return await ventes.handleListUsersCommand(interaction);
+      if (interaction.commandName === 'fourrieres') return await garages.handleClassementCommand(interaction);
       return;
     }
 

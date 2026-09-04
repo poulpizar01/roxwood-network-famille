@@ -2,19 +2,37 @@
  * @file src/modules/taxes.ts
  * @description Gestion des taxes et loyers dans le contexte RP (FiveM).
  *
- * Types de taxes supportés : 'roxwood' (zone de vente), 'sporex' (labo Spore
- * X), 'vente' (vente de drogue), 'fertilisant' (récolte). Contrairement à
- * items/activités/quotas, ces 4 types restent fixes dans le code plutôt que
- * configurables via `/config` : chacun a des champs de modal hétérogènes
- * (Roxwood a téléphone + mot de passe, les autres non) — les rendre
- * dynamiques demanderait un moteur de formulaire générique, hors du
- * périmètre de généralisation retenu pour ce projet (items, quotas,
- * cooldowns, types de braquage). Seuls le salon, le rôle d'accès et les
- * échéances sont configurables.
+ * Deux familles de types de taxe, toutes deux fixes dans le code (pas
+ * configurables via `/config` — voir plus bas pourquoi) :
+ *  - Types fixes avec leur propre bouton : 'sporex' (labo Spore X), 'heroine'
+ *    (labo Héroïne), 'vente' (vente de drogue), 'fertilisant' (récolte).
+ *  - Taxes de zone : un seul bouton "Taxe Zone" qui demande d'abord de
+ *    choisir une zone parmi {@link ZONES}, puis affiche le même formulaire
+ *    que les autres types (+ téléphone). Le nom de la zone choisie EST
+ *    directement stocké comme `type` de la taxe (ex. `type: 'Roxwood
+ *    Village'`) — pas de colonne séparée, le regroupement par zone se fait
+ *    entièrement via ce champ, qui sert aussi bien à l'affichage qu'au
+ *    filtrage/recherche par type comme n'importe quel autre type.
+ *
+ * Contrairement à items/activités/quotas, ces types restent fixes dans le
+ * code : chacun a des champs de modal hétérogènes (zone a téléphone + un
+ * choix préalable de zone, les autres non) — les rendre dynamiques
+ * demanderait un moteur de formulaire générique, hors du périmètre de
+ * généralisation retenu pour ce projet (items, quotas, cooldowns, types de
+ * braquage). Seuls le salon, le rôle d'accès et les échéances sont
+ * configurables.
+ *
+ * Une seule taxe active à la fois par type (voir `db.getActiveTaxeByType`,
+ * qui ignore les taxes expirées — seule une taxe encore dans les temps
+ * bloque) — vérifié avant l'ouverture du formulaire ET à sa soumission
+ * (contre une double soumission concurrente entre les deux étapes). Chaque
+ * zone comptant comme un type à part entière, ceci revient à une seule taxe
+ * active par zone.
  *
  * Toute taxe est payée par défaut à sa création ; le cron quotidien
- * `checkExpiredTaxes` alerte pour chaque taxe expirée non-Roxwood (une seule
- * fois par expiration, via `alerte_sent`).
+ * `checkExpiredTaxes` alerte pour chaque taxe expirée hors zones (une seule
+ * fois par expiration, via `alerte_sent`) — les taxes de zone ont un cycle de
+ * renouvellement géré différemment (pas d'alerte automatique).
  */
 import {
   EmbedBuilder,
@@ -37,8 +55,32 @@ import * as configStore from '../config-store';
 
 type Taxe = NonNullable<Awaited<ReturnType<typeof db.getTaxe>>>;
 
-const TYPES_RECHERCHE = ['roxwood', 'sporex', 'vente', 'fertilisant'] as const;
-type TaxeType = (typeof TYPES_RECHERCHE)[number];
+/** Types fixes ayant leur propre bouton de création (hors zones). */
+const FIXED_TYPES = ['sporex', 'heroine', 'vente', 'fertilisant'] as const;
+type FixedType = (typeof FIXED_TYPES)[number];
+
+/** Zones fixes pour les taxes de zone — voir docstring de fichier. */
+const ZONES = ['Roxwood Village', 'Grapeseed Valley', 'Richman', 'Cinéma', 'Hawick', 'Carson'] as const;
+
+/**
+ * Convertit un libellé de zone en clé stable (minuscules, accents retirés,
+ * espaces → underscores) — même convention que les clés d'activité/arme
+ * (voir `slugify` dans src/modules/config.ts). C'est cette clé, pas le
+ * libellé, qui est stockée comme `type` de la taxe.
+ */
+function slugifyZone(zone: string): string {
+  return zone.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, '_');
+}
+
+/** Clé de zone → libellé affiché. */
+const ZONE_BY_KEY = new Map<string, string>(ZONES.map(zone => [slugifyZone(zone), zone]));
+
+/** Types proposés dans les select menus "Rechercher"/"Supprimer une taxe". */
+const TYPES_RECHERCHE: readonly string[] = [...FIXED_TYPES, ...ZONES.map(slugifyZone)];
+
+function isZoneType(type: string): boolean {
+  return ZONE_BY_KEY.has(type);
+}
 
 // ─── AUTO-DELETE HELPERS ──────────────────────────────────────────────────────
 
@@ -70,13 +112,14 @@ function isExpired(echeance: number): boolean {
   return echeance <= Date.now();
 }
 
+/** Libellé affiché pour un type — résout les clés de zone via ZONE_BY_KEY. */
 function typeLabel(type: string): string {
   switch (type) {
-    case 'roxwood': return 'Roxwood';
     case 'sporex': return 'Labo Sporex';
+    case 'heroine': return 'Labo Héroïne';
     case 'vente': return 'Vente';
     case 'fertilisant': return 'Fertilisant';
-    default: return type;
+    default: return ZONE_BY_KEY.get(type) ?? type;
   }
 }
 
@@ -132,13 +175,14 @@ export async function initPermanentMessage(client: Client): Promise<void> {
       .setColor(0xFEE75C)
       .setDescription(
         'Utilisez les boutons ci-dessous pour enregistrer une taxe.\n\n' +
-        '**Roxwood** — zone de vente\n**Fertilisant** — récolte\n**Spore X** — production\n**Vente** — vente de drogue',
+        '**Zone** — zone de vente\n**Fertilisant** — récolte\n**Spore X** — production\n**Héroïne** — production\n**Vente** — vente de drogue',
       );
 
     const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-      new ButtonBuilder().setCustomId('tax_roxwood').setLabel('Taxe Roxwood').setStyle(ButtonStyle.Primary).setEmoji('🏘️'),
+      new ButtonBuilder().setCustomId('tax_zone').setLabel('Taxe Zone').setStyle(ButtonStyle.Primary).setEmoji('🏘️'),
       new ButtonBuilder().setCustomId('tax_fertilisant').setLabel('Taxe Fertilisant').setStyle(ButtonStyle.Primary).setEmoji('🌱'),
       new ButtonBuilder().setCustomId('tax_sporex').setLabel('Taxe Spore X').setStyle(ButtonStyle.Primary).setEmoji('🧪'),
+      new ButtonBuilder().setCustomId('tax_heroine').setLabel('Taxe Héroïne').setStyle(ButtonStyle.Primary).setEmoji('💉'),
       new ButtonBuilder().setCustomId('tax_vente').setLabel('Taxe Vente').setStyle(ButtonStyle.Secondary).setEmoji('💊'),
     );
 
@@ -166,7 +210,7 @@ export async function checkExpiredTaxes(client: Client): Promise<void> {
   const channelId = configStore.get().CHANNELS.alertes_taxes;
   if (!channelId) return;
   try {
-    const expired = await db.getExpiredTaxes('roxwood');
+    const expired = await db.getExpiredTaxes([...ZONES]);
     if (!expired.length) return;
 
     const channel = await client.channels.fetch(channelId).catch(() => null);
@@ -196,14 +240,16 @@ export function getCommands() {
 
 // ─── HANDLER BOUTONS ─────────────────────────────────────────────────────────
 
-function buildCreationModal(type: TaxeType): ModalBuilder {
-  const titres: Record<TaxeType, string> = { roxwood: 'Taxe Roxwood', sporex: 'Taxe Spore X', vente: 'Taxe Vente', fertilisant: 'Taxe Fertilisant' };
+const FIXED_TITLES: Record<FixedType, string> = { sporex: 'Taxe Spore X', heroine: 'Taxe Héroïne', vente: 'Taxe Vente', fertilisant: 'Taxe Fertilisant' };
+
+function buildCreationModal(type: string): ModalBuilder {
+  const title = isZoneType(type) ? `Taxe — ${ZONE_BY_KEY.get(type)}` : FIXED_TITLES[type as FixedType];
   const rows = [
     new ActionRowBuilder<TextInputBuilder>().addComponents(
       new TextInputBuilder().setCustomId('nom').setLabel('Nom du groupe').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(50),
     ),
   ];
-  if (type === 'roxwood') {
+  if (isZoneType(type)) {
     rows.push(new ActionRowBuilder<TextInputBuilder>().addComponents(
       new TextInputBuilder().setCustomId('telephone').setLabel('Téléphone').setStyle(TextInputStyle.Short).setRequired(false).setMaxLength(20),
     ));
@@ -215,14 +261,31 @@ function buildCreationModal(type: TaxeType): ModalBuilder {
     new TextInputBuilder().setCustomId('mot_de_passe').setLabel('Mot de passe').setStyle(TextInputStyle.Short).setRequired(false).setMaxLength(50),
   ));
 
-  return new ModalBuilder().setCustomId(`modal_tax_${type}`).setTitle(titres[type]).addComponents(...rows);
+  return new ModalBuilder().setCustomId(`modal_tax_zone_${type}`).setTitle(title.slice(0, 45)).addComponents(...rows);
 }
 
 export async function handleButton(interaction: ButtonInteraction): Promise<void> {
   const id = interaction.customId;
 
-  if (id === 'tax_roxwood' || id === 'tax_sporex' || id === 'tax_vente' || id === 'tax_fertilisant') {
-    return interaction.showModal(buildCreationModal(id.replace('tax_', '') as TaxeType));
+  if (id === 'tax_sporex' || id === 'tax_heroine' || id === 'tax_vente' || id === 'tax_fertilisant') {
+    const type = id.replace('tax_', '');
+    const existing = await db.getActiveTaxeByType(type);
+    if (existing) {
+      return replyAutoDelete(interaction, `🚫 **${typeLabel(type)}** a déjà une taxe active : **${existing.nom}** (expire le ${formatDate(existing.echeance)}). Supprime-la ou attends son expiration avant d'en créer une nouvelle.`);
+    }
+    return interaction.showModal(buildCreationModal(type));
+  }
+
+  if (id === 'tax_zone') {
+    const select = new StringSelectMenuBuilder()
+      .setCustomId('tax_select_zone_create')
+      .setPlaceholder('Quelle zone ?')
+      .addOptions(ZONES.map(zone => ({ label: zone, value: slugifyZone(zone) })));
+
+    return replyAutoDelete(interaction, {
+      content: '🏘️ Pour quelle zone ?',
+      components: [new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select)],
+    }, { deleteAfterMs: 60_000 });
   }
 
   if (id.startsWith('tax_renew_')) {
@@ -278,12 +341,16 @@ export async function handleButton(interaction: ButtonInteraction): Promise<void
 
 // ─── HANDLER MODALS ───────────────────────────────────────────────────────────
 
-async function handleCreationModal(interaction: ModalSubmitInteraction, type: TaxeType): Promise<void> {
+async function handleCreationModal(interaction: ModalSubmitInteraction, type: string): Promise<void> {
+  if (await db.getActiveTaxeByType(type)) {
+    return replyAutoDelete(interaction, `🚫 **${typeLabel(type)}** a déjà une taxe active — supprime-la ou attends son expiration avant d'en créer une nouvelle.`);
+  }
+
   const nom = interaction.fields.getTextInputValue('nom').trim();
   const jours = parseInt(interaction.fields.getTextInputValue('jours'), 10);
   const mdp = interaction.fields.getTextInputValue('mot_de_passe').trim();
   let tel = '';
-  try { tel = interaction.fields.getTextInputValue('telephone').trim(); } catch { /* absent hors roxwood */ }
+  try { tel = interaction.fields.getTextInputValue('telephone').trim(); } catch { /* absent hors zone */ }
 
   if (isNaN(jours) || jours <= 0) return replyAutoDelete(interaction, '❌ Nombre de jours invalide.');
 
@@ -296,8 +363,12 @@ async function handleCreationModal(interaction: ModalSubmitInteraction, type: Ta
 export async function handleModal(interaction: ModalSubmitInteraction): Promise<void> {
   const id = interaction.customId;
 
-  if (id === 'modal_tax_roxwood' || id === 'modal_tax_sporex' || id === 'modal_tax_vente' || id === 'modal_tax_fertilisant') {
-    return handleCreationModal(interaction, id.replace('modal_tax_', '') as TaxeType);
+  if (id.startsWith('modal_tax_zone_')) {
+    return handleCreationModal(interaction, id.slice('modal_tax_zone_'.length));
+  }
+
+  if (id === 'modal_tax_sporex' || id === 'modal_tax_heroine' || id === 'modal_tax_vente' || id === 'modal_tax_fertilisant') {
+    return handleCreationModal(interaction, id.replace('modal_tax_', ''));
   }
 
   if (id.startsWith('modal_tax_renew_')) {
@@ -310,7 +381,7 @@ export async function handleModal(interaction: ModalSubmitInteraction): Promise<
     if (!newDate) return replyAutoDelete(interaction, '❌ Taxe introuvable.');
 
     const taxe = await db.getTaxe(taxeId);
-    if (taxe?.type === 'roxwood') await db.setTaxePaye(taxeId, true);
+    if (taxe && isZoneType(taxe.type)) await db.setTaxePaye(taxeId, true);
 
     return replyAutoDelete(interaction, `✅ Taxe renouvelée jusqu'au **${formatDate(newDate)}**.`);
   }
@@ -352,6 +423,18 @@ export async function handleModal(interaction: ModalSubmitInteraction): Promise<
 // ─── HANDLER SELECT MENUS ─────────────────────────────────────────────────────
 
 export async function handleSelect(interaction: StringSelectMenuInteraction): Promise<void> {
+  if (interaction.customId === 'tax_select_zone_create') {
+    const zoneKey = interaction.values[0];
+    const existing = await db.getActiveTaxeByType(zoneKey);
+    if (existing) {
+      return updateAutoDelete(interaction, {
+        content: `🚫 **${ZONE_BY_KEY.get(zoneKey)}** a déjà une taxe active : **${existing.nom}** (expire le ${formatDate(existing.echeance)}). Supprime-la ou attends son expiration avant d'en créer une nouvelle.`,
+        components: [],
+      });
+    }
+    return interaction.showModal(buildCreationModal(zoneKey));
+  }
+
   if (interaction.customId === 'tax_select_supprimer_resultat') {
     const taxeId = parseInt(interaction.values[0], 10);
     const taxe = await db.getTaxe(taxeId);
@@ -362,7 +445,7 @@ export async function handleSelect(interaction: StringSelectMenuInteraction): Pr
 
   if (interaction.customId === 'tax_select_supprimer_type' || interaction.customId === 'tax_select_rechercher_type') {
     const forSuppression = interaction.customId === 'tax_select_supprimer_type';
-    const type = interaction.values[0] as TaxeType;
+    const type = interaction.values[0];
     if (!TYPES_RECHERCHE.includes(type)) return updateAutoDelete(interaction, { content: '❌ Type invalide.', components: [] });
 
     const modal = new ModalBuilder()
