@@ -146,8 +146,7 @@ async function parseAndApply(line: string, log = false): Promise<StockEntry | fa
 
   const action: 'retire' | 'depose' = retireMatch ? 'retire' : 'depose';
   const delta = retireMatch ? -quantite : quantite;
-  const stockAvant = await db.getStock(item);
-  const stockApres = await db.updateStock(item, delta);
+  const { avant: stockAvant, apres: stockApres } = await db.applyStockDelta(item, delta);
 
   const entry: StockEntry = { joueur, action, item, quantite, stock_avant: stockAvant, stock_apres: stockApres };
 

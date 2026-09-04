@@ -25,11 +25,10 @@ import {
   type ButtonInteraction,
   type StringSelectMenuInteraction,
   type ModalSubmitInteraction,
-  type RepliableInteraction,
-  type InteractionReplyOptions,
 } from 'discord.js';
 import * as db from '../db';
 import * as configStore from '../config-store';
+import { replyAutoDelete, updateAutoDelete } from '../interaction-helpers';
 
 /** Types d'armes proposés à l'ajout — liste fixe (voir docstring de fichier). */
 const ARME_TYPES: Array<{ key: string; label: string }> = [
@@ -39,22 +38,6 @@ const ARME_TYPES: Array<{ key: string; label: string }> = [
 /** Plafonds indicatifs hebdomadaires de munitions — valeurs fixes, ne bougent jamais. */
 const MUNITIONS_FABRICATION_QUOTA_HEBDO = 5000;
 const MUNITIONS_VENTE_QUOTA_HEBDO = 5000;
-
-// ─── AUTO-DELETE HELPERS ──────────────────────────────────────────────────────
-
-async function replyAutoDelete(interaction: RepliableInteraction, payload: string | InteractionReplyOptions, options: { deleteAfterMs?: number } = {}): Promise<void> {
-  const p: InteractionReplyOptions = typeof payload === 'string' ? { content: payload } : payload;
-  await interaction.reply({ ...p, withResponse: true });
-  if (options.deleteAfterMs && options.deleteAfterMs > 0) {
-    setTimeout(() => { interaction.deleteReply().catch(() => null); }, options.deleteAfterMs);
-  }
-}
-
-async function updateAutoDelete(interaction: StringSelectMenuInteraction, payload: string | { content: string; components: unknown[] }): Promise<void> {
-  const p = typeof payload === 'string' ? { content: payload } : payload;
-  // @ts-expect-error components typing narrowed loosely on purpose (kept minimal, mirrors payload shape used at call sites)
-  await interaction.update(p);
-}
 
 // ─── STATUT LABELS ───────────────────────────────────────────────────────────
 

@@ -158,11 +158,31 @@ export async function getStock(item: string): Promise<number> {
   return row ? row.quantite : 0;
 }
 
+/**
+ * Applique un delta au stock d'un item de façon atomique (une seule requête
+ * SQL — upsert + valeur précédente lue dans la même instruction), et retourne
+ * les quantités avant/après. Deux mouvements concurrents sur le même item
+ * (ex. deux retraits de coffre détectés à quelques ms d'intervalle) ne
+ * peuvent donc pas s'écraser l'un l'autre comme le ferait un
+ * lire-puis-écrire en deux requêtes séparées.
+ */
+export async function applyStockDelta(item: string, delta: number): Promise<{ avant: number; apres: number }> {
+  const key = item.toLowerCase();
+  const rows = await prisma.$queryRaw<Array<{ avant: number; apres: number }>>`
+    WITH prev AS (
+      SELECT quantite FROM stocks WHERE item = ${key}
+    ), upserted AS (
+      INSERT INTO stocks (item, quantite) VALUES (${key}, GREATEST(${delta}, 0))
+      ON CONFLICT (item) DO UPDATE SET quantite = GREATEST(stocks.quantite + ${delta}, 0)
+      RETURNING quantite
+    )
+    SELECT COALESCE((SELECT quantite FROM prev), 0)::int AS avant, (SELECT quantite FROM upserted)::int AS apres
+  `;
+  return { avant: rows[0]?.avant ?? 0, apres: rows[0]?.apres ?? 0 };
+}
+
 export async function updateStock(item: string, delta: number): Promise<number> {
-  const current = await getStock(item);
-  const newQty = Math.max(0, current + delta);
-  await setStock(item, newQty);
-  return newQty;
+  return (await applyStockDelta(item, delta)).apres;
 }
 
 export async function setStock(item: string, qty: number): Promise<void> {
@@ -286,6 +306,11 @@ export async function getUserStats(userId: string) {
   return prisma.stat.findMany({ where: { userId } });
 }
 
+/** Toutes les lignes de stats, tous joueurs confondus, en une seule requête — voir quotas.getAllUserQuotaSummaries (évite un N+1 sur /listquota, le classement et la paie hebdomadaire). */
+export async function getAllStats() {
+  return prisma.stat.findMany();
+}
+
 export async function getUserStatMap(userId: string): Promise<Record<string, { count: number; points: number }>> {
   const rows = await getUserStats(userId);
   const map: Record<string, { count: number; points: number }> = {};
@@ -364,11 +389,6 @@ export async function getMunitionsVentesHistorique(limite = 15) {
     select: { timestamp: true, quantite: true, acheteurId: true, prix: true },
   });
   return rows.map(r => ({ timestamp: toMs(r.timestamp), quantite: r.quantite, acheteur_id: r.acheteurId, prix: r.prix }));
-}
-
-export async function getAllTrackedUserIds(): Promise<string[]> {
-  const rows = await prisma.stat.findMany({ distinct: ['userId'], select: { userId: true } });
-  return rows.map(r => r.userId);
 }
 
 export async function incrementStat(userId: string, action: string, countDelta = 1, pointsDelta = 0): Promise<void> {
@@ -450,6 +470,18 @@ export async function getOldestBraquage(action: string): Promise<number | null> 
     orderBy: { timestamp: 'asc' },
   });
   return row ? toMs(row.timestamp) : null;
+}
+
+/**
+ * Supprime l'entrée de braquage la plus récente pour (userId, action), pour
+ * libérer le slot hebdomadaire qu'elle consommait — utilisé par `/supp`
+ * quand la transaction annulée est un braquage. Les entrées de `braquages`
+ * n'étant pas liées à une transaction précise, on cible la plus récente :
+ * `/supp` corrige presque toujours une erreur juste après coup.
+ */
+export async function removeMostRecentBraquage(userId: string, action: string): Promise<void> {
+  const row = await prisma.braquage.findFirst({ where: { userId, action }, orderBy: { timestamp: 'desc' } });
+  if (row) await prisma.braquage.delete({ where: { id: row.id } });
 }
 
 // ─── TAXES ───────────────────────────────────────────────────────────────────
@@ -651,9 +683,16 @@ export async function getPendingSaleRepose(joueur: string, item: string, since: 
   return row ? mapPendingSale(row) : undefined;
 }
 
+/**
+ * Ventes en attente d'une action pour la confirmer, plus vieilles que
+ * `before` — inclut 'en_attente' (rien déclaré) mais aussi 'declare' et
+ * 'repose' : une vente déclarée dont le dépôt d'argent n'arrive jamais (ou
+ * reposée dont le redépôt n'arrive jamais) reste sinon bloquée indéfiniment,
+ * son message affichant "en attente" sans plus aucun bouton pour agir dessus.
+ */
 export async function getExpiredPendingSales(before: number) {
   const rows = await prisma.pendingSale.findMany({
-    where: { statut: 'en_attente', timestamp: { lt: new Date(before) }, messageId: { not: null } },
+    where: { statut: { in: ['en_attente', 'declare', 'repose'] }, timestamp: { lt: new Date(before) }, messageId: { not: null } },
   });
   return rows.map(mapPendingSale);
 }

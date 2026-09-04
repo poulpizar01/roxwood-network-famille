@@ -50,8 +50,6 @@ import {
   type UserSelectMenuInteraction,
   type StringSelectMenuInteraction,
   type ChatInputCommandInteraction,
-  type RepliableInteraction,
-  type InteractionReplyOptions,
 } from 'discord.js';
 import * as db from '../db';
 import * as configStore from '../config-store';
@@ -59,6 +57,7 @@ import type { ActivityTypeConfig } from '../config-store';
 import * as alertes from './alertes';
 import * as garages from './garages';
 import { isAdmin } from '../permissions';
+import { replyAutoDelete, updateAutoDelete } from '../interaction-helpers';
 
 const pendingLaboParticipants = new Map<string, string[]>();
 
@@ -94,43 +93,47 @@ function capitalize(s: string): string {
   return s.length ? s[0].toUpperCase() + s.slice(1) : s;
 }
 
-/**
- * Résumé de quota d'un joueur : une somme par catégorie de quota (dérivée de
- * `ACTIVITY_TYPES[*].quotaType`), plus la carte brute de toutes ses stats.
- */
-async function getUserQuotaSummary(userId: string): Promise<{ byQuotaType: Record<string, number>; map: Record<string, { count: number; points: number }> }> {
-  const map = await db.getUserStatMap(userId);
+type QuotaSummary = { byQuotaType: Record<string, number>; map: Record<string, { count: number; points: number }> };
+
+/** Dérive la somme par catégorie de quota (`ACTIVITY_TYPES[*].quotaType`) à partir d'une carte de stats déjà chargée. */
+function summarizeByQuotaType(map: Record<string, { count: number; points: number }>): Record<string, number> {
   const activityTypes = configStore.get().ACTIVITY_TYPES;
   const byQuotaType: Record<string, number> = {};
   for (const [key, cfg] of Object.entries(activityTypes)) {
     if (!cfg.quotaType) continue;
     byQuotaType[cfg.quotaType] = (byQuotaType[cfg.quotaType] ?? 0) + (map[key]?.count || 0);
   }
-  return { byQuotaType, map };
+  return byQuotaType;
 }
 
-// ─── AUTO-DELETE HELPERS ──────────────────────────────────────────────────────
+/**
+ * Résumé de quota d'un joueur : une somme par catégorie de quota, plus la
+ * carte brute de toutes ses stats. Pour un seul joueur (vue "Mon Quota"/"Ma
+ * Paie") — pour tous les joueurs suivis à la fois, voir
+ * `getAllUserQuotaSummaries` (une seule requête au lieu d'une par joueur).
+ */
+async function getUserQuotaSummary(userId: string): Promise<QuotaSummary> {
+  const map = await db.getUserStatMap(userId);
+  return { byQuotaType: summarizeByQuotaType(map), map };
+}
 
-async function replyAutoDelete(
-  interaction: RepliableInteraction,
-  payload: string | InteractionReplyOptions,
-  options: { deleteAfterMs?: number } = {},
-): Promise<void> {
-  const p: InteractionReplyOptions = typeof payload === 'string' ? { content: payload } : payload;
-  const { resource } = await interaction.reply({ ...p, withResponse: true });
-  const message = resource?.message;
-
-  if (!p.components?.length) message?.react('🗑️').catch(() => null);
-
-  if (options.deleteAfterMs && options.deleteAfterMs > 0 && message) {
-    setTimeout(() => { message.delete().catch(() => null); }, options.deleteAfterMs);
+/**
+ * Même résumé que `getUserQuotaSummary`, mais pour tous les joueurs suivis en
+ * une seule requête DB (`db.getAllStats()`, groupée en mémoire) — utilisé par
+ * `/listquota`, le classement de groupe et la paie hebdomadaire pour éviter
+ * une requête par joueur (N+1).
+ */
+async function getAllUserQuotaSummaries(): Promise<Map<string, QuotaSummary>> {
+  const rows = await db.getAllStats();
+  const statMaps = new Map<string, Record<string, { count: number; points: number }>>();
+  for (const r of rows) {
+    const m = statMaps.get(r.userId) ?? {};
+    m[r.action] = { count: r.count, points: r.points };
+    statMaps.set(r.userId, m);
   }
-}
-
-async function updateAutoDelete(interaction: UserSelectMenuInteraction, payload: string | { content: string; components: unknown[] }): Promise<void> {
-  const p = typeof payload === 'string' ? { content: payload } : payload;
-  // @ts-expect-error components typing narrowed loosely on purpose (kept minimal, mirrors payload shape used at call sites)
-  await interaction.update(p);
+  const result = new Map<string, QuotaSummary>();
+  for (const [userId, map] of statMaps) result.set(userId, { byQuotaType: summarizeByQuotaType(map), map });
+  return result;
 }
 
 // ─── EMBEDS ───────────────────────────────────────────────────────────────────
@@ -215,10 +218,9 @@ function computeSalaire(byQuotaType: Record<string, number>, rates: Record<strin
  */
 async function getSalaryRanking(): Promise<Array<{ userId: string; salaire: number; byQuotaType: Record<string, number> }>> {
   const rates = configStore.get().SALARY_RATES;
-  const userIds = await db.getAllTrackedUserIds();
+  const summaries = await getAllUserQuotaSummaries();
   const results: Array<{ userId: string; salaire: number; byQuotaType: Record<string, number> }> = [];
-  for (const userId of userIds) {
-    const { byQuotaType } = await getUserQuotaSummary(userId);
+  for (const [userId, { byQuotaType }] of summaries) {
     const salaire = computeSalaire(byQuotaType, rates);
     if (salaire > 0) results.push({ userId, salaire, byQuotaType });
   }
@@ -743,6 +745,10 @@ export async function handleSuppCommand(interaction: ChatInputCommandInteraction
       await db.decrementStat(tx.userId, tx.action, tx.quantite, 0);
     } else if (cfg.labo || cfg.braquageWeeklyLimit) {
       for (const uid of allIds) await db.decrementStat(uid, tx.action, 1, 0);
+      // Le braquage consommait un slot hebdomadaire partagé : le libérer aussi,
+      // sinon le groupe reste bloqué à un slot de moins jusqu'à ce que l'entrée
+      // sorte de la fenêtre glissante de 7 jours (voir db.removeMostRecentBraquage).
+      if (cfg.braquageWeeklyLimit) await db.removeMostRecentBraquage(tx.userId, tx.action);
     } else {
       await db.decrementStat(tx.userId, tx.action, 1, 0);
     }
@@ -961,8 +967,8 @@ export async function handleListQuotaCommand(interaction: ChatInputCommandIntera
     return;
   }
 
-  const userIds = await db.getAllTrackedUserIds();
-  if (!userIds.length) {
+  const summaries = await getAllUserQuotaSummaries();
+  if (!summaries.size) {
     await interaction.reply({ content: '❌ Aucune activité enregistrée.', flags: MessageFlags.Ephemeral });
     return;
   }
@@ -971,8 +977,7 @@ export async function handleListQuotaCommand(interaction: ChatInputCommandIntera
   const guild = interaction.guild;
 
   const rows: Array<{ userId: string; byQuotaType: Record<string, number>; complete: boolean; name: string; venteCount: number }> = [];
-  for (const userId of userIds) {
-    const { byQuotaType, map } = await getUserQuotaSummary(userId);
+  for (const [userId, { byQuotaType, map }] of summaries) {
     const complete = Object.entries(targets).every(([qt, target]) => (byQuotaType[qt] ?? 0) >= target);
     const member = guild ? await guild.members.fetch(userId).catch(() => null) : null;
     rows.push({ userId, byQuotaType, complete, name: member?.displayName || `<@${userId}>`, venteCount: map['vente']?.count || 0 });

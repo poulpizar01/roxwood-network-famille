@@ -47,11 +47,10 @@ import {
   type ButtonInteraction,
   type ModalSubmitInteraction,
   type StringSelectMenuInteraction,
-  type RepliableInteraction,
-  type InteractionReplyOptions,
 } from 'discord.js';
 import * as db from '../db';
 import * as configStore from '../config-store';
+import { replyAutoDelete, updateAutoDelete } from '../interaction-helpers';
 
 type Taxe = NonNullable<Awaited<ReturnType<typeof db.getTaxe>>>;
 
@@ -64,9 +63,8 @@ const ZONES = ['Roxwood Village', 'Grapeseed Valley', 'Richman', 'Cinéma', 'Haw
 
 /**
  * Convertit un libellé de zone en clé stable (minuscules, accents retirés,
- * espaces → underscores) — même convention que les clés d'activité/arme
- * (voir `slugify` dans src/modules/config.ts). C'est cette clé, pas le
- * libellé, qui est stockée comme `type` de la taxe.
+ * espaces → underscores). C'est cette clé, pas le libellé, qui est stockée
+ * comme `type` de la taxe.
  */
 function slugifyZone(zone: string): string {
   return zone.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, '_');
@@ -80,22 +78,6 @@ const TYPES_RECHERCHE: readonly string[] = [...FIXED_TYPES, ...ZONES.map(slugify
 
 function isZoneType(type: string): boolean {
   return ZONE_BY_KEY.has(type);
-}
-
-// ─── AUTO-DELETE HELPERS ──────────────────────────────────────────────────────
-
-async function replyAutoDelete(interaction: RepliableInteraction, payload: string | InteractionReplyOptions, options: { deleteAfterMs?: number } = {}): Promise<void> {
-  const p: InteractionReplyOptions = typeof payload === 'string' ? { content: payload } : payload;
-  const { resource } = await interaction.reply({ ...p, withResponse: true });
-  const message = resource?.message;
-  if (options.deleteAfterMs && options.deleteAfterMs > 0 && message) {
-    setTimeout(() => { message.delete().catch(() => null); }, options.deleteAfterMs);
-  }
-}
-
-async function updateAutoDelete(interaction: StringSelectMenuInteraction, payload: string | Record<string, unknown>): Promise<void> {
-  const p = typeof payload === 'string' ? { content: payload } : payload;
-  await interaction.update(p as Parameters<StringSelectMenuInteraction['update']>[0]);
 }
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
@@ -210,7 +192,7 @@ export async function checkExpiredTaxes(client: Client): Promise<void> {
   const channelId = configStore.get().CHANNELS.alertes_taxes;
   if (!channelId) return;
   try {
-    const expired = await db.getExpiredTaxes([...ZONES]);
+    const expired = await db.getExpiredTaxes(ZONES.map(slugifyZone));
     if (!expired.length) return;
 
     const channel = await client.channels.fetch(channelId).catch(() => null);
@@ -261,7 +243,7 @@ function buildCreationModal(type: string): ModalBuilder {
     new TextInputBuilder().setCustomId('mot_de_passe').setLabel('Mot de passe').setStyle(TextInputStyle.Short).setRequired(false).setMaxLength(50),
   ));
 
-  return new ModalBuilder().setCustomId(`modal_tax_zone_${type}`).setTitle(title.slice(0, 45)).addComponents(...rows);
+  return new ModalBuilder().setCustomId(`modal_tax_create_${type}`).setTitle(title.slice(0, 45)).addComponents(...rows);
 }
 
 export async function handleButton(interaction: ButtonInteraction): Promise<void> {
@@ -363,12 +345,8 @@ async function handleCreationModal(interaction: ModalSubmitInteraction, type: st
 export async function handleModal(interaction: ModalSubmitInteraction): Promise<void> {
   const id = interaction.customId;
 
-  if (id.startsWith('modal_tax_zone_')) {
-    return handleCreationModal(interaction, id.slice('modal_tax_zone_'.length));
-  }
-
-  if (id === 'modal_tax_sporex' || id === 'modal_tax_heroine' || id === 'modal_tax_vente' || id === 'modal_tax_fertilisant') {
-    return handleCreationModal(interaction, id.replace('modal_tax_', ''));
+  if (id.startsWith('modal_tax_create_')) {
+    return handleCreationModal(interaction, id.slice('modal_tax_create_'.length));
   }
 
   if (id.startsWith('modal_tax_renew_')) {
