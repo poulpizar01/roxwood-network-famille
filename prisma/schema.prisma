@@ -17,11 +17,39 @@ datasource db {
 
 // ═══ CONFIGURATION (pilotée par /config, lue par src/config-store.ts) ═══
 
+/// Scalaires de config (salaire par vente, plafonds munitions, amende
+/// fourrière...) — pas de table dédiée pour une poignée de nombres nommés.
+/// Les salons et rôles Discord, eux, ont leurs propres tables ci-dessous
+/// (Channel/DiscordRole) plutôt que ce KV générique : un salon comme
+/// `logs_coffres` peut désigner plusieurs salons à la fois, ce qu'une simple
+/// paire clé/valeur ne représente pas proprement.
 model Setting {
   key   String @id
   value String
 
   @@map("settings")
+}
+
+/// Association rôle fonctionnel du bot → salon(s) Discord, pilotée par
+/// `/config channel`. Une ligne par salon assigné à un rôle : la plupart des
+/// rôles (stock_general, quotas, armurerie...) n'ont qu'une seule ligne,
+/// mais `logs_coffres` peut en avoir plusieurs (tous les salons de logs de
+/// coffre surveillés) — même table, pas de cas spécial.
+model Channel {
+  role      String
+  channelId String @map("channel_id")
+
+  @@id([role, channelId])
+  @@map("channels")
+}
+
+/// Association usage du bot → rôle Discord ('admin' : commandes sensibles ;
+/// 'taxes' : accès back-office taxes), pilotée par `/config role`.
+model DiscordRole {
+  target String @id
+  roleId String @map("role_id")
+
+  @@map("discord_roles")
 }
 
 /// Items de coffre suivis. Le nom doit correspondre exactement (accents,

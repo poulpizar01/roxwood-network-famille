@@ -212,20 +212,17 @@ async function handleChannel(interaction: ChatInputCommandInteraction, sub: stri
   if (sub === 'set') {
     const role = interaction.options.getString('role', true);
     const salon = interaction.options.getChannel('salon', true);
-    await db.setSetting(`channel:${role}`, salon.id);
-    await configStore.reload();
+    await configStore.mutate(() => db.setChannelRole(role, salon.id));
     await interaction.reply({ content: `✅ Salon **${role}** → <#${salon.id}>`, flags: MessageFlags.Ephemeral });
     return;
   }
   if (sub === 'add-log-coffre' || sub === 'remove-log-coffre') {
     const salon = interaction.options.getChannel('salon', true);
-    const current = configStore.get().CHANNELS.logs_coffres;
-    const next = sub === 'add-log-coffre'
-      ? [...new Set([...current, salon.id])]
-      : current.filter(id => id !== salon.id);
-    await db.setSetting('channel:logs_coffres', JSON.stringify(next));
-    await configStore.reload();
-    await interaction.reply({ content: `✅ Logs de coffre : ${next.length} salon(s) surveillé(s).`, flags: MessageFlags.Ephemeral });
+    await configStore.mutate(() => sub === 'add-log-coffre'
+      ? db.addChannelToRole('logs_coffres', salon.id)
+      : db.removeChannelFromRole('logs_coffres', salon.id));
+    const total = configStore.get().CHANNELS.logs_coffres.length;
+    await interaction.reply({ content: `✅ Logs de coffre : ${total} salon(s) surveillé(s).`, flags: MessageFlags.Ephemeral });
     return;
   }
   if (sub === 'list') {
@@ -241,8 +238,7 @@ async function handleRole(interaction: ChatInputCommandInteraction, sub: string)
   if (sub === 'set') {
     const cible = interaction.options.getString('cible', true);
     const role = interaction.options.getRole('role', true);
-    await db.setSetting(`role:${cible}`, role.id);
-    await configStore.reload();
+    await configStore.mutate(() => db.setDiscordRole(cible, role.id));
     await interaction.reply({ content: `✅ Rôle **${cible}** → <@&${role.id}>`, flags: MessageFlags.Ephemeral });
     return;
   }
@@ -263,15 +259,13 @@ async function handleItem(interaction: ChatInputCommandInteraction, sub: string)
     const vente = interaction.options.getBoolean('vente') ?? false;
     const paiement = interaction.options.getBoolean('paiement') ?? false;
     const groupe = interaction.options.getString('groupe');
-    await db.upsertItem({ name: nom, stock_group: groupe, vente, vente_paiement: paiement });
-    await configStore.reload();
+    await configStore.mutate(() => db.upsertItem({ name: nom, stock_group: groupe, vente, vente_paiement: paiement }));
     await interaction.reply({ content: `✅ Item **${nom}** enregistré${groupe ? ` (groupe : ${groupe})` : ''}${vente ? ' — vente' : ''}${paiement ? ' — paiement' : ''}.`, flags: MessageFlags.Ephemeral });
     return;
   }
   if (sub === 'remove') {
     const nom = interaction.options.getString('nom', true);
-    await db.deleteItem(nom);
-    await configStore.reload();
+    await configStore.mutate(() => db.deleteItem(nom));
     await interaction.reply({ content: `✅ Item **${nom}** retiré.`, flags: MessageFlags.Ephemeral });
     return;
   }
@@ -308,7 +302,7 @@ async function handleActivite(interaction: ChatInputCommandInteraction, sub: str
       await interaction.reply({ content: '❌ Clé invalide.', flags: MessageFlags.Ephemeral });
       return;
     }
-    await db.upsertActivityType({
+    await configStore.mutate(() => db.upsertActivityType({
       key: cle, label, quota_type: quotaType,
       cooldown_ms: cooldownHeures != null ? Math.round(cooldownHeures * 3_600_000) : null,
       partners: partenaires,
@@ -317,15 +311,13 @@ async function handleActivite(interaction: ChatInputCommandInteraction, sub: str
       labo_channel_id: laboSalon?.id ?? null,
       quantity: quantite,
       panel_button: !sansBouton,
-    });
-    await configStore.reload();
+    }));
     await interaction.reply({ content: `✅ Activité **${cle}** (${label}) enregistrée.`, flags: MessageFlags.Ephemeral });
     return;
   }
   if (sub === 'remove') {
     const cle = interaction.options.getString('cle', true);
-    await db.deleteActivityType(cle);
-    await configStore.reload();
+    await configStore.mutate(() => db.deleteActivityType(cle));
     await interaction.reply({ content: `✅ Activité **${cle}** retirée.`, flags: MessageFlags.Ephemeral });
     return;
   }
@@ -355,15 +347,13 @@ async function handleQuota(interaction: ChatInputCommandInteraction, sub: string
   if (sub === 'set') {
     const quotaType = interaction.options.getString('quota_type', true);
     const valeur = interaction.options.getInteger('valeur', true);
-    await db.setQuotaTarget(quotaType, valeur);
-    await configStore.reload();
+    await configStore.mutate(() => db.setQuotaTarget(quotaType, valeur));
     await interaction.reply({ content: `✅ Objectif **${quotaType}** → ${valeur}/semaine.`, flags: MessageFlags.Ephemeral });
     return;
   }
   if (sub === 'remove') {
     const quotaType = interaction.options.getString('quota_type', true);
-    await db.deleteQuotaTarget(quotaType);
-    await configStore.reload();
+    await configStore.mutate(() => db.deleteQuotaTarget(quotaType));
     await interaction.reply({ content: `✅ Objectif **${quotaType}** retiré.`, flags: MessageFlags.Ephemeral });
     return;
   }
@@ -387,15 +377,13 @@ async function handleArme(interaction: ChatInputCommandInteraction, sub: string)
       await interaction.reply({ content: '❌ Clé invalide.', flags: MessageFlags.Ephemeral });
       return;
     }
-    await db.upsertArmeType({ key: cle, label });
-    await configStore.reload();
+    await configStore.mutate(() => db.upsertArmeType({ key: cle, label }));
     await interaction.reply({ content: `✅ Type d'arme **${label}** enregistré.`, flags: MessageFlags.Ephemeral });
     return;
   }
   if (sub === 'remove') {
     const cle = interaction.options.getString('cle', true);
-    await db.deleteArmeType(cle);
-    await configStore.reload();
+    await configStore.mutate(() => db.deleteArmeType(cle));
     await interaction.reply({ content: `✅ Type d'arme **${cle}** retiré.`, flags: MessageFlags.Ephemeral });
     return;
   }
@@ -413,8 +401,7 @@ async function handleArme(interaction: ChatInputCommandInteraction, sub: string)
 async function handleSalaire(interaction: ChatInputCommandInteraction, sub: string): Promise<void> {
   if (sub === 'set') {
     const valeur = interaction.options.getNumber('valeur', true);
-    await db.setSetting('salaire_par_vente', valeur);
-    await configStore.reload();
+    await configStore.mutate(() => db.setSetting('salaire_par_vente', valeur));
     await interaction.reply({ content: `✅ Salaire par vente → ${valeur}$.`, flags: MessageFlags.Ephemeral });
   }
 }
@@ -422,8 +409,7 @@ async function handleSalaire(interaction: ChatInputCommandInteraction, sub: stri
 async function handleFourriere(interaction: ChatInputCommandInteraction, sub: string): Promise<void> {
   if (sub === 'set') {
     const valeur = interaction.options.getInteger('valeur', true);
-    await db.setSetting('fourriere_montant', valeur);
-    await configStore.reload();
+    await configStore.mutate(() => db.setSetting('fourriere_montant', valeur));
     await interaction.reply({ content: `✅ Amende de fourrière → ${valeur}$.`, flags: MessageFlags.Ephemeral });
   }
 }
@@ -432,8 +418,7 @@ async function handleMunitions(interaction: ChatInputCommandInteraction, sub: st
   if (sub === 'set') {
     const type = interaction.options.getString('type', true);
     const valeur = interaction.options.getInteger('valeur', true);
-    await db.setSetting(`munitions_${type}_quota_hebdo`, valeur);
-    await configStore.reload();
+    await configStore.mutate(() => db.setSetting(`munitions_${type}_quota_hebdo`, valeur));
     await interaction.reply({ content: `✅ Plafond munitions (${type}) → ${valeur}/semaine.`, flags: MessageFlags.Ephemeral });
   }
 }

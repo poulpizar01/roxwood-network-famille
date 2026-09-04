@@ -16,6 +16,8 @@ Notes de conventions et de pièges pour un agent Claude Code reprenant ce projet
 
 Toute la configuration métier (items, activités, quotas, salons, rôles…) vit en base et se pilote via `/config` (voir `src/modules/config.ts`), **jamais** dans un fichier de code. `config-store.ts` maintient un cache en mémoire rechargé par `configStore.reload()` à chaque écriture `/config` — toujours utiliser `configStore.get()` (jamais mettre son résultat en cache dans une variable de module chargée une seule fois, sinon les changements de config ne seraient visibles qu'après redémarrage).
 
+Toute écriture de config passe par `configStore.mutate(() => db.xxx(...))` plutôt que par `db.xxx(...)` suivi d'un `configStore.reload()` manuel — `mutate()` recharge systématiquement après coup, donc impossible d'oublier le reload en ajoutant une nouvelle sous-commande `/config`.
+
 `/config item add <nom>` doit correspondre **exactement** (accents, casse) à ce qu'écrit le bot de jeu FiveM dans les logs de coffre. Tout item absent de la liste est **silencieusement ignoré** — pas d'erreur, pas de warning, juste des mouvements de stock qui n'apparaissent jamais. C'est la source de bug la plus fréquente sur ce type de projet.
 
 **Ne jamais deviner/renommer un nom d'item sans vérification.** Avant tout ajout, aller lire les vrais logs récents du salon coffre concerné pour confirmer l'orthographe exacte utilisée en jeu (voir « Scripts d'investigation » ci-dessous).

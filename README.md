@@ -116,7 +116,7 @@ Un retrait de coffre sur un item marqué `vente: true` crée une vente en attent
 
 PostgreSQL via [Prisma](https://www.prisma.io/) (`prisma/schema.prisma`). Voir `npx prisma studio` pour explorer les données, `npx prisma migrate dev` pour appliquer une évolution de schéma en développement, `npx prisma migrate deploy` en production.
 
-Tables de configuration (pilotées par `/config`) : `settings`, `items`, `activity_types`, `quota_targets`, `arme_types`.
+Tables de configuration (pilotées par `/config`) : `channels` (rôle fonctionnel → salon(s)), `discord_roles` (admin/taxes → rôle Discord), `items`, `activity_types`, `quota_targets`, `arme_types`, et `settings` pour les scalaires isolés (salaire, plafonds munitions, amende fourrière).
 Tables métier (génériques) : `stocks`, `stock_history`, `transactions`, `stats`, `cooldowns`, `braquages`, `taxes`, `armurerie`, `user_mapping`, `pending_sales`, `vehicules`, `fourrieres`, `munitions_ventes`.
 
 ---

@@ -17,9 +17,8 @@ import { PrismaClient, type Prisma } from '@prisma/client';
 export const prisma = new PrismaClient();
 
 const toMs = (d: Date | null | undefined): number => (d ? d.getTime() : 0);
-const toMsOrNull = (d: Date | null | undefined): number | null => (d ? d.getTime() : null);
 
-// ─── SETTINGS ───────────────────────────────────────────────────────────────
+// ─── SETTINGS (scalaires nommés — voir docstring du modèle Setting) ─────────
 
 export async function getSetting(key: string): Promise<string | null> {
   const row = await prisma.setting.findUnique({ where: { key } });
@@ -38,8 +37,45 @@ export async function deleteSetting(key: string): Promise<void> {
   await prisma.setting.deleteMany({ where: { key } });
 }
 
-export async function getSettingsByPrefix(prefix: string): Promise<Array<{ key: string; value: string }>> {
-  return prisma.setting.findMany({ where: { key: { startsWith: prefix } } });
+// ─── CHANNELS (config) ────────────────────────────────────────────────────────
+
+/** Toutes les associations rôle → salon en une requête (utilisé par config-store.reload()). */
+export async function getAllChannels() {
+  return prisma.channel.findMany();
+}
+
+/** Retourne les salons assignés à un rôle (généralement un seul, sauf 'logs_coffres'). */
+export async function getChannelsByRole(role: string): Promise<string[]> {
+  return (await prisma.channel.findMany({ where: { role } })).map(r => r.channelId);
+}
+
+/** Remplace le(s) salon(s) d'un rôle à valeur unique (stock_general, quotas, ...) par un seul. */
+export async function setChannelRole(role: string, channelId: string): Promise<void> {
+  await prisma.channel.deleteMany({ where: { role } });
+  await prisma.channel.create({ data: { role, channelId } });
+}
+
+/** Ajoute un salon à un rôle à valeurs multiples (ex. 'logs_coffres'), sans toucher aux autres. */
+export async function addChannelToRole(role: string, channelId: string): Promise<void> {
+  await prisma.channel.upsert({
+    where: { role_channelId: { role, channelId } },
+    create: { role, channelId },
+    update: {},
+  });
+}
+
+export async function removeChannelFromRole(role: string, channelId: string): Promise<void> {
+  await prisma.channel.deleteMany({ where: { role, channelId } });
+}
+
+// ─── RÔLES DISCORD (config) ──────────────────────────────────────────────────
+
+export async function setDiscordRole(target: string, roleId: string): Promise<void> {
+  await prisma.discordRole.upsert({ where: { target }, create: { target, roleId }, update: { roleId } });
+}
+
+export async function getAllDiscordRoles() {
+  return prisma.discordRole.findMany();
 }
 
 // ─── ITEMS (config) ─────────────────────────────────────────────────────────

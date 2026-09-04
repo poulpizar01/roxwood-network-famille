@@ -76,15 +76,14 @@ let cache: BotConfig | null = null;
  * avant `client.login()`.
  */
 export async function reload(): Promise<BotConfig> {
-  const settingsChannels = await db.getSettingsByPrefix('channel:');
+  const channelRows = await db.getAllChannels();
   const CHANNELS = { logs_coffres: [] as string[] } as BotConfig['CHANNELS'];
   for (const role of CHANNEL_ROLES) CHANNELS[role] = null;
-  for (const { key, value } of settingsChannels) {
-    const role = key.slice('channel:'.length);
+  for (const { role, channelId } of channelRows) {
     if (role === 'logs_coffres') {
-      try { CHANNELS.logs_coffres = JSON.parse(value); } catch { CHANNELS.logs_coffres = []; }
+      CHANNELS.logs_coffres.push(channelId);
     } else if ((CHANNEL_ROLES as readonly string[]).includes(role)) {
-      CHANNELS[role as ChannelRole] = value;
+      CHANNELS[role as ChannelRole] = channelId;
     }
   }
 
@@ -124,6 +123,16 @@ export async function reload(): Promise<BotConfig> {
 
   const ARME_TYPES = (await db.getAllArmeTypes()).map(r => ({ key: r.key, label: r.label }));
 
+  const rolesByTarget: Record<string, string> = {};
+  for (const r of await db.getAllDiscordRoles()) rolesByTarget[r.target] = r.roleId;
+
+  const [salaire, munFab, munVente, montantFourriere] = await Promise.all([
+    db.getSetting('salaire_par_vente'),
+    db.getSetting('munitions_fabrication_quota_hebdo'),
+    db.getSetting('munitions_vente_quota_hebdo'),
+    db.getSetting('fourriere_montant'),
+  ]);
+
   cache = {
     CHANNELS,
     ALLOWED_ITEMS,
@@ -134,14 +143,26 @@ export async function reload(): Promise<BotConfig> {
     ACTIVITY_TYPES,
     QUOTA_TARGETS,
     ARME_TYPES,
-    ADMIN_ROLE_ID: await db.getSetting('role:admin'),
-    TAXES_ROLE_ID: await db.getSetting('role:taxes'),
-    SALAIRE_PAR_VENTE: Number((await db.getSetting('salaire_par_vente')) || 0),
-    MUNITIONS_FABRICATION_QUOTA_HEBDO: Number((await db.getSetting('munitions_fabrication_quota_hebdo')) || 0),
-    MUNITIONS_VENTE_QUOTA_HEBDO: Number((await db.getSetting('munitions_vente_quota_hebdo')) || 0),
-    MONTANT_FOURRIERE: Number((await db.getSetting('fourriere_montant')) || 350),
+    ADMIN_ROLE_ID: rolesByTarget.admin ?? null,
+    TAXES_ROLE_ID: rolesByTarget.taxes ?? null,
+    SALAIRE_PAR_VENTE: Number(salaire || 0),
+    MUNITIONS_FABRICATION_QUOTA_HEBDO: Number(munFab || 0),
+    MUNITIONS_VENTE_QUOTA_HEBDO: Number(munVente || 0),
+    MONTANT_FOURRIERE: Number(montantFourriere || 350),
   };
   return cache;
+}
+
+/**
+ * Exécute une écriture de configuration puis recharge systématiquement le
+ * cache — structurellement impossible d'oublier `reload()` après une
+ * mutation, contrairement à `db.xxx(); configStore.reload();` répété à la
+ * main dans chaque handler de `/config`.
+ */
+export async function mutate<T>(fn: () => Promise<T>): Promise<T> {
+  const result = await fn();
+  await reload();
+  return result;
 }
 
 /**
