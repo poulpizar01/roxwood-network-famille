@@ -10,6 +10,12 @@
  * plafonds de munitions et le montant de la fourrière (armurerie.ts /
  * garages.ts).
  *
+ * Exception : `type-groupe` fixe QUEL barème s'applique (limites de braquage,
+ * labos accessibles — voir BRAQUAGE_LIMITS_BY_TIER/LABO_TIERS dans
+ * config-store.ts) parmi des barèmes eux-mêmes fixes dans le code — le
+ * niveau d'organisation (Indépendant/Petite Frappe/Gang/Organisation) est ce
+ * qui change réellement dans le temps, pas les chiffres associés à chacun.
+ *
  * Toujours réservée aux administrateurs Discord natifs (permission
  * `Administrator`), et non au rôle `ADMIN_ROLE_ID` configurable par cette
  * même commande — sinon un serveur fraîchement configuré n'aurait aucun
@@ -31,12 +37,15 @@ import {
 } from 'discord.js';
 import * as db from '../db';
 import * as configStore from '../config-store';
+import * as quotas from './quotas';
+import * as stocks from './stocks';
 
 const ROLE_TARGETS = [
   { name: 'Rôle admin (commandes sensibles)', value: 'admin' },
   { name: 'Rôle accès taxes (back-office web)', value: 'taxes' },
 ];
 
+/** Déclare la commande `/config` et tous ses sous-groupes (channel, role, item, quota, salaire, type-groupe). */
 export function getCommands() {
   const cmd = new SlashCommandBuilder()
     .setName('config')
@@ -83,9 +92,12 @@ export function getCommands() {
       .setName('add')
       .setDescription("Ajoute ou remplace un item suivi (orthographe exacte des logs FiveM)")
       .addStringOption(o => o.setName('nom').setDescription("Nom exact tel qu'écrit dans les logs FiveM").setRequired(true))
-      .addBooleanOption(o => o.setName('vente').setDescription('Déclarable en vente de drogue (défaut : non)').setRequired(false))
+      .addBooleanOption(o => o.setName('vente_pnj').setDescription('Déclarable en vente aux PNJ (marché noir) — pas une vente entre joueurs (défaut : non)').setRequired(false))
       .addBooleanOption(o => o.setName('paiement').setDescription('Compte comme paiement de vente (défaut : non)').setRequired(false))
-      .addStringOption(o => o.setName('groupe').setDescription('Libellé de regroupement dans le message de stock (optionnel)').setRequired(false)))
+      .addStringOption(o => o.setName('groupe').setDescription('Libellé de regroupement dans le message de stock (optionnel)').setRequired(false))
+      .addBooleanOption(o => o.setName('stock_general').setDescription('Afficher dans le message Stock Général (défaut : oui — le stock reste suivi même à non)').setRequired(false))
+      .addStringOption(o => o.setName('labo_lie').setDescription("Ce labo produit cet item ? Exclut alors la vente PNJ pour les tiers ayant ce labo actif (optionnel)").setRequired(false)
+        .addChoices(...Object.entries(configStore.get().ACTIVITY_TYPES).filter(([, cfg]) => cfg.labo).map(([key, cfg]) => ({ name: cfg.label, value: key })))))
     .addSubcommand(s => s
       .setName('remove')
       .setDescription('Retire un item suivi')
@@ -123,6 +135,16 @@ export function getCommands() {
       .addStringOption(o => o.setName('quota_type').setDescription('Catégorie de quota').setRequired(true)))
     .addSubcommand(s => s.setName('list').setDescription('Liste les taux de paie configurés')));
 
+  cmd.addSubcommandGroup(g => g
+    .setName('type-groupe')
+    .setDescription("Type d'organisation (fait varier les limites de braquage et les labos accessibles)")
+    .addSubcommand(s => s
+      .setName('set')
+      .setDescription("Définit le type d'organisation actuel")
+      .addStringOption(o => o.setName('tier').setDescription("Type d'organisation").setRequired(true)
+        .addChoices(...configStore.GROUP_TIERS.map(t => ({ name: t.label, value: t.key })))))
+    .addSubcommand(s => s.setName('list').setDescription("Affiche le type actuel et le barème de chaque type")));
+
   return [{ data: cmd }];
 }
 
@@ -137,6 +159,7 @@ function isNativeAdmin(interaction: ChatInputCommandInteraction): boolean {
     interaction.member.permissions.has(PermissionFlagsBits.Administrator));
 }
 
+/** Point d'entrée de `/config` : vérifie la permission `Administrator`, puis route vers le handler du sous-groupe concerné. */
 export async function handleCommand(interaction: ChatInputCommandInteraction): Promise<void> {
   if (!isNativeAdmin(interaction)) {
     await interaction.reply({ content: '❌ Commande réservée aux administrateurs Discord.', flags: MessageFlags.Ephemeral });
@@ -151,8 +174,10 @@ export async function handleCommand(interaction: ChatInputCommandInteraction): P
   if (group === 'item') return handleItem(interaction, sub);
   if (group === 'quota') return handleQuota(interaction, sub);
   if (group === 'salaire') return handleSalaire(interaction, sub);
+  if (group === 'type-groupe') return handleTypeGroupe(interaction, sub);
 }
 
+/** `/config channel set|add-log-coffre|remove-log-coffre|list`. */
 async function handleChannel(interaction: ChatInputCommandInteraction, sub: string): Promise<void> {
   if (sub === 'set') {
     const role = interaction.options.getString('role', true);
@@ -179,6 +204,7 @@ async function handleChannel(interaction: ChatInputCommandInteraction, sub: stri
   }
 }
 
+/** `/config role set|list`. */
 async function handleRole(interaction: ChatInputCommandInteraction, sub: string): Promise<void> {
   if (sub === 'set') {
     const cible = interaction.options.getString('cible', true);
@@ -198,14 +224,18 @@ async function handleRole(interaction: ChatInputCommandInteraction, sub: string)
   }
 }
 
+/** `/config item add|remove|list`. */
 async function handleItem(interaction: ChatInputCommandInteraction, sub: string): Promise<void> {
   if (sub === 'add') {
     const nom = interaction.options.getString('nom', true);
-    const vente = interaction.options.getBoolean('vente') ?? false;
+    const ventePnj = interaction.options.getBoolean('vente_pnj') ?? false;
     const paiement = interaction.options.getBoolean('paiement') ?? false;
     const groupe = interaction.options.getString('groupe');
-    await configStore.mutate(() => db.upsertItem({ name: nom, stock_group: groupe, vente, vente_paiement: paiement }));
-    await interaction.reply({ content: `✅ Item **${nom}** enregistré${groupe ? ` (groupe : ${groupe})` : ''}${vente ? ' — vente' : ''}${paiement ? ' — paiement' : ''}.`, flags: MessageFlags.Ephemeral });
+    const stockGeneral = interaction.options.getBoolean('stock_general') ?? true;
+    const laboLie = interaction.options.getString('labo_lie');
+    await configStore.mutate(() => db.upsertItem({ name: nom, stock_group: groupe, vente: ventePnj, vente_paiement: paiement, visible_stock: stockGeneral, labo_lie: laboLie }));
+    const laboLabel = laboLie ? configStore.get().ACTIVITY_TYPES[laboLie]?.label : null;
+    await interaction.reply({ content: `✅ Item **${nom}** enregistré${groupe ? ` (groupe : ${groupe})` : ''}${ventePnj ? ' — vente PNJ' : ''}${paiement ? ' — paiement' : ''}${!stockGeneral ? ' — masqué du Stock Général (stock toujours suivi)' : ''}${laboLabel ? ` — lié à ${laboLabel}` : ''}.`, flags: MessageFlags.Ephemeral });
     return;
   }
   if (sub === 'remove') {
@@ -222,16 +252,21 @@ async function handleItem(interaction: ChatInputCommandInteraction, sub: string)
       await interaction.reply({ content: 'Aucun item trouvé.', flags: MessageFlags.Ephemeral });
       return;
     }
-    const lines = items.slice(0, 60).map(i => `**${i.name}**${i.stockGroup ? ` _(${i.stockGroup})_` : ''}${i.vente ? ' 💰' : ''}${i.ventePaiement ? ' 🪙' : ''}`);
+    const activityTypes = configStore.get().ACTIVITY_TYPES;
+    const lines = items.slice(0, 60).map(i => {
+      const laboLabel = i.laboLie ? activityTypes[i.laboLie]?.label ?? i.laboLie : null;
+      return `**${i.name}**${i.stockGroup ? ` _(${i.stockGroup})_` : ''}${i.vente ? ' 💰' : ''}${i.ventePaiement ? ' 🪙' : ''}${!i.visibleStock ? ' 🙈' : ''}${laboLabel ? ` 🧪${laboLabel}` : ''}`;
+    });
     const embed = new EmbedBuilder()
       .setTitle(`⚙️ Items suivis (${items.length})`)
       .setDescription(lines.join('\n').slice(0, 4000))
-      .setFooter({ text: '💰 vente · 🪙 paiement' })
+      .setFooter({ text: '💰 vente PNJ · 🪙 paiement · 🙈 masqué du Stock Général · 🧪 lié à un labo (vente PNJ exclue si ce labo est actif pour le tier)' })
       .setColor(0x5865f2);
     await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
   }
 }
 
+/** `/config quota set|remove|list`. */
 async function handleQuota(interaction: ChatInputCommandInteraction, sub: string): Promise<void> {
   if (sub === 'set') {
     const quotaType = interaction.options.getString('quota_type', true);
@@ -258,6 +293,7 @@ async function handleQuota(interaction: ChatInputCommandInteraction, sub: string
   }
 }
 
+/** `/config salaire set|remove|list`. */
 async function handleSalaire(interaction: ChatInputCommandInteraction, sub: string): Promise<void> {
   if (sub === 'set') {
     const quotaType = interaction.options.getString('quota_type', true);
@@ -280,6 +316,41 @@ async function handleSalaire(interaction: ChatInputCommandInteraction, sub: stri
     }
     const lines = rates.map(r => `**${r.quotaType}** : ${r.amount}$/unité`);
     const embed = new EmbedBuilder().setTitle('⚙️ Taux de paie').setDescription(lines.join('\n')).setColor(0x5865f2);
+    await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+  }
+}
+
+/** `/config type-groupe set|list`. */
+async function handleTypeGroupe(interaction: ChatInputCommandInteraction, sub: string): Promise<void> {
+  if (sub === 'set') {
+    const tier = interaction.options.getString('tier', true) as configStore.GroupTier;
+    await configStore.mutate(() => db.setSetting(configStore.TYPE_GROUPE_SETTING_KEY, tier));
+    await quotas.updatePermanentMessage(interaction.client);
+    // Le tier change VENTE_ITEMS/LABO_ITEMS (voir config-store.ts), qui pilotent
+    // les champs "Drogue à vendre"/"Drogue de production" du Stock Général —
+    // sans ce refresh, ce message resterait faux jusqu'au prochain mouvement.
+    await stocks.updateStockMessage(interaction.client);
+    const label = configStore.GROUP_TIERS.find(t => t.key === tier)?.label ?? tier;
+    await interaction.reply({ content: `✅ Type d'organisation → **${label}**. Panneau d'activités et Stock Général mis à jour.`, flags: MessageFlags.Ephemeral });
+    return;
+  }
+  if (sub === 'list') {
+    const current = configStore.get().TYPE_GROUPE;
+    const activityTypes = configStore.get().ACTIVITY_TYPES;
+    const lines = configStore.GROUP_TIERS.map(t => {
+      const braquage = Object.entries(configStore.BRAQUAGE_LIMITS_BY_TIER[t.key])
+        .map(([key, val]) => `${activityTypes[key]?.label ?? key} ${val}`)
+        .join(' · ');
+      const labos = Object.entries(configStore.LABO_TIERS)
+        .filter(([, tiers]) => tiers.includes(t.key))
+        .map(([key]) => activityTypes[key]?.label ?? key);
+      const marker = t.key === current ? '👉 ' : '';
+      return `${marker}**${t.label}**\nBraquages : ${braquage}\nLabos : ${labos.length ? labos.join(', ') : 'aucun'}`;
+    });
+    const embed = new EmbedBuilder()
+      .setTitle("⚙️ Types d'organisation")
+      .setDescription(lines.join('\n\n'))
+      .setColor(0x5865f2);
     await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
   }
 }

@@ -62,6 +62,7 @@ const client = new Client({
 });
 
 // ─── DÉPLOIEMENT DES COMMANDES SLASH ─────────────────────────────────────────
+/** Enregistre auprès de Discord toutes les commandes slash exposées par les modules (appelé une fois au démarrage, après `configStore.reload()`). */
 async function deployCommands(): Promise<void> {
   const commands = [
     ...quotas.getCommands(),
@@ -120,7 +121,7 @@ client.once('clientReady', async (readyClient) => {
   // config-store.ts) plutôt qu'un tableau de clés en dur ici.
   cron.schedule('0 * * * *', async () => {
     const braquageActions = Object.entries(configStore.get().ACTIVITY_TYPES)
-      .filter(([, cfg]) => cfg.braquageWeeklyLimit)
+      .filter(([, cfg]) => cfg.enabled && cfg.braquageWeeklyLimit != null)
       .map(([key]) => key);
     const before: Record<string, number> = {};
     for (const action of braquageActions) before[action] = await db.getBraquageCount(action);

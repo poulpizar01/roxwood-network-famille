@@ -34,7 +34,8 @@ export async function checkExpiredCooldowns(client: Client): Promise<void> {
     if (!channel || !channel.isSendable()) return;
 
     for (const row of expired) {
-      const label = c.ACTIVITY_TYPES[row.action]?.label || row.action;
+      const rowCfg = c.ACTIVITY_TYPES[row.action];
+      const label = rowCfg ? configStore.activityDisplayLabel(rowCfg) : row.action;
       await channel.send({
         content: `<@${row.userId}>`,
         embeds: [
@@ -72,7 +73,7 @@ export async function postBraquageAlert(client: Client, action: string): Promise
 
     const used = await db.getBraquageCount(action);
     const remaining = Math.max(0, limit - used);
-    const label = cfg.label || action;
+    const label = configStore.activityDisplayLabel(cfg);
 
     await channel.send({
       embeds: [
@@ -161,7 +162,11 @@ export async function setLaboStatut(client: Client, laboKey: string, available: 
 export async function initLaboTimers(client: Client): Promise<void> {
   const activityTypes = configStore.get().ACTIVITY_TYPES;
   for (const [laboKey, cfg] of Object.entries(activityTypes)) {
-    if (!cfg.labo) continue;
+    // `enabled` : un labo hors du barème du tier courant (voir
+    // config-store.ts) ne doit pas voir son salon géré (renommage
+    // rouge/vert) même si un timer avait été laissé en base par un tier
+    // précédent.
+    if (!cfg.labo || !cfg.enabled) continue;
     const stored = await db.getSetting(`labo_end_${laboKey}`);
     const endsAt = stored ? parseInt(stored, 10) : 0;
     const remaining = endsAt - Date.now();

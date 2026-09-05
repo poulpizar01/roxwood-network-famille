@@ -12,6 +12,11 @@
 import { PermissionFlagsBits, type GuildMember, type APIInteractionGuildMember } from 'discord.js';
 import * as configStore from './config-store';
 
+/**
+ * Vrai si `member` a la permission Discord native `Administrator`, ou le rôle configuré via `/config role set admin`.
+ * @param member Membre Discord de l'interaction (ou `null` en DM/hors guilde).
+ * @returns `false` si `member` est `null` ou n'a ni la permission ni le rôle.
+ */
 export function isAdmin(member: GuildMember | APIInteractionGuildMember | null): boolean {
   if (!member) return false;
   const hasAdminPerm = 'permissions' in member && typeof member.permissions !== 'string' &&

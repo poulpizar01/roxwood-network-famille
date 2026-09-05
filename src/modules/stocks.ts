@@ -34,6 +34,32 @@ export interface StockEntry {
 
 // ─── NOUVEAU MESSAGE ──────────────────────────────────────────────────────────
 
+/**
+ * Alerte dans `admin` qu'un joueur sans compte Discord mappé vient de
+ * retirer/déposer un item suivi — quel que soit l'item, pas seulement les
+ * drogues, pour ne jamais perdre la correspondance avec un membre. Seulement
+ * pour les mouvements en temps réel (voir `handleMessage`) : le rattrapage au
+ * démarrage et la resync ne l'appellent pas, pour ne pas flooder `admin` avec
+ * des mouvements passés (même principe que `ventes.onStockEntry`).
+ */
+async function alertJoueurNonMappe(client: Client, entry: StockEntry): Promise<void> {
+  const channelId = configStore.get().CHANNELS.admin;
+  if (!channelId) return;
+  const channel = await client.channels.fetch(channelId).catch(() => null);
+  if (!channel?.isSendable()) return;
+
+  const verbe = entry.action === 'retire' ? 'retiré' : 'déposé';
+  const embed = new EmbedBuilder()
+    .setTitle('⚠️ Joueur non mappé')
+    .setColor(0xED4245)
+    .setDescription(`**${entry.joueur}** n'est associé à aucun compte Discord.\nUtilisez \`/adduser\` pour le lier.`)
+    .addFields({ name: 'Contexte', value: `A ${verbe} ${entry.quantite.toLocaleString('fr-FR')} × ${entry.item}` })
+    .setTimestamp();
+
+  await channel.send({ embeds: [embed] }).catch(() => null);
+}
+
+/** Point d'entrée temps réel : traite un nouveau message posté dans un salon `logs_coffres` suivi. */
 export async function handleMessage(message: Message): Promise<void> {
   if (!configStore.get().CHANNELS.logs_coffres.includes(message.channelId)) return;
 
@@ -44,6 +70,9 @@ export async function handleMessage(message: Message): Promise<void> {
     await updateStockMessage(message.client);
     for (const entry of entries) {
       await logStockToChannel(message.client, entry, message.channelId);
+      if (!(await db.getUserMappings(entry.joueur)).length) {
+        await alertJoueurNonMappe(message.client, entry);
+      }
       await ventes.onStockEntry(message.client, entry);
     }
   }
@@ -131,6 +160,7 @@ function extractText(msg: Message): string {
 
 // ─── PARSING D'UNE LIGNE ─────────────────────────────────────────────────────
 
+/** Parse une ligne de log de coffre (retrait/dépôt) et applique le delta au stock si l'item est suivi ; `false` si la ligne ne matche rien ou que l'item est inconnu (voir piège n°1 du projet : orthographe exacte). */
 async function parseAndApply(line: string, log = false): Promise<StockEntry | false> {
   const retireMatch = line.match(RE_RETIRE);
   const deposeMatch = line.match(RE_DEPOSE);
@@ -155,6 +185,7 @@ async function parseAndApply(line: string, log = false): Promise<StockEntry | fa
   return entry;
 }
 
+/** Applique `parseAndApply` à chaque ligne d'un contenu de message et retourne les mouvements de stock effectivement appliqués. */
 async function parseAndApplyAll(content: string, log = false): Promise<StockEntry[]> {
   const entries: StockEntry[] = [];
   for (const line of content.split('\n')) {
@@ -191,6 +222,7 @@ export async function fullResync(client: Client): Promise<number> {
 
 // ─── MESSAGE PERMANENT ────────────────────────────────────────────────────────
 
+/** Édite le message permanent "Stock Général" (ou le crée s'il n'existe pas encore/plus), puis rafraîchit l'embed armurerie (munitions). */
 export async function updateStockMessage(client: Client): Promise<void> {
   const c = configStore.get();
   if (c.CHANNELS.stock_general) {
@@ -233,17 +265,33 @@ function buildStockEmbed(stocks: Array<{ item: string; quantite: number }>): Emb
     for (const item of items) itemToGroup[item.toLowerCase()] = label;
   }
 
+  // Un item `visibleStock: false` reste suivi (stock à jour, historique,
+  // groupes...) mais n'apparaît jamais dans ce message — ni seul, ni via le
+  // total d'un groupe auquel il appartiendrait.
+  const isVisible = (item: string) => c.ITEMS_BY_NAME[item]?.visibleStock !== false;
+
+  // Un item actuellement dans VENTE_ITEMS/LABO_ITEMS est TOUJOURS exclu du
+  // corps principal, indépendamment de `visibleStock` : il est déjà montré
+  // via l'un des deux champs dédiés ci-dessous, jamais les deux à la fois
+  // (voir config-store.ts — mutuellement exclusifs). Sans ça, oublier
+  // `stock_general:false` sur un item vente_pnj/labo_lie le ferait apparaître
+  // en double sur ce même message.
+  const itemsAffichesAilleurs = new Set([...c.VENTE_ITEMS, ...c.LABO_ITEMS].map(i => i.toLowerCase()));
+
   const lines: string[] = [];
   const shownGroups = new Set<string>();
 
   for (const item of c.ALLOWED_ITEMS) {
+    if (!isVisible(item) || itemsAffichesAilleurs.has(item.toLowerCase())) continue;
     const lower = item.toLowerCase();
     const group = itemToGroup[lower];
 
     if (group) {
       if (shownGroups.has(group)) continue;
       shownGroups.add(group);
-      const total = c.STOCK_GROUPS[group].reduce((sum, i) => sum + (stockMap[i.toLowerCase()] || 0), 0);
+      const total = c.STOCK_GROUPS[group]
+        .filter(i => isVisible(i) && !itemsAffichesAilleurs.has(i.toLowerCase()))
+        .reduce((sum, i) => sum + (stockMap[i.toLowerCase()] || 0), 0);
       lines.push(`**${group}** : \`${total.toLocaleString('fr-FR')}\``);
     } else {
       const qty = stockMap[lower] || 0;
@@ -252,15 +300,37 @@ function buildStockEmbed(stocks: Array<{ item: string; quantite: number }>): Emb
   }
 
   embed.setDescription(lines.length ? lines.join('\n') : '*Aucun stock enregistré*');
+
+  // Drogue à vendre : uniquement un total, sans détail par item (le détail
+  // reste consultable via `/drogues-a-vendre`, gardée en parallèle). Drogue
+  // de production : détail par item, utile pour suivre la production en
+  // cours. Les deux listes sont dynamiques (dépendent du tier — voir
+  // VENTE_ITEMS/LABO_ITEMS dans config-store.ts) et mutuellement exclusives.
+  if (c.VENTE_ITEMS.length) {
+    const total = c.VENTE_ITEMS.reduce((sum, item) => sum + (stockMap[item.toLowerCase()] || 0), 0);
+    embed.addFields({ name: '💊 Drogue à vendre', value: `\`${total.toLocaleString('fr-FR')}\`` });
+  }
+
+  if (c.LABO_ITEMS.length) {
+    const laboLines = c.LABO_ITEMS.map(item => `**${item}** : \`${(stockMap[item.toLowerCase()] || 0).toLocaleString('fr-FR')}\``);
+    const total = c.LABO_ITEMS.reduce((sum, item) => sum + (stockMap[item.toLowerCase()] || 0), 0);
+    embed.addFields({
+      name: '🧪 Drogue de production',
+      value: `${laboLines.join('\n')}\n**Total** : \`${total.toLocaleString('fr-FR')}\``,
+    });
+  }
+
   return embed;
 }
 
+/** Met la première lettre en majuscule. */
 function capitalize(str: string): string {
   return str.charAt(0).toUpperCase() + str.slice(1);
 }
 
 // ─── SLASH COMMANDS ───────────────────────────────────────────────────────────
 
+/** Déclare les commandes `/set-stock`, `/historique-stock`, `/sync-stock`, `/drogues-a-vendre`. */
 export function getCommands() {
   return [
     {
@@ -286,6 +356,7 @@ export function getCommands() {
   ];
 }
 
+/** Autocomplete des options `item` (`/set-stock`, `/historique-stock`) sur `ALLOWED_ITEMS`. */
 export async function handleAutocomplete(interaction: AutocompleteInteraction): Promise<void> {
   const focused = interaction.options.getFocused().toLowerCase();
   const matches = configStore.get().ALLOWED_ITEMS
@@ -295,6 +366,7 @@ export async function handleAutocomplete(interaction: AutocompleteInteraction): 
   await interaction.respond(matches).catch(() => null);
 }
 
+/** `/set-stock` (admin) : force la valeur du stock d'un item (correction manuelle). */
 export async function handleSetStockCommand(interaction: ChatInputCommandInteraction): Promise<void> {
   if (!isAdmin(interaction.member)) {
     await interaction.reply({ content: '❌ Commande réservée aux administrateurs.', flags: MessageFlags.Ephemeral });
@@ -315,6 +387,7 @@ export async function handleSetStockCommand(interaction: ChatInputCommandInterac
   });
 }
 
+/** `/historique-stock` : affiche les derniers mouvements de stock, filtrés par item si fourni. */
 export async function handleHistoriqueCommand(interaction: ChatInputCommandInteraction): Promise<void> {
   const item = interaction.options.getString('item') || null;
   const lignes = interaction.options.getInteger('lignes') || 20;
@@ -353,6 +426,7 @@ export async function handleHistoriqueCommand(interaction: ChatInputCommandInter
   await interaction.reply({ embeds, flags: MessageFlags.Ephemeral });
 }
 
+/** `/sync-stock` (admin) : resynchronise entièrement les stocks depuis le début de chaque salon `logs_coffres` suivi. */
 export async function handleSyncStockCommand(interaction: ChatInputCommandInteraction): Promise<void> {
   if (!isAdmin(interaction.member)) {
     await interaction.reply({ content: '❌ Commande réservée aux administrateurs.', flags: MessageFlags.Ephemeral });
@@ -364,6 +438,7 @@ export async function handleSyncStockCommand(interaction: ChatInputCommandIntera
   await interaction.editReply({ content: `✅ Resync terminé — **${total}** mouvement(s) traité(s).` });
 }
 
+/** `/drogues-a-vendre` (admin) : détail par item + total du stock des items actuellement vendables en PNJ (`VENTE_ITEMS`, dépend du tier — voir docstring de config-store.ts). */
 export async function handleDroguesAVendreCommand(interaction: ChatInputCommandInteraction): Promise<void> {
   if (!isAdmin(interaction.member)) {
     await interaction.reply({ content: '❌ Commande réservée aux administrateurs.', flags: MessageFlags.Ephemeral });
@@ -382,7 +457,7 @@ export async function handleDroguesAVendreCommand(interaction: ChatInputCommandI
   const embed = new EmbedBuilder()
     .setTitle('💊 Drogues à vendre')
     .setColor(0xFEE75C)
-    .setDescription(lines.join('\n') || '*Aucun item de vente configuré (voir /config item add --vente)*')
+    .setDescription(lines.join('\n') || '*Aucun item de vente configuré (voir /config item add vente_pnj:True)*')
     .addFields({ name: 'Total', value: `\`${total.toLocaleString('fr-FR')}\`` })
     .setTimestamp();
 

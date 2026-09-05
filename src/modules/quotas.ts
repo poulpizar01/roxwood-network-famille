@@ -40,7 +40,6 @@ import {
   UserSelectMenuBuilder,
   StringSelectMenuBuilder,
   SlashCommandBuilder,
-  PermissionFlagsBits,
   MessageFlags,
   type Client,
   type Message,
@@ -53,14 +52,23 @@ import {
 } from 'discord.js';
 import * as db from '../db';
 import * as configStore from '../config-store';
-import type { ActivityTypeConfig } from '../config-store';
+import { activityDisplayLabel, type ActivityTypeConfig } from '../config-store';
 import * as alertes from './alertes';
 import * as garages from './garages';
 import { isAdmin } from '../permissions';
 import { replyAutoDelete, updateAutoDelete } from '../interaction-helpers';
 
+/**
+ * Un labo passe par un select de participants PUIS un modal (temps restant) —
+ * contrairement au braquage, direct. Un `customId` Discord est plafonné à 100
+ * caractères, trop court pour y encoder jusqu'à 25 IDs Discord (18 chiffres
+ * chacun) : on ne transmet donc au modal qu'un token de quelques caractères
+ * référençant la liste réelle ici, en mémoire (expire après 5 min si le modal
+ * n'est jamais soumis).
+ */
 const pendingLaboParticipants = new Map<string, string[]>();
 
+/** Enregistre une liste de participants labo sous un token éphémère (voir docstring de `pendingLaboParticipants`) et retourne ce token. */
 function createLaboParticipantToken(partnerIds: string[]): string {
   const token = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   pendingLaboParticipants.set(token, partnerIds);
@@ -70,6 +78,7 @@ function createLaboParticipantToken(partnerIds: string[]): string {
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
 
+/** Formate une durée en ms sous forme lisible ("1j 2h 3m 4s"), unités nulles omises. */
 function formatTime(ms: number): string {
   const d = Math.floor(ms / 86_400_000);
   const h = Math.floor((ms % 86_400_000) / 3_600_000);
@@ -78,10 +87,12 @@ function formatTime(ms: number): string {
   return [d && `${d}j`, h && `${h}h`, m && `${m}m`, s && `${s}s`].filter(Boolean).join(' ') || '0s';
 }
 
+/** Formate un timestamp (ms) en date courte française (JJ/MM/AAAA). */
 function formatDate(ts: number): string {
   return new Date(ts).toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric' });
 }
 
+/** Formate un timestamp (ms) en date + heure françaises complètes. */
 function formatDateTime(ts: number): string {
   return new Date(ts).toLocaleString('fr-FR', {
     day: '2-digit', month: '2-digit', year: 'numeric',
@@ -89,6 +100,7 @@ function formatDateTime(ts: number): string {
   });
 }
 
+/** Met la première lettre en majuscule. */
 function capitalize(s: string): string {
   return s.length ? s[0].toUpperCase() + s.slice(1) : s;
 }
@@ -138,18 +150,25 @@ async function getAllUserQuotaSummaries(): Promise<Map<string, QuotaSummary>> {
 
 // ─── EMBEDS ───────────────────────────────────────────────────────────────────
 
-/** Embed principal du panneau : disponibilité en temps réel des slots de braquage. */
+/**
+ * Embed principal du panneau : disponibilité en temps réel des slots de
+ * braquage. N'affiche que les activités `enabled` pour le tier courant — une
+ * activité dont la limite hebdomadaire résolue est 0 (voir
+ * `BRAQUAGE_LIMITS_BY_TIER` dans config-store.ts) est masquée entièrement au
+ * lieu de montrer "0/0" : inutile d'exposer une info sur une activité
+ * inaccessible à ce tier.
+ */
 async function buildMainEmbed(): Promise<EmbedBuilder> {
   const activityTypes = configStore.get().ACTIVITY_TYPES;
   const braquageEntries = Object.entries(activityTypes)
-    .filter(([, cfg]) => cfg.braquageWeeklyLimit)
+    .filter(([, cfg]) => cfg.enabled && cfg.braquageWeeklyLimit != null)
     .sort((a, b) => a[1].displayOrder - b[1].displayOrder);
 
   const slotLines = await Promise.all(braquageEntries.map(async ([key, cfg]) => {
     const used = await db.getBraquageCount(key);
     const dispo = Math.max(0, cfg.braquageWeeklyLimit! - used);
     const icon = dispo > 0 ? '🟢' : '🔴';
-    return `${icon} ${cfg.label} : **${dispo}/${cfg.braquageWeeklyLimit}**`;
+    return `${icon} ${activityDisplayLabel(cfg)} : **${dispo}/${cfg.braquageWeeklyLimit}**`;
   }));
 
   const embed = new EmbedBuilder()
@@ -188,7 +207,7 @@ async function buildQuotaEmbed(userId: string, member: GuildMember | null): Prom
 
   const detail = Object.entries(activityTypes)
     .sort((a, b) => a[1].displayOrder - b[1].displayOrder)
-    .map(([key, cfg]) => [cfg.label, map[key]?.count || 0] as const)
+    .map(([key, cfg]) => [activityDisplayLabel(cfg), map[key]?.count || 0] as const)
     .filter(([, v]) => v > 0)
     .map(([label, v]) => `• ${label}: **${v}**`)
     .join('\n') || '*Aucune activité*';
@@ -276,7 +295,13 @@ async function buildClassementEmbed(client: Client): Promise<EmbedBuilder> {
     .setTimestamp();
 }
 
-/** Embed de bilan collectif : agrège toutes les activités de tous les membres depuis `sinceTs`. */
+/**
+ * Embed de bilan collectif : agrège toutes les activités de tous les membres
+ * depuis `sinceTs`. N'affiche que les activités `enabled` pour le tier
+ * courant (voir `buildMainEmbed`) — une activité désactivée n'apparaît pas,
+ * même si elle a un total historique (elle a pu être active plus tôt dans la
+ * semaine, avant un changement de tier).
+ */
 async function buildBilanEmbed(sinceTs?: number): Promise<EmbedBuilder> {
   const since = sinceTs ?? Number((await db.getSetting(LAST_RESET_KEY)) || 0);
   const activityTypes = configStore.get().ACTIVITY_TYPES;
@@ -286,11 +311,12 @@ async function buildBilanEmbed(sinceTs?: number): Promise<EmbedBuilder> {
   for (const row of totals) map[row.action] = row.total;
 
   const lines = Object.entries(activityTypes)
+    .filter(([, cfg]) => cfg.enabled)
     .sort((a, b) => a[1].displayOrder - b[1].displayOrder)
     .map(([key, cfg]) => {
       const total = map[key] || 0;
       const value = cfg.quantity ? `${total.toLocaleString('fr-FR')} unités` : `${total}`;
-      return `${cfg.label} : **${value}**`;
+      return `${activityDisplayLabel(cfg)} : **${value}**`;
     });
 
   return new EmbedBuilder()
@@ -300,6 +326,7 @@ async function buildBilanEmbed(sinceTs?: number): Promise<EmbedBuilder> {
     .setTimestamp();
 }
 
+/** Embed de log posté dans `logs_activites` pour une déclaration d'activité — `details` ajoute des champs additionnels (type, quantité, partenaires...). */
 function buildTransactionEmbed(txId: number, userId: string, userTag: string, action: string, details: Record<string, string | number | undefined | null>): EmbedBuilder {
   const cfg = configStore.get().ACTIVITY_TYPES[action];
   const embed = new EmbedBuilder()
@@ -307,7 +334,7 @@ function buildTransactionEmbed(txId: number, userId: string, userTag: string, ac
     .setColor(0x57F287)
     .addFields(
       { name: 'Utilisateur', value: `<@${userId}> (${userTag})`, inline: true },
-      { name: 'Action', value: cfg?.label || action, inline: true },
+      { name: 'Action', value: cfg ? activityDisplayLabel(cfg) : action, inline: true },
       { name: 'Heure', value: formatDateTime(Date.now()), inline: true },
     )
     .setTimestamp();
@@ -324,15 +351,16 @@ const MAX_DIRECT_BUTTONS = 15; // 3 rangées de 5
 
 /**
  * Construit les rangées de boutons du panneau : jusqu'à 3 rangées d'activités
- * déclarables (`panelButton: true`, triées par ordre d'affichage), un menu
- * déroulant de repli si plus de {@link MAX_DIRECT_BUTTONS} sont configurées
- * (limite Discord de 5 boutons/rangée × 5 rangées/message), puis la rangée
- * fixe des vues (mon quota, ma paie, classement, bilan, minuterie).
+ * déclarables (`panelButton: true` ET `enabled` pour le tier courant — voir
+ * config-store.ts, triées par ordre d'affichage), un menu déroulant de repli
+ * si plus de {@link MAX_DIRECT_BUTTONS} sont configurées (limite Discord de 5
+ * boutons/rangée × 5 rangées/message), puis la rangée fixe des vues (mon
+ * quota, ma paie, classement, bilan, minuterie).
  */
 function buildButtonRows() {
   const activityTypes = configStore.get().ACTIVITY_TYPES;
   const declarable = Object.entries(activityTypes)
-    .filter(([, cfg]) => cfg.panelButton)
+    .filter(([, cfg]) => cfg.panelButton && cfg.enabled)
     .sort((a, b) => a[1].displayOrder - b[1].displayOrder);
 
   const styleFor = (cfg: ActivityTypeConfig): ButtonStyle => {
@@ -351,7 +379,7 @@ function buildButtonRows() {
   for (let i = 0; i < direct.length; i += 5) {
     const row = new ActionRowBuilder<ButtonBuilder>();
     for (const [key, cfg] of direct.slice(i, i + 5)) {
-      row.addComponents(new ButtonBuilder().setCustomId(`act_${key}`).setLabel(cfg.label.slice(0, 80)).setStyle(styleFor(cfg)));
+      row.addComponents(new ButtonBuilder().setCustomId(`act_${key}`).setLabel(activityDisplayLabel(cfg).slice(0, 80)).setStyle(styleFor(cfg)));
     }
     rows.push(row as ActionRowBuilder<ButtonBuilder | UserSelectMenuBuilder>);
   }
@@ -360,7 +388,7 @@ function buildButtonRows() {
     const select = new StringSelectMenuBuilder()
       .setCustomId('act_more_select')
       .setPlaceholder("Plus d'activités…")
-      .addOptions(overflow.map(([key, cfg]) => ({ label: cfg.label.slice(0, 100), value: key })));
+      .addOptions(overflow.map(([key, cfg]) => ({ label: activityDisplayLabel(cfg).slice(0, 100), value: key })));
     rows.push(new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select) as unknown as ActionRowBuilder<ButtonBuilder | UserSelectMenuBuilder>);
   }
 
@@ -379,6 +407,7 @@ function buildButtonRows() {
 
 // ─── MESSAGE PERMANENT ────────────────────────────────────────────────────────
 
+/** Édite le panneau d'activités permanent (ou le crée s'il n'existe pas encore/plus). */
 export async function initPermanentMessage(client: Client): Promise<void> {
   const c = configStore.get();
   if (!c.CHANNELS.quotas) return;
@@ -405,25 +434,34 @@ export async function initPermanentMessage(client: Client): Promise<void> {
   }
 }
 
+/** Rafraîchit le panneau d'activités permanent après tout changement de données (déclaration, suppression, reset, changement de tier...). */
 export async function updatePermanentMessage(client: Client): Promise<void> {
   await initPermanentMessage(client);
 }
 
 // ─── VÉRIFICATIONS ────────────────────────────────────────────────────────────
 
+/** Temps restant (ms) du cooldown d'un joueur/action, ou `null` si expiré/absent. */
 async function checkCooldown(userId: string, action: string): Promise<number | null> {
   const expires = await db.getCooldown(userId, action);
   if (expires <= Date.now()) return null;
   return expires - Date.now();
 }
 
+/**
+ * `limit` peut valoir 0 (activité de braquage désactivée pour le tier
+ * courant, voir config-store.ts) — bien distinct de `null` (pas de limite du
+ * tout, ex. ATM) qui autorise toujours. D'où le test explicite sur `null`
+ * plutôt qu'un simple `if (!limit)`, qui traiterait 0 comme "illimité".
+ */
 async function checkBraquageLimit(action: string): Promise<boolean> {
   const limit = configStore.get().ACTIVITY_TYPES[action]?.braquageWeeklyLimit;
-  if (!limit) return true;
+  if (limit == null) return true;
   const used = await db.getBraquageCount(action);
   return used < limit;
 }
 
+/** Poste un embed de log dans le salon `logs_activites`, s'il est configuré. */
 async function logActivite(client: Client, embed: EmbedBuilder): Promise<void> {
   const channelId = configStore.get().CHANNELS.logs_activites;
   if (!channelId) return;
@@ -447,6 +485,12 @@ async function triggerActivity(interaction: ButtonInteraction | StringSelectMenu
   if (!cfg) {
     return replyAutoDelete(interaction, '❌ Cette activité n\'existe plus (retirée de la configuration).');
   }
+  // Filet de sécurité : le bouton est déjà masqué du panneau pour une
+  // activité désactivée (voir buildButtonRows), mais un vieux message de
+  // panneau non rafraîchi ou le menu de repli pourraient encore la proposer.
+  if (!cfg.enabled) {
+    return replyAutoDelete(interaction, `❌ **${activityDisplayLabel(cfg)}** n'est pas disponible pour le type d'organisation actuel.`);
+  }
 
   if (cfg.labo) {
     const select = new UserSelectMenuBuilder()
@@ -454,21 +498,22 @@ async function triggerActivity(interaction: ButtonInteraction | StringSelectMenu
       .setPlaceholder('Sélectionner les participants (optionnel)')
       .setMinValues(0).setMaxValues(25);
     return replyAutoDelete(interaction, {
-      content: `🧪 **${cfg.label}** — Sélectionne les participants :`,
+      content: `🧪 **${activityDisplayLabel(cfg)}** — Sélectionne les participants :`,
       components: [new ActionRowBuilder<UserSelectMenuBuilder>().addComponents(select)],
     }, { deleteAfterMs: 60_000 });
   }
 
   if (cfg.braquageWeeklyLimit) {
     if (!(await checkBraquageLimit(key))) {
-      return replyAutoDelete(interaction, `🚫 La limite hebdomadaire de **${cfg.label}** est atteinte (${cfg.braquageWeeklyLimit}/${cfg.braquageWeeklyLimit} sur 7 jours).`);
+      const used = await db.getBraquageCount(key);
+      return replyAutoDelete(interaction, `🚫 La limite hebdomadaire de **${activityDisplayLabel(cfg)}** est atteinte (${used}/${cfg.braquageWeeklyLimit} sur 7 jours).`);
     }
     const select = new UserSelectMenuBuilder()
       .setCustomId(`act_select_${key}`)
       .setPlaceholder('Sélectionner les partenaires (optionnel)')
       .setMinValues(0).setMaxValues(25);
     return replyAutoDelete(interaction, {
-      content: `🔫 **${cfg.label}** — Sélectionne tes partenaires :`,
+      content: `🔫 **${activityDisplayLabel(cfg)}** — Sélectionne tes partenaires :`,
       components: [new ActionRowBuilder<UserSelectMenuBuilder>().addComponents(select)],
     }, { deleteAfterMs: 60_000 });
   }
@@ -478,7 +523,7 @@ async function triggerActivity(interaction: ButtonInteraction | StringSelectMenu
     const itemHint = c.VENTE_ITEMS.length ? c.VENTE_ITEMS.join(', ') : (c.ALLOWED_ITEMS.length ? c.ALLOWED_ITEMS.join(', ') : 'ex: Cannabis, Cocaïne…');
     const modal = new ModalBuilder()
       .setCustomId(`modal_act_${key}`)
-      .setTitle(cfg.label.slice(0, 45))
+      .setTitle(activityDisplayLabel(cfg).slice(0, 45))
       .addComponents(
         new ActionRowBuilder<TextInputBuilder>().addComponents(
           new TextInputBuilder().setCustomId('type').setLabel('Type de produit')
@@ -497,13 +542,13 @@ async function triggerActivity(interaction: ButtonInteraction | StringSelectMenu
   if (cfg.cooldownMs) {
     const remaining = await checkCooldown(interaction.user.id, key);
     if (remaining !== null) {
-      return replyAutoDelete(interaction, `⏳ Tu es en cooldown pour **${cfg.label}** encore **${formatTime(remaining)}**.`);
+      return replyAutoDelete(interaction, `⏳ Tu es en cooldown pour **${activityDisplayLabel(cfg)}** encore **${formatTime(remaining)}**.`);
     }
   }
 
   const modal = new ModalBuilder()
     .setCustomId(`modal_act_${key}`)
-    .setTitle(`${cfg.label} — Confirmer`.slice(0, 45))
+    .setTitle(`${activityDisplayLabel(cfg)} — Confirmer`.slice(0, 45))
     .addComponents(
       new ActionRowBuilder<TextInputBuilder>().addComponents(
         new TextInputBuilder().setCustomId('confirm').setLabel('Taper "oui" pour confirmer')
@@ -515,6 +560,7 @@ async function triggerActivity(interaction: ButtonInteraction | StringSelectMenu
 
 // ─── HANDLER BOUTONS ─────────────────────────────────────────────────────────
 
+/** Route les clics de bouton du panneau : vues (quota/paie/classement/bilan/minuterie) et déclenchement d'activité (`act_*`). */
 export async function handleButton(interaction: ButtonInteraction): Promise<void> {
   const id = interaction.customId;
 
@@ -541,6 +587,7 @@ export async function handleButton(interaction: ButtonInteraction): Promise<void
   }
 }
 
+/** Embed "⏱️ Minuterie" : cooldowns personnels, slots de braquage restants, statut des labos — pour les activités `enabled` du tier courant. */
 async function handleMinuterie(interaction: ButtonInteraction): Promise<void> {
   const userId = interaction.user.id;
   const activityTypes = configStore.get().ACTIVITY_TYPES;
@@ -550,15 +597,15 @@ async function handleMinuterie(interaction: ButtonInteraction): Promise<void> {
     entries.filter(([, cfg]) => cfg.cooldownMs && !cfg.labo && !cfg.braquageWeeklyLimit).map(async ([key, cfg]) => {
       const remaining = await checkCooldown(userId, key);
       const status = remaining ? `⏳ ${formatTime(remaining)}` : '✅ Dispo';
-      return `**${cfg.label}** : ${status}`;
+      return `**${activityDisplayLabel(cfg)}** : ${status}`;
     }),
   );
 
   const braquageLines = await Promise.all(
-    entries.filter(([, cfg]) => cfg.braquageWeeklyLimit).map(async ([key, cfg]) => {
+    entries.filter(([, cfg]) => cfg.enabled && cfg.braquageWeeklyLimit != null).map(async ([key, cfg]) => {
       const limit = cfg.braquageWeeklyLimit!;
       const dispo = Math.max(0, limit - (await db.getBraquageCount(key)));
-      let line = `${dispo > 0 ? '🟢' : '🔴'} **${cfg.label}** : ${dispo}/${limit}`;
+      let line = `${dispo > 0 ? '🟢' : '🔴'} **${activityDisplayLabel(cfg)}** : ${dispo}/${limit}`;
       if (dispo === 0) {
         const oldest = await db.getOldestBraquage(key);
         if (oldest) {
@@ -571,10 +618,10 @@ async function handleMinuterie(interaction: ButtonInteraction): Promise<void> {
   );
 
   const laboLines = await Promise.all(
-    entries.filter(([, cfg]) => cfg.labo).map(async ([key, cfg]) => {
+    entries.filter(([, cfg]) => cfg.labo && cfg.enabled).map(async ([key, cfg]) => {
       const endsAt = parseInt((await db.getSetting(`labo_end_${key}`)) || '0', 10);
       const remaining = endsAt > 0 ? endsAt - Date.now() : 0;
-      return remaining > 0 ? `🔴 **${cfg.label}** : ${formatTime(remaining)}` : `🟢 **${cfg.label}** : Disponible`;
+      return remaining > 0 ? `🔴 **${activityDisplayLabel(cfg)}** : ${formatTime(remaining)}` : `🟢 **${activityDisplayLabel(cfg)}** : Disponible`;
     }),
   );
 
@@ -598,6 +645,7 @@ export async function handleStringSelect(interaction: StringSelectMenuInteractio
 
 // ─── HANDLER MODALS ───────────────────────────────────────────────────────────
 
+/** Route les soumissions de modal (`modal_act_*`, `modal_actlabo_*`) : enregistre la transaction et met à jour stats/cooldown/panneau. */
 export async function handleModal(interaction: ModalSubmitInteraction): Promise<void> {
   const id = interaction.customId;
 
@@ -618,7 +666,7 @@ export async function handleModal(interaction: ModalSubmitInteraction): Promise<
       const embed = buildTransactionEmbed(txId, interaction.user.id, interaction.user.tag, key, { Type: type, Quantité: quantite.toLocaleString('fr-FR') });
       await logActivite(interaction.client, embed);
       await updatePermanentMessage(interaction.client);
-      return replyAutoDelete(interaction, `✅ **${cfg.label}** — ${quantite.toLocaleString('fr-FR')} × ${type} enregistrés (ID #${txId}).`);
+      return replyAutoDelete(interaction, `✅ **${activityDisplayLabel(cfg)}** — ${quantite.toLocaleString('fr-FR')} × ${type} enregistrés (ID #${txId}).`);
     }
 
     const confirm = interaction.fields.getTextInputValue('confirm').trim().toLowerCase();
@@ -631,7 +679,7 @@ export async function handleModal(interaction: ModalSubmitInteraction): Promise<
     const embed = buildTransactionEmbed(txId, interaction.user.id, interaction.user.tag, key, {});
     await logActivite(interaction.client, embed);
     await updatePermanentMessage(interaction.client);
-    return replyAutoDelete(interaction, `✅ **${cfg.label}** enregistré (ID #${txId}).`);
+    return replyAutoDelete(interaction, `✅ **${activityDisplayLabel(cfg)}** enregistré (ID #${txId}).`);
   }
 
   if (id.startsWith('modal_actlabo_')) {
@@ -653,7 +701,7 @@ export async function handleModal(interaction: ModalSubmitInteraction): Promise<
     const filteredPartnerIds = partnerIds.filter(pid => pid !== interaction.user.id);
     const allIds = [interaction.user.id, ...filteredPartnerIds];
 
-    await replyAutoDelete(interaction, `✅ **${cfg.label}** validé. Enregistrement en cours...`);
+    await replyAutoDelete(interaction, `✅ **${activityDisplayLabel(cfg)}** validé. Enregistrement en cours...`);
 
     void (async () => {
       try {
@@ -679,6 +727,7 @@ export async function handleModal(interaction: ModalSubmitInteraction): Promise<
 
 // ─── HANDLER SELECT MENUS (participants) ─────────────────────────────────────
 
+/** Sélection de participants (`act_select_*`) : ouvre le modal temps-restant pour un labo, ou enregistre directement un braquage. */
 export async function handleSelect(interaction: UserSelectMenuInteraction): Promise<void> {
   const id = interaction.customId;
   if (!id.startsWith('act_select_')) return;
@@ -691,7 +740,7 @@ export async function handleSelect(interaction: UserSelectMenuInteraction): Prom
     const token = selectedIds.length ? createLaboParticipantToken(selectedIds) : '';
     const modal = new ModalBuilder()
       .setCustomId(`modal_actlabo_${key}${token ? `|${token}` : ''}`)
-      .setTitle(`${cfg.label} — Temps restant`.slice(0, 45))
+      .setTitle(`${activityDisplayLabel(cfg)} — Temps restant`.slice(0, 45))
       .addComponents(
         new ActionRowBuilder<TextInputBuilder>().addComponents(
           new TextInputBuilder().setCustomId('temps_restant').setLabel('Temps restant (en minutes)')
@@ -717,13 +766,14 @@ export async function handleSelect(interaction: UserSelectMenuInteraction): Prom
   await updatePermanentMessage(interaction.client);
 
   return updateAutoDelete(interaction, {
-    content: `✅ **${cfg.label}** enregistré (ID #${txId}). Participants : ${allIds.map(p => `<@${p}>`).join(', ')}.`,
+    content: `✅ **${activityDisplayLabel(cfg)}** enregistré (ID #${txId}). Participants : ${allIds.map(p => `<@${p}>`).join(', ')}.`,
     components: [],
   });
 }
 
 // ─── COMMANDE /supp ───────────────────────────────────────────────────────────
 
+/** `/supp` (admin) : annule une transaction — décrémente stats/braquage selon le type d'activité, puis rafraîchit le panneau. */
 export async function handleSuppCommand(interaction: ChatInputCommandInteraction): Promise<void> {
   if (!isAdmin(interaction.member)) {
     await interaction.reply({ content: '❌ Commande réservée aux administrateurs.', flags: MessageFlags.Ephemeral });
@@ -761,7 +811,7 @@ export async function handleSuppCommand(interaction: ChatInputCommandInteraction
     .setColor(0xED4245)
     .addFields(
       { name: 'Supprimée par', value: `<@${interaction.user.id}> (${interaction.user.tag})`, inline: true },
-      { name: 'Action', value: cfg?.label || tx.action, inline: true },
+      { name: 'Action', value: cfg ? activityDisplayLabel(cfg) : tx.action, inline: true },
       { name: 'Utilisateur', value: `<@${tx.userId}>`, inline: true },
     )
     .setTimestamp();
@@ -776,6 +826,15 @@ export async function handleSuppCommand(interaction: ChatInputCommandInteraction
 
 const LAST_RESET_KEY = 'last_weekly_reset';
 
+/**
+ * Reformate `date` en heure de Paris puis reparse la chaîne obtenue comme si
+ * elle était locale au serveur : le `Date` renvoyé a donc des champs
+ * (`getHours`/`getDay`/`setHours`/`setDate`...) qui reflètent l'heure de Paris,
+ * quel que soit le fuseau du serveur qui exécute le process — indispensable
+ * pour comparer/calculer une échéance "dimanche 19h Europe/Paris" sans
+ * dépendre du fuseau système. Le format `en-US` produit une chaîne
+ * (`MM/DD/YYYY, HH:mm:ss`) que `new Date(...)` sait reparser de façon fiable.
+ */
 function parisWallClock(date: Date): Date {
   const fmt = new Intl.DateTimeFormat('en-US', {
     timeZone: 'Europe/Paris',
@@ -786,6 +845,7 @@ function parisWallClock(date: Date): Date {
   return new Date(fmt.format(date));
 }
 
+/** Vrai si le dernier reset hebdomadaire enregistré est antérieur au dimanche 19h Europe/Paris le plus récent. */
 async function isWeeklyResetDue(): Promise<boolean> {
   const wallNow = parisWallClock(new Date());
   const boundary = new Date(wallNow);
@@ -798,6 +858,7 @@ async function isWeeklyResetDue(): Promise<boolean> {
   return wallLast.getTime() < boundary.getTime();
 }
 
+/** Cron (toutes les 15 min) : déclenche le reset hebdomadaire s'il est en retard (voir `isWeeklyResetDue`) — auto-réparant si le bot était down au moment prévu. */
 export async function checkWeeklyReset(client: Client): Promise<void> {
   if (!(await isWeeklyResetDue())) return;
   const previousReset = Number((await db.getSetting(LAST_RESET_KEY)) || 0);
@@ -811,28 +872,40 @@ export async function checkWeeklyReset(client: Client): Promise<void> {
 const QUOTA_REMINDER_KEY = 'quota_reminder_message_id';
 const QUOTA_REMINDER_TITLE = '⏰ Quota vente — dernière ligne droite avant le reset (19h00)';
 
+/** Identifie le message de rappel de quota par le titre de son embed (voir convention "Robustesse" du projet — pas seulement par ID stocké). */
 export function isQuotaReminderMessage(message: Message): boolean {
   return message.embeds?.[0]?.title === QUOTA_REMINDER_TITLE;
 }
 
+/** Vrai le dimanche entre 00h et 19h (heure de Paris), fenêtre d'affichage du rappel de quota vente. */
 function isDansFenetreRappelQuota(): boolean {
   const wall = parisWallClock(new Date());
   return wall.getDay() === 0 && wall.getHours() < 19;
 }
 
+/**
+ * Membres mappés dont le compte de vente cette semaine est sous l'objectif
+ * configuré (catégorie `vente`). Une seule requête de stats pour tous les
+ * membres (`db.getAllStats()`), pas une par membre mappé.
+ */
 async function getMembresSousQuotaVente(): Promise<Array<{ discord_id: string; vente: number }>> {
   const quota = configStore.get().QUOTA_TARGETS['vente'];
   if (quota == null) return [];
   const mappings = await db.getAllUserMappings();
   const discordIds = [...new Set(mappings.map(m => m.discordId))];
+  const venteByUser = new Map<string, number>();
+  for (const s of await db.getAllStats()) {
+    if (s.action === 'vente') venteByUser.set(s.userId, s.count);
+  }
   const results: Array<{ discord_id: string; vente: number }> = [];
   for (const discord_id of discordIds) {
-    const vente = (await db.getUserStatMap(discord_id))['vente']?.count || 0;
+    const vente = venteByUser.get(discord_id) || 0;
     if (vente < quota) results.push({ discord_id, vente });
   }
   return results;
 }
 
+/** Contenu (mentions + embed) du message de rappel de quota vente, triés du plus loin au plus proche de l'objectif. */
 function buildQuotaReminderPayload(sousQuota: Array<{ discord_id: string; vente: number }>, quota: number) {
   const tries = [...sousQuota].sort((a, b) => b.vente - a.vente);
   const embed = new EmbedBuilder()
@@ -847,6 +920,7 @@ function buildQuotaReminderPayload(sousQuota: Array<{ discord_id: string; vente:
   return { content: tries.map(m => `<@${m.discord_id}>`).join(' '), embeds: [embed] };
 }
 
+/** Récupère le message de rappel de quota existant, ou le crée s'il est absent/a été supprimé manuellement. `null` si non applicable (salon/objectif non configuré). */
 async function ensureQuotaReminderMessage(client: Client): Promise<Message | null> {
   const c = configStore.get();
   if (!c.CHANNELS.quotas) return null;
@@ -868,11 +942,13 @@ async function ensureQuotaReminderMessage(client: Client): Promise<Message | nul
   return msg;
 }
 
+/** Cron (toutes les 15 min) : s'assure que le rappel de quota du dimanche existe pendant sa fenêtre d'affichage. */
 export async function checkQuotaReminder(client: Client): Promise<void> {
   if (!isDansFenetreRappelQuota()) return;
   try { await ensureQuotaReminderMessage(client); } catch (err) { console.error('[quotas] checkQuotaReminder:', (err as Error).message); }
 }
 
+/** Rafraîchit immédiatement le rappel de quota (appelé après confirmation d'une vente, plutôt que d'attendre le prochain cron). */
 export async function syncQuotaReminder(client: Client): Promise<void> {
   if (!isDansFenetreRappelQuota()) return;
   try {
@@ -885,6 +961,7 @@ export async function syncQuotaReminder(client: Client): Promise<void> {
   }
 }
 
+/** Supprime le message de rappel de quota (appelé au reset hebdomadaire, les compteurs repartant à zéro). */
 async function deleteQuotaReminder(client: Client): Promise<void> {
   const messageId = await db.getSetting(QUOTA_REMINDER_KEY);
   if (!messageId) return;
@@ -961,6 +1038,7 @@ export async function weeklyReset(client: Client, sinceTs?: number): Promise<voi
 
 // ─── COMMANDE /listquota ──────────────────────────────────────────────────────
 
+/** `/listquota` (admin) : liste tous les membres suivis avec leur progression par catégorie de quota, complets en premier. */
 export async function handleListQuotaCommand(interaction: ChatInputCommandInteraction): Promise<void> {
   if (!isAdmin(interaction.member)) {
     await interaction.reply({ content: '❌ Commande réservée aux administrateurs.', flags: MessageFlags.Ephemeral });
@@ -1012,6 +1090,7 @@ export async function handleListQuotaCommand(interaction: ChatInputCommandIntera
 
 // ─── SLASH COMMANDS ───────────────────────────────────────────────────────────
 
+/** Déclare les commandes `/supp` et `/listquota`. */
 export function getCommands() {
   return [
     {

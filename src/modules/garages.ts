@@ -226,6 +226,7 @@ async function buildClassementEmbed(): Promise<EmbedBuilder> {
     .setTimestamp();
 }
 
+/** Déclare la commande `/fourrieres`. */
 export function getCommands() {
   return [
     { data: new SlashCommandBuilder().setName('fourrieres').setDescription('Classement des fourrières (admin)') },

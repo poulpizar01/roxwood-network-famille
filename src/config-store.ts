@@ -1,10 +1,9 @@
 /**
  * @file src/config-store.ts
- * @description Remplace l'ancien `config.js` statique : la configuration qui
- * bouge réellement d'un déploiement à l'autre ou dans le temps (salons,
- * rôles, items, objectifs de quota, taux de paie) vit en base (voir
- * src/db.ts) et se modifie depuis Discord via `/config`
- * (src/modules/config.ts).
+ * @description La configuration qui bouge réellement d'un déploiement à
+ * l'autre ou dans le temps (salons, rôles, items, objectifs de quota, taux de
+ * paie) vit en base (voir src/db.ts) et se modifie depuis Discord via
+ * `/config` (src/modules/config.ts).
  *
  * Le registre des activités déclarables ({@link ACTIVITY_TYPES_FIXED}), lui,
  * est une liste FIXE dans ce fichier (pas de `/config activite`) — comme les
@@ -12,9 +11,9 @@
  * cooldowns et leurs limites de braquage ne changent quasiment jamais une
  * fois le bot déployé pour une organisation donnée. Seuls les OBJECTIFS
  * hebdomadaires par catégorie de quota restent pilotables via `/config
- * quota`, parce qu'eux peuvent être renégociés. Les deux salons de labo
- * (`labo_heroine`/`labo_sporex`) restent configurables via `/config channel`
- * comme n'importe quel autre salon — chaque serveur Discord a ses propres IDs.
+ * quota`, parce qu'eux peuvent être renégociés. Les salons de labo restent
+ * configurables via `/config channel` comme n'importe quel autre salon —
+ * chaque serveur Discord a ses propres IDs.
  *
  * `reload()` (async, Prisma oblige) reconstruit un cache en mémoire ; `get()`
  * (sync) le retourne tel quel. Un changement de config prend effet dès que
@@ -36,6 +35,7 @@ export const CHANNEL_ROLES = [
   'alertes_actions', 'bilan', 'paie', 'armurerie', 'quotas', 'taxes',
   'alertes_taxes', 'historique_stock', 'ventes_drogue', 'log_ventes',
   'admin', 'logs_garages', 'labo_heroine', 'labo_sporex',
+  'labo_mexicana', 'labo_cannabis', 'labo_cocaine',
 ] as const;
 
 export type ChannelRole = (typeof CHANNEL_ROLES)[number];
@@ -51,29 +51,98 @@ export interface ActivityTypeConfig {
   quantity: boolean;
   panelButton: boolean;
   displayOrder: number;
+  /** Résolu dans `reload()` selon `TYPE_GROUPE` — voir {@link LABO_TIERS}. `true` pour toute activité non listée dans `LABO_TIERS` (jamais désactivée par le tier). */
+  enabled: boolean;
+  /** Icône d'affichage (optionnelle) — champ à part, jamais fondue dans `label` (voir {@link activityDisplayLabel}). */
+  icon?: string;
 }
+
+/** Combine icône + libellé pour l'affichage (bouton, embed, message) — `label` seul reste réutilisable tel quel (ex. pour matcher un titre d'embed existant). */
+export function activityDisplayLabel(cfg: ActivityTypeConfig): string {
+  return cfg.icon ? `${cfg.icon} ${cfg.label}` : cfg.label;
+}
+
+/** Types d'organisation — voir docstring de {@link BRAQUAGE_LIMITS_BY_TIER} et {@link LABO_TIERS}. */
+export type GroupTier = 'independant' | 'petite_frappe' | 'gang' | 'organisation';
+
+export const GROUP_TIERS: Array<{ key: GroupTier; label: string }> = [
+  { key: 'independant', label: 'Indépendant' },
+  { key: 'petite_frappe', label: 'Petite Frappe' },
+  { key: 'gang', label: 'Gang' },
+  { key: 'organisation', label: 'Organisation' },
+];
+
+/** Clé de `Setting` (voir db.ts) où est persisté le tier actuel — modifié via `/config type-groupe set`. */
+export const TYPE_GROUPE_SETTING_KEY = 'type_groupe';
+
+/**
+ * Tier appliqué tant qu'aucun `/config type-groupe set` n'a jamais été fait.
+ * Choisi égal aux anciennes valeurs codées en dur (Fleeca/Armurerie 6,
+ * Bijouterie/Pinebank 1) pour qu'un déploiement existant qui ne configure pas
+ * immédiatement son tier ne voie pas ses limites de braquage changer.
+ */
+const DEFAULT_GROUP_TIER: GroupTier = 'petite_frappe';
 
 const H = 3_600_000;
 
 /**
- * Registre fixe des activités déclarables, repris des valeurs du bot
- * d'origine. `laboChannelId` n'est pas renseigné ici : il est résolu dans
- * `reload()` depuis `CHANNELS.labo_heroine`/`labo_sporex` (configurables via
- * `/config channel`, propres à chaque serveur Discord).
+ * Registre fixe des activités déclarables. `laboChannelId` n'est pas
+ * renseigné ici : il est résolu dans `reload()` depuis
+ * `CHANNELS.labo_heroine`/`labo_sporex`/etc. (configurables via `/config
+ * channel`, propres à chaque serveur Discord). `enabled` non plus : voir plus
+ * bas.
+ *
+ * `braquageWeeklyLimit` de fleeca/braq_armurerie/bijouterie/pinebank/
+ * human_labs est TOUJOURS écrasé dans `reload()` par {@link BRAQUAGE_LIMITS_BY_TIER}
+ * selon le tier courant — la valeur `null` ici n'est qu'un placeholder, elle
+ * n'est jamais utilisée telle quelle.
  */
-const ACTIVITY_TYPES_FIXED: Record<string, Omit<ActivityTypeConfig, 'laboChannelId'>> = {
+const ACTIVITY_TYPES_FIXED: Record<string, Omit<ActivityTypeConfig, 'laboChannelId' | 'enabled'>> = {
   atm:            { label: 'ATM',           quotaType: 'actions', cooldownMs: 3 * H,  partners: false, braquageWeeklyLimit: null, labo: false, quantity: false, panelButton: true,  displayOrder: 1 },
   cambu:          { label: 'Cambu',         quotaType: 'actions', cooldownMs: 3 * H,  partners: false, braquageWeeklyLimit: null, labo: false, quantity: false, panelButton: true,  displayOrder: 2 },
   superette:      { label: 'Supérette',     quotaType: 'actions', cooldownMs: 2 * H,  partners: false, braquageWeeklyLimit: null, labo: false, quantity: false, panelButton: true,  displayOrder: 3 },
   gofast:         { label: 'Go Fast',       quotaType: 'actions', cooldownMs: 24 * H, partners: false, braquageWeeklyLimit: null, labo: false, quantity: false, panelButton: true,  displayOrder: 4 },
-  fleeca:         { label: 'Fleeca',        quotaType: 'actions', cooldownMs: null,   partners: true,  braquageWeeklyLimit: 6,    labo: false, quantity: false, panelButton: true,  displayOrder: 5 },
-  braq_armurerie: { label: 'Armurerie',     quotaType: 'actions', cooldownMs: null,   partners: true,  braquageWeeklyLimit: 6,    labo: false, quantity: false, panelButton: true,  displayOrder: 6 },
-  bijouterie:     { label: 'Bijouterie',    quotaType: 'actions', cooldownMs: null,   partners: true,  braquageWeeklyLimit: 1,    labo: false, quantity: false, panelButton: true,  displayOrder: 7 },
-  pinebank:       { label: 'Pinebank',      quotaType: 'actions', cooldownMs: null,   partners: true,  braquageWeeklyLimit: 1,    labo: false, quantity: false, panelButton: true,  displayOrder: 8 },
-  vente:          { label: 'Vente drogue',  quotaType: 'vente',   cooldownMs: null,   partners: false, braquageWeeklyLimit: null, labo: false, quantity: true,  panelButton: false, displayOrder: 9 },
-  recolte:        { label: 'Récolte',       quotaType: 'recolte', cooldownMs: null,   partners: false, braquageWeeklyLimit: null, labo: false, quantity: true,  panelButton: true,  displayOrder: 10 },
-  labo_heroine:   { label: 'Labo Héroïne',  quotaType: 'labos',   cooldownMs: null,   partners: true,  braquageWeeklyLimit: null, labo: true,  quantity: false, panelButton: true,  displayOrder: 11 },
-  labo_sporex:    { label: 'Labo Sporex',   quotaType: 'labos',   cooldownMs: null,   partners: true,  braquageWeeklyLimit: null, labo: true,  quantity: false, panelButton: true,  displayOrder: 12 },
+  fleeca:         { label: 'Fleeca',        quotaType: 'actions', cooldownMs: null,   partners: true,  braquageWeeklyLimit: null, labo: false, quantity: false, panelButton: true,  displayOrder: 5, icon: '🏦' },
+  braq_armurerie: { label: 'Armurerie',     quotaType: 'actions', cooldownMs: null,   partners: true,  braquageWeeklyLimit: null, labo: false, quantity: false, panelButton: true,  displayOrder: 6, icon: '🔫' },
+  bijouterie:     { label: 'Bijouterie',    quotaType: 'actions', cooldownMs: null,   partners: true,  braquageWeeklyLimit: null, labo: false, quantity: false, panelButton: true,  displayOrder: 7, icon: '💎' },
+  pinebank:       { label: 'Pinebank',      quotaType: 'actions', cooldownMs: null,   partners: true,  braquageWeeklyLimit: null, labo: false, quantity: false, panelButton: true,  displayOrder: 8, icon: '🏦' },
+  human_labs:     { label: 'Human Labs',    quotaType: 'actions', cooldownMs: null,   partners: true,  braquageWeeklyLimit: null, labo: false, quantity: false, panelButton: true,  displayOrder: 9, icon: '🫀' },
+  vente:          { label: 'Vente drogue',  quotaType: 'vente',   cooldownMs: null,   partners: false, braquageWeeklyLimit: null, labo: false, quantity: true,  panelButton: false, displayOrder: 10 },
+  recolte:        { label: 'Récolte',       quotaType: 'recolte', cooldownMs: null,   partners: false, braquageWeeklyLimit: null, labo: false, quantity: true,  panelButton: true,  displayOrder: 11 },
+  labo_heroine:   { label: 'Labo Héroïne',  quotaType: 'labos',   cooldownMs: null,   partners: true,  braquageWeeklyLimit: null, labo: true,  quantity: false, panelButton: true,  displayOrder: 12 },
+  labo_sporex:    { label: 'Labo Sporex',   quotaType: 'labos',   cooldownMs: null,   partners: true,  braquageWeeklyLimit: null, labo: true,  quantity: false, panelButton: true,  displayOrder: 13 },
+  labo_mexicana:  { label: 'Labo Mexicana', quotaType: 'labos',   cooldownMs: null,   partners: true,  braquageWeeklyLimit: null, labo: true,  quantity: false, panelButton: true,  displayOrder: 14 },
+  labo_cannabis:  { label: 'Labo Cannabis', quotaType: 'labos',   cooldownMs: null,   partners: true,  braquageWeeklyLimit: null, labo: true,  quantity: false, panelButton: true,  displayOrder: 15 },
+  labo_cocaine:   { label: 'Labo Cocaïne',  quotaType: 'labos',   cooldownMs: null,   partners: true,  braquageWeeklyLimit: null, labo: true,  quantity: false, panelButton: true,  displayOrder: 16 },
+};
+
+/**
+ * Barème hebdomadaire de braquages par type d'organisation — remplace le
+ * `braquageWeeklyLimit` fixe des activités concernées (voir
+ * `ACTIVITY_TYPES_FIXED`). `0` signifie que l'activité n'est PAS accessible à
+ * ce tier : contrairement à `null` (qui veut dire "pas de limite du tout",
+ * comme ATM), `0` bloque bien la déclaration (voir `checkBraquageLimit` dans
+ * quotas.ts, qui distingue `null` de `0`).
+ */
+export const BRAQUAGE_LIMITS_BY_TIER: Record<GroupTier, Record<string, number>> = {
+  independant:   { fleeca: 2,  braq_armurerie: 2,  bijouterie: 0, pinebank: 0, human_labs: 0 },
+  petite_frappe: { fleeca: 6,  braq_armurerie: 6,  bijouterie: 1, pinebank: 1, human_labs: 0 },
+  gang:          { fleeca: 10, braq_armurerie: 10, bijouterie: 2, pinebank: 1, human_labs: 1 },
+  organisation:  { fleeca: 12, braq_armurerie: 12, bijouterie: 4, pinebank: 2, human_labs: 1 },
+};
+
+/**
+ * Labos accessibles par type d'organisation — une clé absente ici (aucun
+ * tier ne la liste) est désactivée pour TOUS les tiers ; le tier
+ * `independant` n'apparaît dans aucune liste, donc aucun labo n'y est
+ * jamais disponible. Détermine `ActivityTypeConfig.enabled` dans `reload()`.
+ */
+export const LABO_TIERS: Record<string, GroupTier[]> = {
+  labo_heroine: ['petite_frappe'],
+  labo_sporex: ['petite_frappe'],
+  labo_mexicana: ['gang', 'organisation'],
+  labo_cannabis: ['gang'],
+  labo_cocaine: ['organisation'],
 };
 
 export interface ItemConfig {
@@ -82,6 +151,8 @@ export interface ItemConfig {
   vente: boolean;
   ventePaiement: boolean;
   displayOrder: number;
+  visibleStock: boolean;
+  laboLie: string | null;
 }
 
 export interface BotConfig {
@@ -91,12 +162,16 @@ export interface BotConfig {
   STOCK_GROUPS: Record<string, string[]>;
   VENTE_ITEMS: string[];
   VENTE_ARGENT_ITEMS: string[];
+  /** Items dont le `laboLie` est actif pour le tier courant — drogues en production interne, complément exact de VENTE_ITEMS pour ces items-là (voir `laboLie` dans db.ts). */
+  LABO_ITEMS: string[];
   ACTIVITY_TYPES: Record<string, ActivityTypeConfig>;
   QUOTA_TARGETS: Record<string, number>;
   ADMIN_ROLE_ID: string | null;
   TAXES_ROLE_ID: string | null;
   /** $ par unité, par catégorie de quota — voir `/config salaire` et `computeSalaire` dans quotas.ts. Catégorie absente = aucune paie pour elle. */
   SALARY_RATES: Record<string, number>;
+  /** Tier courant — voir `/config type-groupe` et {@link DEFAULT_GROUP_TIER}. */
+  TYPE_GROUPE: GroupTier;
 }
 
 let cache: BotConfig | null = null;
@@ -118,23 +193,52 @@ export async function reload(): Promise<BotConfig> {
     }
   }
 
+  const tierSetting = await db.getSetting(TYPE_GROUPE_SETTING_KEY);
+  const TYPE_GROUPE: GroupTier = (tierSetting && GROUP_TIERS.some(t => t.key === tierSetting))
+    ? (tierSetting as GroupTier)
+    : DEFAULT_GROUP_TIER;
+
   const items = await db.getAllItems();
   const ITEMS_BY_NAME: Record<string, ItemConfig> = {};
   const STOCK_GROUPS: Record<string, string[]> = {};
   const ALLOWED_ITEMS: string[] = [];
   const VENTE_ITEMS: string[] = [];
   const VENTE_ARGENT_ITEMS: string[] = [];
+  const LABO_ITEMS: string[] = [];
   for (const it of items) {
     ITEMS_BY_NAME[it.name] = it;
     ALLOWED_ITEMS.push(it.name);
     if (it.stockGroup) (STOCK_GROUPS[it.stockGroup] ??= []).push(it.name);
-    if (it.vente) VENTE_ITEMS.push(it.name);
+    // Un item lié à un labo (`laboLie`) n'est vendable en PNJ que si CE tier
+    // ne peut pas produire cette drogue lui-même — voir LABO_TIERS. Un item
+    // sans lien reste vendable dès que `vente` est vrai, quel que soit le tier.
+    // `produitParLabo` et l'exclusion de VENTE_ITEMS sont l'exact complément
+    // l'un de l'autre : une drogue est soit vendable en PNJ, soit en
+    // production interne pour ce tier, jamais les deux à la fois.
+    const produitParLabo = !!it.laboLie && (LABO_TIERS[it.laboLie]?.includes(TYPE_GROUPE) ?? false);
+    if (it.vente && !produitParLabo) VENTE_ITEMS.push(it.name);
+    if (produitParLabo) LABO_ITEMS.push(it.name);
     if (it.ventePaiement) VENTE_ARGENT_ITEMS.push(it.name);
   }
 
   const ACTIVITY_TYPES: Record<string, ActivityTypeConfig> = {};
   for (const [key, cfg] of Object.entries(ACTIVITY_TYPES_FIXED)) {
-    ACTIVITY_TYPES[key] = { ...cfg, laboChannelId: cfg.labo ? (CHANNELS[key as ChannelRole] ?? null) : null };
+    ACTIVITY_TYPES[key] = { ...cfg, laboChannelId: cfg.labo ? (CHANNELS[key as ChannelRole] ?? null) : null, enabled: true };
+  }
+
+  // `enabled` = false pour un labo hors du barème de ce tier, ou une activité
+  // de braquage dont la limite résolue pour ce tier est 0 — dans les deux cas,
+  // l'activité disparaît des boutons/listings (voir quotas.ts) sans que la
+  // limite/le barème sous-jacent soit perdu (`braquageWeeklyLimit` reste 0,
+  // pas `null` : voir docstring de BRAQUAGE_LIMITS_BY_TIER).
+  for (const [key, limit] of Object.entries(BRAQUAGE_LIMITS_BY_TIER[TYPE_GROUPE])) {
+    if (ACTIVITY_TYPES[key]) {
+      ACTIVITY_TYPES[key].braquageWeeklyLimit = limit;
+      ACTIVITY_TYPES[key].enabled = limit !== 0;
+    }
+  }
+  for (const [key, tiers] of Object.entries(LABO_TIERS)) {
+    if (ACTIVITY_TYPES[key]) ACTIVITY_TYPES[key].enabled = tiers.includes(TYPE_GROUPE);
   }
 
   const QUOTA_TARGETS: Record<string, number> = {};
@@ -153,11 +257,13 @@ export async function reload(): Promise<BotConfig> {
     STOCK_GROUPS,
     VENTE_ITEMS,
     VENTE_ARGENT_ITEMS,
+    LABO_ITEMS,
     ACTIVITY_TYPES,
     QUOTA_TARGETS,
     ADMIN_ROLE_ID: rolesByTarget.admin ?? null,
     TAXES_ROLE_ID: rolesByTarget.taxes ?? null,
     SALARY_RATES,
+    TYPE_GROUPE,
   };
   return cache;
 }

@@ -57,12 +57,23 @@ model DiscordRole {
 /// /config item add. stockGroup fusionne plusieurs items sous un même
 /// libellé dans le message de stock (ex. "Drogue à vendre"). vente/
 /// ventePaiement pilotent le cycle de vente automatique (modules/ventes.ts).
+/// visibleStock : l'item reste suivi (stock à jour, historique) même à
+/// `false` — seul son affichage dans le message "Stock Général" est masqué.
+/// laboLie : clé d'une activité "labo" (ex. "labo_cocaine", voir
+/// ACTIVITY_TYPES_FIXED dans config-store.ts) si cet item est LA drogue que
+/// ce labo produit. Sert uniquement à dériver, par tier d'organisation,
+/// l'exclusion de vente_pnj : une drogue que le tier courant peut produire
+/// lui-même (labo actif pour ce tier, voir LABO_TIERS) n'est pas vendable en
+/// PNJ à ce tier — vente_pnj reste sinon tel que configuré ici. `null` pour
+/// un item sans lien avec un labo (jamais exclu).
 model Item {
   name          String  @id
   stockGroup    String? @map("stock_group")
   vente         Boolean @default(false)
   ventePaiement Boolean @default(false) @map("vente_paiement")
   displayOrder  Int     @default(0) @map("display_order")
+  visibleStock  Boolean @default(true) @map("visible_stock")
+  laboLie       String? @map("labo_lie")
 
   @@map("items")
 }

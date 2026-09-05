@@ -30,9 +30,55 @@ import * as db from '../db';
 import * as configStore from '../config-store';
 import { replyAutoDelete, updateAutoDelete } from '../interaction-helpers';
 
-/** Types d'armes proposés à l'ajout — liste fixe (voir docstring de fichier). */
+/**
+ * Types d'armes proposés à l'ajout — liste fixe (voir docstring de fichier).
+ * Chaque modèle est son propre type (pas de regroupement par catégorie
+ * d'arme) : c'est ce qui détermine le groupement par section dans l'embed
+ * armurerie (voir `buildArmurierieEmbed`). Plus de 25 entrées → l'ajout d'une
+ * arme passe par le pattern "modal de recherche avant select" (limite
+ * Discord de 25 options par menu, voir `handleButton`/`handleModal`).
+ */
 const ARME_TYPES: Array<{ key: string; label: string }> = [
-  // À compléter avec la liste fournie par l'utilisateur.
+  // Armes de poing
+  { key: 'pistolet_artisanal', label: 'Pistolet artisanal' },
+  { key: 'sns', label: 'SNS' },
+  { key: 'sns_pico', label: 'SNS PICO' },
+  { key: 'colt', label: 'Colt' },
+  { key: 'p88', label: 'P88' },
+  { key: 'beretta', label: 'Beretta' },
+  { key: 'glock', label: 'Glock' },
+  { key: 'glock_17', label: 'Glock 17' },
+  { key: 'pistolet_en_ceramique', label: 'Pistolet en céramique' },
+  { key: 'calibre_50', label: 'Calibre 50' },
+  { key: 'berreta_mk2', label: 'Berreta (Pistolet MK2)' },
+  { key: 'pistolet_lourd', label: 'Pistolet Lourd' },
+  { key: 'revolver', label: 'Revolver' },
+  // Fusils à pompe
+  { key: 'fusil_a_canon_scie', label: 'Fusil à canon scié' },
+  { key: 'fusil_a_pompe', label: 'Fusil à pompe' },
+  { key: 'striker_12', label: 'Striker 12' },
+  { key: 'fusil_a_pompe_dassaut', label: "Fusil à pompe d'assaut" },
+  { key: 'fusil_a_double_canon', label: 'Fusil à double canon' },
+  // Armes automatiques
+  { key: 'mini_smg', label: 'Mini SMG' },
+  { key: 'micro_smg', label: 'Micro SMG' },
+  { key: 'tec9', label: 'TEC9' },
+  { key: 'mini_uzi_tactic', label: 'Mini Uzi Tactic' },
+  { key: 'mac_10', label: 'MAC-10' },
+  { key: 'mp5k', label: 'Mp5k' },
+  { key: 'mitraillette_tactique', label: 'Mitraillette Tactique' },
+  { key: 'vesper_9', label: 'Vesper 9' },
+  { key: 'vortex_smg', label: 'Vortex SMG' },
+  // Armes lourdes
+  { key: 'fusil_compact', label: 'Fusil compact' },
+  { key: 'ump_45', label: 'UMP 45' },
+  { key: 'sg552', label: 'SG552' },
+  { key: 'fusil_lourd', label: 'Fusil Lourd' },
+  { key: 'thompson', label: 'Thompson' },
+  { key: 'ak47', label: 'AK47' },
+  { key: 'ump_45_chr', label: 'UMP 45 CHR' },
+  { key: 'mk_priss', label: 'Mk Priss' },
+  { key: 'ar_7', label: 'AR 7' },
 ];
 
 /** Plafonds indicatifs hebdomadaires de munitions — valeurs fixes, ne bougent jamais. */
@@ -41,6 +87,7 @@ const MUNITIONS_VENTE_QUOTA_HEBDO = 5000;
 
 // ─── STATUT LABELS ───────────────────────────────────────────────────────────
 
+/** Libellé affiché pour le statut d'une arme ('en_stock' | 'pretee' | 'perdue'). */
 function statutLabel(arme: { statut: string; preteeA?: string | null }): string {
   switch (arme.statut) {
     case 'en_stock': return '🟢 En Stock';
@@ -77,6 +124,7 @@ function comparerNomsNaturel(a: { nom: string }, b: { nom: string }): number {
 
 type Arme = Awaited<ReturnType<typeof db.getAllArmes>>[number];
 
+/** Construit l'embed de l'armurerie : bloc munitions (stock + quotas indicatifs), puis les armes groupées par type (voir ARME_TYPES). */
 async function buildArmurierieEmbed(armes: Arme[]): Promise<EmbedBuilder> {
   const embed = new EmbedBuilder().setTitle('🔫 Armurerie').setColor(0xFEE75C).setTimestamp().setFooter({ text: 'Mis à jour' });
 
@@ -124,6 +172,7 @@ async function buildArmurierieEmbed(armes: Arme[]): Promise<EmbedBuilder> {
 
 // ─── BOUTONS PRINCIPAUX ───────────────────────────────────────────────────────
 
+/** Construit les deux rangées de boutons du message permanent (actions armes, puis munitions). */
 function buildArmurierieButtons(): ActionRowBuilder<ButtonBuilder>[] {
   return [
     new ActionRowBuilder<ButtonBuilder>().addComponents(
@@ -143,6 +192,7 @@ function buildArmurierieButtons(): ActionRowBuilder<ButtonBuilder>[] {
 
 // ─── MESSAGE PERMANENT ────────────────────────────────────────────────────────
 
+/** Édite le message permanent de l'armurerie (ou le crée s'il n'existe pas encore/plus). */
 export async function updatePermanentMessage(client: Client): Promise<void> {
   const channelId = configStore.get().CHANNELS.armurerie;
   if (!channelId) return;
@@ -167,29 +217,31 @@ export async function updatePermanentMessage(client: Client): Promise<void> {
   }
 }
 
+/** Initialise le message permanent de l'armurerie au démarrage du bot. */
 export async function initPermanentMessage(client: Client): Promise<void> {
   await updatePermanentMessage(client);
 }
 
 // ─── HANDLER BOUTONS ─────────────────────────────────────────────────────────
 
+/** Route les clics de bouton du message permanent (`arm_*`) vers le modal de recherche/saisie approprié. */
 export async function handleButton(interaction: ButtonInteraction): Promise<void> {
   const id = interaction.customId;
 
   if (id === 'arm_ajouter') {
-    const types = ARME_TYPES;
-    if (!types.length) {
+    if (!ARME_TYPES.length) {
       return replyAutoDelete(interaction, "❌ Aucun type d'arme défini dans le code (ARME_TYPES est vide dans src/modules/armurerie.ts).");
     }
-    const select = new StringSelectMenuBuilder()
-      .setCustomId('arm_select_ajouter_type')
-      .setPlaceholder("Quel type d'arme ?")
-      .addOptions(types.map(t => ({ label: t.label, value: t.key })));
-
-    return replyAutoDelete(interaction, {
-      content: "➕ Quel type d'arme veux-tu ajouter ?",
-      components: [new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select)],
-    }, { deleteAfterMs: 60_000 });
+    const modal = new ModalBuilder()
+      .setCustomId('modal_arm_recherche_ajouter')
+      .setTitle("Ajouter une arme")
+      .addComponents(
+        new ActionRowBuilder<TextInputBuilder>().addComponents(
+          new TextInputBuilder().setCustomId('recherche').setLabel('Modèle (vide = tout afficher)')
+            .setStyle(TextInputStyle.Short).setRequired(false).setMaxLength(50),
+        ),
+      );
+    return interaction.showModal(modal);
   }
 
   if (id === 'arm_retirer' || id === 'arm_preter' || id === 'arm_rendu') {
@@ -273,6 +325,7 @@ export async function handleButton(interaction: ButtonInteraction): Promise<void
 
 // ─── HANDLER SELECT MENUS ─────────────────────────────────────────────────────
 
+/** Route les sélections de menu (`arm_select_*`) : choix du type à l'ajout, ou de l'arme visée par retirer/prêter/rendu. */
 export async function handleSelect(interaction: StringSelectMenuInteraction): Promise<void> {
   const id = interaction.customId;
 
@@ -342,8 +395,31 @@ interface RechercheConfig {
   description: ((a: Arme) => string) | null;
 }
 
+/** Route les soumissions de modal (`modal_arm_*`) : recherche, ajout, prêt, fabrication/vente de munitions. */
 export async function handleModal(interaction: ModalSubmitInteraction): Promise<void> {
   const id = interaction.customId;
+
+  if (id === 'modal_arm_recherche_ajouter') {
+    const query = interaction.fields.getTextInputValue('recherche').trim().toLowerCase();
+    const filtered = query ? ARME_TYPES.filter(t => t.label.toLowerCase().includes(query)) : ARME_TYPES;
+
+    if (!filtered.length) return replyAutoDelete(interaction, `❌ Aucun type d'arme ne correspond à « ${query} ».`);
+
+    const select = new StringSelectMenuBuilder()
+      .setCustomId('arm_select_ajouter_type')
+      .setPlaceholder("Quel type d'arme ?")
+      .addOptions(filtered.slice(0, 25).map(t => ({ label: t.label, value: t.key })));
+
+    const baseMsg = "➕ Quel type d'arme veux-tu ajouter ?";
+    const content = filtered.length > 25
+      ? `⚠️ ${filtered.length} résultats, seuls les 25 premiers sont affichés — affine ta recherche.\n${baseMsg}`
+      : baseMsg;
+
+    return replyAutoDelete(interaction, {
+      content,
+      components: [new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select)],
+    }, { deleteAfterMs: 60_000 });
+  }
 
   if (id.startsWith('modal_arm_recherche_')) {
     const action = id.replace('modal_arm_recherche_', '');

@@ -76,20 +76,24 @@ const ZONE_BY_KEY = new Map<string, string>(ZONES.map(zone => [slugifyZone(zone)
 /** Types proposés dans les select menus "Rechercher"/"Supprimer une taxe". */
 const TYPES_RECHERCHE: readonly string[] = [...FIXED_TYPES, ...ZONES.map(slugifyZone)];
 
+/** Vrai si `type` est une clé de zone (voir ZONE_BY_KEY), par opposition à un type fixe (sporex/heroine/vente/fertilisant). */
 function isZoneType(type: string): boolean {
   return ZONE_BY_KEY.has(type);
 }
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
 
+/** Formate un timestamp (ms) en date courte française (JJ/MM/AAAA). */
 function formatDate(ts: number): string {
   return new Date(ts).toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric' });
 }
 
+/** Formate un timestamp (ms) en date + heure françaises. */
 function formatDateFull(ts: number): string {
   return new Date(ts).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
+/** Vrai si l'échéance (ms) est passée. */
 function isExpired(echeance: number): boolean {
   return echeance <= Date.now();
 }
@@ -107,6 +111,7 @@ function typeLabel(type: string): string {
 
 // ─── EMBED TAXE ───────────────────────────────────────────────────────────────
 
+/** Embed de détail d'une taxe : type, statut, échéance, paiement, et téléphone/mot de passe si présents. */
 function buildTaxeEmbed(taxe: Taxe): EmbedBuilder {
   const expired = isExpired(taxe.echeance);
   const embed = new EmbedBuilder()
@@ -126,6 +131,7 @@ function buildTaxeEmbed(taxe: Taxe): EmbedBuilder {
   return embed;
 }
 
+/** Bouton bascule payée/non payée pour une taxe. */
 function buildPayeToggleRow(taxe: Taxe): ActionRowBuilder<ButtonBuilder> {
   return new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
@@ -136,6 +142,7 @@ function buildPayeToggleRow(taxe: Taxe): ActionRowBuilder<ButtonBuilder> {
   );
 }
 
+/** Boutons Renouveler/Supprimer, affichés sur l'alerte d'expiration et le résultat d'une recherche. */
 function buildAlertButtons(taxeId: number): ActionRowBuilder<ButtonBuilder> {
   return new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder().setCustomId(`tax_renew_${taxeId}`).setLabel('Renouveler').setStyle(ButtonStyle.Success).setEmoji('🔄'),
@@ -145,6 +152,7 @@ function buildAlertButtons(taxeId: number): ActionRowBuilder<ButtonBuilder> {
 
 // ─── MESSAGE PERMANENT ────────────────────────────────────────────────────────
 
+/** Édite le message permanent de gestion des taxes (ou le crée s'il n'existe pas encore/plus). */
 export async function initPermanentMessage(client: Client): Promise<void> {
   const channelId = configStore.get().CHANNELS.taxes;
   if (!channelId) return;
@@ -188,6 +196,7 @@ export async function initPermanentMessage(client: Client): Promise<void> {
 
 // ─── CHECK TAXES EXPIRÉES ─────────────────────────────────────────────────────
 
+/** Cron quotidien (10h Europe/Paris) : alerte pour chaque taxe expirée hors zones, une seule fois par expiration (`alerteSent`). */
 export async function checkExpiredTaxes(client: Client): Promise<void> {
   const channelId = configStore.get().CHANNELS.alertes_taxes;
   if (!channelId) return;
@@ -216,6 +225,7 @@ export async function checkExpiredTaxes(client: Client): Promise<void> {
   }
 }
 
+/** Aucune commande slash dédiée — tout passe par le message permanent (boutons/modals/selects). */
 export function getCommands() {
   return [];
 }
@@ -224,6 +234,7 @@ export function getCommands() {
 
 const FIXED_TITLES: Record<FixedType, string> = { sporex: 'Taxe Spore X', heroine: 'Taxe Héroïne', vente: 'Taxe Vente', fertilisant: 'Taxe Fertilisant' };
 
+/** Modal de création d'une taxe (fixe ou de zone), avec le champ téléphone en plus pour les zones. */
 function buildCreationModal(type: string): ModalBuilder {
   const title = isZoneType(type) ? `Taxe — ${ZONE_BY_KEY.get(type)}` : FIXED_TITLES[type as FixedType];
   const rows = [
@@ -246,6 +257,7 @@ function buildCreationModal(type: string): ModalBuilder {
   return new ModalBuilder().setCustomId(`modal_tax_create_${type}`).setTitle(title.slice(0, 45)).addComponents(...rows);
 }
 
+/** Route les clics de bouton du message permanent et des alertes (`tax_*`) : création, renouvellement, recherche, suppression, bascule payée. */
 export async function handleButton(interaction: ButtonInteraction): Promise<void> {
   const id = interaction.customId;
 
@@ -323,6 +335,7 @@ export async function handleButton(interaction: ButtonInteraction): Promise<void
 
 // ─── HANDLER MODALS ───────────────────────────────────────────────────────────
 
+/** Traite la soumission du modal de création (`modal_tax_create_<type>`) — revérifie l'absence de taxe active pour ce type avant d'insérer (contre une double soumission concurrente). */
 async function handleCreationModal(interaction: ModalSubmitInteraction, type: string): Promise<void> {
   if (await db.getActiveTaxeByType(type)) {
     return replyAutoDelete(interaction, `🚫 **${typeLabel(type)}** a déjà une taxe active — supprime-la ou attends son expiration avant d'en créer une nouvelle.`);
@@ -342,6 +355,7 @@ async function handleCreationModal(interaction: ModalSubmitInteraction, type: st
   return replyAutoDelete(interaction, `✅ Taxe ${typeLabel(type)} **${nom}** enregistrée — échéance le **${formatDate(echeance)}**.`);
 }
 
+/** Route les soumissions de modal (`modal_tax_*`) : création, renouvellement, recherche. */
 export async function handleModal(interaction: ModalSubmitInteraction): Promise<void> {
   const id = interaction.customId;
 
@@ -400,6 +414,7 @@ export async function handleModal(interaction: ModalSubmitInteraction): Promise<
 
 // ─── HANDLER SELECT MENUS ─────────────────────────────────────────────────────
 
+/** Route les sélections de menu (`tax_select_*`) : choix de zone, résultat de recherche/suppression, choix de type. */
 export async function handleSelect(interaction: StringSelectMenuInteraction): Promise<void> {
   if (interaction.customId === 'tax_select_zone_create') {
     const zoneKey = interaction.values[0];

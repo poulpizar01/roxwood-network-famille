@@ -43,6 +43,7 @@ type PendingSale = Awaited<ReturnType<typeof db.getPendingSale>>;
 
 // ─── POINT D'ENTRÉE DEPUIS STOCKS ────────────────────────────────────────────
 
+/** Point d'entrée appelé par `stocks.handleMessage` pour chaque mouvement détecté : route vers création de vente en attente ou tentative de confirmation selon l'item et le sens du mouvement. */
 export async function onStockEntry(client: Client, entry: StockEntry): Promise<void> {
   const c = configStore.get();
   const itemLower = entry.item.toLowerCase();
@@ -64,6 +65,7 @@ export async function onStockEntry(client: Client, entry: StockEntry): Promise<v
 
 // ─── ALERTE JOUEUR NON MAPPÉ ──────────────────────────────────────────────────
 
+/** Alerte dans `admin` qu'un joueur sans compte Discord mappé est impliqué dans une vente (stats/quota non attribuables). */
 async function alertMissingMapping(client: Client, joueur: string, contexte: string): Promise<void> {
   const channelId = configStore.get().CHANNELS.admin;
   if (!channelId) return;
@@ -82,6 +84,7 @@ async function alertMissingMapping(client: Client, joueur: string, contexte: str
 
 // ─── CRÉER LA VENTE EN ATTENTE ET ENVOYER L'ALERTE ───────────────────────────
 
+/** Crée une vente en attente et poste l'alerte dans `ventes_drogue` — ou cumule sur une alerte déjà postée si un retrait du même item par le même joueur date de moins de {@link ACCUMULATION_WINDOW_MS}. */
 async function createPendingSale(client: Client, entry: StockEntry): Promise<void> {
   const channelId = configStore.get().CHANNELS.ventes_drogue;
   if (!channelId) return;
@@ -97,12 +100,10 @@ async function createPendingSale(client: Client, entry: StockEntry): Promise<voi
   const channel = await client.channels.fetch(channelId).catch(() => null);
   if (!channel?.isSendable()) return;
 
+  // Pas d'alerte "joueur non mappé" ici si `discordIds` est vide : c'est déjà
+  // fait en amont par `stocks.handleMessage` pour tout mouvement de coffre,
+  // avant même que ce module ne soit appelé.
   const discordIds = await db.getUserMappings(entry.joueur);
-
-  if (discordIds.length === 0) {
-    await alertMissingMapping(client, entry.joueur, `Retrait de ${entry.quantite.toLocaleString('fr-FR')} × ${entry.item}`);
-  }
-
   const discordId = discordIds.length === 1 ? discordIds[0] : null;
 
   const saleId = await db.createPendingSale({ joueur: entry.joueur, discord_id: discordId, item: entry.item, quantite: entry.quantite, timestamp: Date.now() });
@@ -115,6 +116,7 @@ async function createPendingSale(client: Client, entry: StockEntry): Promise<voi
   await db.updatePendingSaleMessage(saleId, sentMsg.id, sentMsg.channelId);
 }
 
+/** Embed d'alerte de vente : joueur, item, quantité — le footer `Vente #<id>` identifie la vente (voir `handleTrashReaction`). */
 function buildAlertEmbed(entry: { joueur: string; item: string; quantite: number }, saleId: number, title: string, color: number, discordId: string | null = null): EmbedBuilder {
   return new EmbedBuilder()
     .setTitle(title)
@@ -128,6 +130,7 @@ function buildAlertEmbed(entry: { joueur: string; item: string; quantite: number
     .setTimestamp();
 }
 
+/** Boutons Déclarer/Reposer/Modifier d'une alerte de vente en attente. */
 function buildAlertButtons(saleId: number): ActionRowBuilder<ButtonBuilder> {
   return new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder().setCustomId(`vente_declarer_${saleId}`).setLabel('Déclarer la Vente').setStyle(ButtonStyle.Success).setEmoji('💰'),
@@ -136,6 +139,7 @@ function buildAlertButtons(saleId: number): ActionRowBuilder<ButtonBuilder> {
   );
 }
 
+/** Met à jour l'embed d'une alerte de vente après cumul d'une nouvelle quantité (nouveau retrait, ou reposage partiel). */
 async function editAccumulatedAlert(client: Client, sale: NonNullable<PendingSale>, newQuantite: number): Promise<void> {
   if (!sale.channelId || !sale.messageId) return;
   try {
@@ -151,6 +155,7 @@ async function editAccumulatedAlert(client: Client, sale: NonNullable<PendingSal
 
 // ─── CONFIRMATION PAR DÉPÔT D'ARGENT ─────────────────────────────────────────
 
+/** Un dépôt d'un item de paiement confirme toutes les ventes déclarées en attente d'un joueur dans la fenêtre {@link WINDOW_MS}. */
 async function tryConfirmMoneyDeposit(client: Client, entry: StockEntry): Promise<void> {
   const sales = await db.getPendingSalesForConfirmation(entry.joueur, Date.now() - WINDOW_MS);
   if (!sales.length) return;
@@ -164,6 +169,7 @@ async function tryConfirmMoneyDeposit(client: Client, entry: StockEntry): Promis
 
 // ─── CONFIRMATION PAR RETOUR DE DROGUE ───────────────────────────────────────
 
+/** Un dépôt de l'item de vente lui-même confirme un reposage déclaré, ou décrémente/annule une vente en attente pas encore déclarée (redépôt partiel ou total). */
 async function tryConfirmRedeposit(client: Client, entry: StockEntry): Promise<void> {
   const saleRepose = await db.getPendingSaleRepose(entry.joueur, entry.item, Date.now() - WINDOW_MS);
   if (saleRepose) {
@@ -187,6 +193,7 @@ async function tryConfirmRedeposit(client: Client, entry: StockEntry): Promise<v
 
 // ─── LOG FINAL DANS log_ventes ────────────────────────────────────────────────
 
+/** Poste le log final dans `log_ventes` pour une ou plusieurs ventes confirmées ensemble, puis met à jour stats/quota (ou alerte si le joueur n'est pas mappé). */
 async function sendLogVente(client: Client, sales: Array<NonNullable<PendingSale>>, montantDepose: number): Promise<void> {
   const channelId = configStore.get().CHANNELS.log_ventes;
   if (!channelId) return;
@@ -223,6 +230,7 @@ async function sendLogVente(client: Client, sales: Array<NonNullable<PendingSale
 
 // ─── RÉACTION 🗑️ → IGNORER LA VENTE ──────────────────────────────────────────
 
+/** Réaction 🗑️ sur une alerte de vente (identifiée par le footer `Vente #<id>`) : marque la vente ignorée si l'auteur est admin ou le joueur concerné. @returns `true` si la réaction concernait bien une alerte de vente (gérée ou rejetée), `false` sinon (laisse `index.ts` traiter la réaction normalement). */
 export async function handleTrashReaction(reaction: MessageReaction | PartialMessageReaction, user: User | PartialUser): Promise<boolean> {
   const msg = reaction.message;
   const footer = msg.embeds?.[0]?.footer?.text;
@@ -251,6 +259,7 @@ export async function handleTrashReaction(reaction: MessageReaction | PartialMes
 
 // ─── ÉDITION DU MESSAGE ALERTE ────────────────────────────────────────────────
 
+/** Édite le titre/couleur de l'embed d'une alerte de vente et retire ses boutons (fin de cycle : confirmée, expirée...). */
 async function editAlertMessage(client: Client, sale: NonNullable<PendingSale>, title: string, color: number): Promise<void> {
   if (!sale.channelId || !sale.messageId) return;
   try {
@@ -265,6 +274,7 @@ async function editAlertMessage(client: Client, sale: NonNullable<PendingSale>, 
 
 // ─── AUTORISATION D'INTERACTION ───────────────────────────────────────────────
 
+/** Vrai si l'auteur de l'interaction est mappé au joueur de la vente (et backfill `discordId` si absent), ou admin ; répond sinon avec un refus. */
 async function authorizeSaleInteraction(interaction: ButtonInteraction, sale: NonNullable<PendingSale>): Promise<boolean> {
   const mappedIds = await db.getUserMappings(sale.joueur);
 
@@ -288,6 +298,7 @@ async function authorizeSaleInteraction(interaction: ButtonInteraction, sale: No
 
 // ─── HANDLER BOUTONS ─────────────────────────────────────────────────────────
 
+/** Route les clics de bouton d'une alerte de vente (`vente_*`) : déclarer, reposer, modifier la quantité. */
 export async function handleButton(interaction: ButtonInteraction): Promise<void> {
   const id = interaction.customId;
 
@@ -341,6 +352,7 @@ export async function handleButton(interaction: ButtonInteraction): Promise<void
 
 // ─── HANDLER MODALS ───────────────────────────────────────────────────────────
 
+/** Traite la soumission du modal de correction de quantité (`modal_vente_modifier_<id>`). */
 export async function handleModal(interaction: ModalSubmitInteraction): Promise<void> {
   const id = interaction.customId;
 
@@ -374,6 +386,7 @@ export async function handleModal(interaction: ModalSubmitInteraction): Promise<
 
 // ─── NETTOYAGE DES VENTES EXPIRÉES (cron) ────────────────────────────────────
 
+/** Cron (toutes les 10 min) : marque expirées les ventes sans action depuis plus de {@link WINDOW_MS}. */
 export async function cleanupExpiredSales(client: Client): Promise<void> {
   const expired = await db.getExpiredPendingSales(Date.now() - WINDOW_MS);
   for (const sale of expired) {
@@ -384,6 +397,7 @@ export async function cleanupExpiredSales(client: Client): Promise<void> {
 
 // ─── COMMANDES SLASH ─────────────────────────────────────────────────────────
 
+/** Déclare les commandes `/adduser`, `/removeuser`, `/listusers`. */
 export function getCommands() {
   return [
     {
@@ -406,6 +420,7 @@ export function getCommands() {
   ];
 }
 
+/** `/adduser` (admin) : associe un nom en jeu à un membre Discord. */
 export async function handleAddUserCommand(interaction: ChatInputCommandInteraction): Promise<void> {
   if (!isAdmin(interaction.member)) { await interaction.reply({ content: '❌ Commande réservée aux administrateurs.', flags: MessageFlags.Ephemeral }); return; }
   const nomJeu = interaction.options.getString('nom_jeu', true).trim();
@@ -419,6 +434,7 @@ export async function handleAddUserCommand(interaction: ChatInputCommandInteract
   await interaction.reply({ content: `✅ **${nomJeu}** associé à <@${membre.id}>.`, flags: MessageFlags.Ephemeral });
 }
 
+/** `/removeuser` (admin) : dissocie un nom en jeu d'un membre Discord (ou de tous les comptes associés si aucun membre n'est précisé et qu'il n'y en a qu'un). */
 export async function handleRemoveUserCommand(interaction: ChatInputCommandInteraction): Promise<void> {
   if (!isAdmin(interaction.member)) { await interaction.reply({ content: '❌ Commande réservée aux administrateurs.', flags: MessageFlags.Ephemeral }); return; }
   const nomJeu = interaction.options.getString('nom_jeu', true).trim();
@@ -440,6 +456,7 @@ export async function handleRemoveUserCommand(interaction: ChatInputCommandInter
   await interaction.reply({ content: `✅ Association **${nomJeu}** → ${who} supprimée.`, flags: MessageFlags.Ephemeral });
 }
 
+/** `/listusers` (admin) : liste toutes les associations nom en jeu ↔ Discord. */
 export async function handleListUsersCommand(interaction: ChatInputCommandInteraction): Promise<void> {
   if (!isAdmin(interaction.member)) { await interaction.reply({ content: '❌ Commande réservée aux administrateurs.', flags: MessageFlags.Ephemeral }); return; }
   const mappings = await db.getAllUserMappings();
