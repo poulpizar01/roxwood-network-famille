@@ -41,8 +41,8 @@ En développement : `npm run dev` (tsx, rechargement à chaud, pas de build).
 
 En production, le bot peut tourner via un service systemd :
 ```bash
-sudo systemctl restart bot-famille.service
-sudo journalctl -u bot-famille.service -n 50 --no-pager
+sudo systemctl restart roxwood-network-famille.service
+sudo journalctl -u roxwood-network-famille.service -n 50 --no-pager
 ```
 Après toute mise à jour du code : `git pull && npm install && npx prisma migrate deploy && npm run build` puis redémarrage du service.
 
@@ -96,9 +96,6 @@ Le déploiement passe par 4 tiers — **Indépendant / Petite Frappe / Gang / Or
 
 Tant qu'aucun tier n'a jamais été choisi, le bot se comporte comme `Petite Frappe` par défaut.
 
-### Activités déclarables — fixes dans le code, pas de `/config`
-Le panneau de quotas (ATM, Cambu, Supérette, Go Fast, Fleeca, Armurerie, Bijouterie, Pinebank, Human Labs, Vente, Récolte, Labo Héroïne, Labo Sporex, Labo Mexicana, Labo Cannabis, Labo Cocaïne) est un registre **fixe** dans `src/config-store.ts` (`ACTIVITY_TYPES_FIXED`), pas piloté depuis Discord — ces activités et leurs cooldowns ne changent quasiment jamais une fois le bot déployé (seules leurs limites de braquage et leur disponibilité dépendent du tier, voir `/config type-groupe`). Pour ajouter/retirer/modifier une activité, éditer directement ce fichier. Les salons de labo restent configurables comme n'importe quel autre salon : `/config channel set labo_heroine <#salon>`.
-
 ### `/config quota`
 Objectif hebdomadaire par catégorie de quota (`actions`, `vente`, `recolte`, `labos` — celles utilisées par le registre d'activités ci-dessus). C'est la seule partie du système de quotas qui reste pilotable depuis Discord, parce que les objectifs peuvent être renégociés. **Une catégorie sans objectif défini n'apparaît dans aucun affichage de quota** (panneau perso, `/listquota`, paie hebdomadaire) même si des activités lui sont rattachées — seul le détail par activité la montre encore.
 - `/config quota set <quota_type> <valeur>` / `remove` / `list`
@@ -130,6 +127,8 @@ Types fixes avec leur propre bouton : `sporex`, `heroine`, `vente`, `fertilisant
 
 ### `src/modules/armurerie.ts` — Armurerie & munitions
 Inventaire d'armes individuelles (nom, référence unique, statut `en_stock`/`pretee`/`perdue`). Types d'armes fixes dans le code (constante `ARME_TYPES` en tête de fichier — pas de `/config` dédié, cette liste ne bouge jamais une fois posée), regroupés en 4 catégories (armes de poing, fusils à pompe, armes automatiques, armes lourdes) avec plus de 25 modèles : l'ajout d'une arme passe donc par un modal de recherche avant le select (limite Discord de 25 options). Munitions : ligne de stock + deux déclarations indicatives (Fabrication / Vente) avec compteur hebdomadaire, plafonds fixes (5000/5000) dans le code.
+
+Le stock réel de munitions affiché en tête du panneau vient d'un item suivi comme les autres — il faut l'ajouter via `/config item add nom:"<nom exact des logs FiveM>" groupe:"Munitions de pistolet"` (le libellé de groupe doit correspondre exactement à cette chaîne, câblée dans `armurerie.ts`). Sans cet item configuré, le panneau affiche `0` en stock, silencieusement.
 
 ### `src/modules/ventes.ts` — Cycle de vie des ventes de drogue
 Un retrait de coffre sur un item marqué `vente_pnj: true` crée une vente en attente et alerte dans le salon `ventes_drogue`. Confirmation automatique dès le dépôt d'un item marqué `paiement: true` (fenêtre de 3h), log dans `log_ventes`, mise à jour des stats/quota. `/adduser`, `/removeuser` et `/listusers` gèrent les associations nom en jeu ↔ compte Discord, utilisées ici comme par l'alerte "joueur non mappé" de `stocks.ts`.

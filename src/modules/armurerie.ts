@@ -11,6 +11,10 @@
  * Un message permanent dans le salon `armurerie` expose : Ajouter, Perdu,
  * Prêter, Rendu, Liste des Pertes, et deux déclarations indicatives de
  * munitions (Fabrication / Vente, plafonds fixes ci-dessous) — Historique.
+ *
+ * Le stock réel de munitions affiché en tête de ce message vient de
+ * `/config item add` comme n'importe quel item de coffre — voir
+ * {@link MUNITIONS_STOCK_GROUP} pour l'associer au bon libellé de groupe.
  */
 import {
   EmbedBuilder,
@@ -85,6 +89,25 @@ const ARME_TYPES: Array<{ key: string; label: string }> = [
 const MUNITIONS_FABRICATION_QUOTA_HEBDO = 5000;
 const MUNITIONS_VENTE_QUOTA_HEBDO = 5000;
 
+/**
+ * Libellé de regroupement (`/config item add nom:"..." groupe:"Munitions de
+ * pistolet"`) attendu pour le(s) item(s) qui représentent les munitions de
+ * pistolet dans les logs de coffre. Volontairement PAS un nom d'item exact
+ * (contrairement au piège n°1 du projet, voir docstring de fichier) : le
+ * `groupe` est choisi librement par l'admin, il n'a pas besoin de coïncider
+ * avec l'orthographe FiveM — ça permet aussi de regrouper plusieurs items
+ * (ex. plusieurs calibres) sous un seul total ici.
+ */
+const MUNITIONS_STOCK_GROUP = 'Munitions de pistolet';
+
+/** Stock total des items regroupés sous {@link MUNITIONS_STOCK_GROUP} (0 si aucun item n'est configuré avec ce groupe). */
+async function getMunitionsStock(): Promise<number> {
+  const items = configStore.get().STOCK_GROUPS[MUNITIONS_STOCK_GROUP] ?? [];
+  let total = 0;
+  for (const item of items) total += await db.getStock(item);
+  return total;
+}
+
 // ─── STATUT LABELS ───────────────────────────────────────────────────────────
 
 /** Libellé affiché pour le statut d'une arme ('en_stock' | 'pretee' | 'perdue'). */
@@ -128,7 +151,7 @@ type Arme = Awaited<ReturnType<typeof db.getAllArmes>>[number];
 async function buildArmurierieEmbed(armes: Arme[]): Promise<EmbedBuilder> {
   const embed = new EmbedBuilder().setTitle('🔫 Armurerie').setColor(0xFEE75C).setTimestamp().setFooter({ text: 'Mis à jour' });
 
-  const munitions = await db.getStock('munitions de pistolet');
+  const munitions = await getMunitionsStock();
   const sinceReset = Number((await db.getSetting('last_weekly_reset')) || 0);
   const fabriquees = await db.getMunitionsFabriqueesDepuis(sinceReset);
   const vendues = await db.getMunitionsVenduesDepuis(sinceReset);

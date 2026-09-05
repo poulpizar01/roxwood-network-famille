@@ -7,12 +7,12 @@
  *  - Types fixes avec leur propre bouton : 'sporex' (labo Spore X), 'heroine'
  *    (labo Héroïne), 'vente' (vente de drogue), 'fertilisant' (récolte).
  *  - Taxes de zone : un seul bouton "Taxe Zone" qui demande d'abord de
- *    choisir une zone parmi {@link ZONES}, puis affiche le même formulaire
- *    que les autres types (+ téléphone). Le nom de la zone choisie EST
- *    directement stocké comme `type` de la taxe (ex. `type: 'Roxwood
- *    Village'`) — pas de colonne séparée, le regroupement par zone se fait
- *    entièrement via ce champ, qui sert aussi bien à l'affichage qu'au
- *    filtrage/recherche par type comme n'importe quel autre type.
+ *    choisir une zone, puis affiche le même formulaire que les autres types
+ *    (+ téléphone). Le nom de la zone choisie EST directement stocké comme
+ *    `type` de la taxe (ex. `type: 'Roxwood Village'`) — pas de colonne
+ *    séparée, le regroupement par zone se fait entièrement via ce champ, qui
+ *    sert aussi bien à l'affichage qu'au filtrage/recherche par type comme
+ *    n'importe quel autre type.
  *
  * Contrairement à items/activités/quotas, ces types restent fixes dans le
  * code : chacun a des champs de modal hétérogènes (zone a téléphone + un
@@ -21,6 +21,24 @@
  * généralisation retenu pour ce projet (items, quotas, cooldowns, types de
  * braquage). Seuls le salon, le rôle d'accès et les échéances sont
  * configurables.
+ *
+ * **Dépendance au type d'organisation** (voir `/config type-groupe`, même
+ * principe que `LABO_TIERS` dans config-store.ts) : les zones et les taxes
+ * fixes n'existent PAS toutes à tous les tiers — {@link ZONES_BY_TIER}
+ * et {@link TAXES_FIXES_BY_TIER} donnent, pour le tier courant, ce qui
+ * est réellement proposé à la création. `vente` est la seule exception,
+ * universelle (disponible à tous les tiers, y compris Indépendant qui n'a ni
+ * zone ni taxe fixe). Le bouton "Taxe Zone" lui-même disparaît
+ * entièrement si `ZONES_BY_TIER` est vide pour ce tier (pas de select vide).
+ * Gang et Organisation sont volontairement vides pour l'instant (zones et
+ * taxes fixes restant à définir) — les remplir suffit, aucune autre
+ * modification n'est nécessaire pour qu'elles apparaissent.
+ *
+ * Une fois créée, une taxe reste gérable (recherche, suppression, paiement,
+ * renouvellement) même si son type/zone sort du barème suite à un changement
+ * de tier — seule la CRÉATION de nouvelles taxes est filtrée par tier ;
+ * {@link TYPES_RECHERCHE} liste donc l'union de tous les tiers, pas
+ * seulement le tier courant.
  *
  * Une seule taxe active à la fois par type (voir `db.getActiveTaxeByType`,
  * qui ignore les taxes expirées — seule une taxe encore dans les temps
@@ -50,16 +68,57 @@ import {
 } from 'discord.js';
 import * as db from '../db';
 import * as configStore from '../config-store';
+import type { GroupTier } from '../config-store';
 import { replyAutoDelete, updateAutoDelete } from '../interaction-helpers';
 
 type Taxe = NonNullable<Awaited<ReturnType<typeof db.getTaxe>>>;
 
-/** Types fixes ayant leur propre bouton de création (hors zones). */
+/** Tous les types fixes connus (hors zones) — `vente` est universelle, les autres sont filtrées par tier via {@link TAXES_FIXES_BY_TIER}. */
 const FIXED_TYPES = ['sporex', 'heroine', 'vente', 'fertilisant'] as const;
 type FixedType = (typeof FIXED_TYPES)[number];
 
-/** Zones fixes pour les taxes de zone — voir docstring de fichier. */
-const ZONES = ['Roxwood Village', 'Grapeseed Valley', 'Richman', 'Cinéma', 'Hawick', 'Carson'] as const;
+/** Titre de bouton, emoji et style par type fixe — source unique pour le panneau et les modals. */
+const FIXED_TYPE_META: Record<FixedType, { title: string; emoji: string; style: ButtonStyle }> = {
+  sporex: { title: 'Taxe Spore X', emoji: '🧪', style: ButtonStyle.Primary },
+  heroine: { title: 'Taxe Héroïne', emoji: '💉', style: ButtonStyle.Primary },
+  fertilisant: { title: 'Taxe Fertilisant', emoji: '🌱', style: ButtonStyle.Primary },
+  vente: { title: 'Taxe Vente', emoji: '💊', style: ButtonStyle.Secondary },
+};
+
+/**
+ * Taxes fixes proposées à la création, par tier — `vente` n'y figure
+ * jamais (elle est universelle, voir docstring de fichier). Gang et
+ * Organisation sont vides pour l'instant : à compléter avec leurs propres
+ * taxes fixes (liées à leurs labos, voir LABO_TIERS) dès qu'elles
+ * sont définies.
+ */
+const TAXES_FIXES_BY_TIER: Record<GroupTier, readonly FixedType[]> = {
+  independant: [],
+  petite_frappe: ['sporex', 'heroine', 'fertilisant'],
+  gang: [],
+  organisation: [],
+};
+
+/** Zones taxables par tier — Indépendant n'en a aucune ; Gang/Organisation à compléter. */
+const ZONES_BY_TIER: Record<GroupTier, readonly string[]> = {
+  independant: [],
+  petite_frappe: ['Roxwood Village', 'Grapeseed Valley', 'Richman', 'Cinéma', 'Hawick', 'Carson'],
+  gang: [],
+  organisation: [],
+};
+
+/** Toutes les zones, tous tiers confondus — sert à résoudre le libellé d'une zone même si elle est sortie du barème du tier courant (voir docstring de fichier). */
+const ALL_ZONES: readonly string[] = Object.values(ZONES_BY_TIER).flat();
+
+/** Zones proposées à la création pour le tier actuellement configuré. */
+function currentZones(): readonly string[] {
+  return ZONES_BY_TIER[configStore.get().TYPE_GROUPE];
+}
+
+/** Taxes fixes proposées à la création pour le tier actuellement configuré. */
+function currentTaxesFixes(): readonly FixedType[] {
+  return TAXES_FIXES_BY_TIER[configStore.get().TYPE_GROUPE];
+}
 
 /**
  * Convertit un libellé de zone en clé stable (minuscules, accents retirés,
@@ -67,14 +126,14 @@ const ZONES = ['Roxwood Village', 'Grapeseed Valley', 'Richman', 'Cinéma', 'Haw
  * comme `type` de la taxe.
  */
 function slugifyZone(zone: string): string {
-  return zone.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, '_');
+  return zone.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/\s+/g, '_');
 }
 
-/** Clé de zone → libellé affiché. */
-const ZONE_BY_KEY = new Map<string, string>(ZONES.map(zone => [slugifyZone(zone), zone]));
+/** Clé de zone → libellé affiché, pour toutes les zones connues (tous tiers). */
+const ZONE_BY_KEY = new Map<string, string>(ALL_ZONES.map(zone => [slugifyZone(zone), zone]));
 
-/** Types proposés dans les select menus "Rechercher"/"Supprimer une taxe". */
-const TYPES_RECHERCHE: readonly string[] = [...FIXED_TYPES, ...ZONES.map(slugifyZone)];
+/** Types proposés dans les select menus "Rechercher"/"Supprimer une taxe" — union de tous les tiers, pas seulement le tier courant (voir docstring de fichier). */
+const TYPES_RECHERCHE: readonly string[] = [...FIXED_TYPES, ...ALL_ZONES.map(slugifyZone)];
 
 /** Vrai si `type` est une clé de zone (voir ZONE_BY_KEY), par opposition à un type fixe (sporex/heroine/vente/fertilisant). */
 function isZoneType(type: string): boolean {
@@ -100,13 +159,8 @@ function isExpired(echeance: number): boolean {
 
 /** Libellé affiché pour un type — résout les clés de zone via ZONE_BY_KEY. */
 function typeLabel(type: string): string {
-  switch (type) {
-    case 'sporex': return 'Labo Sporex';
-    case 'heroine': return 'Labo Héroïne';
-    case 'vente': return 'Vente';
-    case 'fertilisant': return 'Fertilisant';
-    default: return ZONE_BY_KEY.get(type) ?? type;
-  }
+  if (type in FIXED_TYPE_META) return FIXED_TYPE_META[type as FixedType].title.replace(/^Taxe /, '');
+  return ZONE_BY_KEY.get(type) ?? type;
 }
 
 // ─── EMBED TAXE ───────────────────────────────────────────────────────────────
@@ -152,6 +206,31 @@ function buildAlertButtons(taxeId: number): ActionRowBuilder<ButtonBuilder> {
 
 // ─── MESSAGE PERMANENT ────────────────────────────────────────────────────────
 
+/**
+ * Boutons de création proposés pour le tier courant : Taxe Zone (seulement si
+ * ce tier a au moins une zone), les taxes fixes de ce tier, puis
+ * Taxe Vente (toujours). Chunké par 5 (limite Discord par `ActionRow`).
+ */
+function buildCreationButtonRows(): ActionRowBuilder<ButtonBuilder>[] {
+  const buttons: ButtonBuilder[] = [];
+
+  if (currentZones().length) {
+    buttons.push(new ButtonBuilder().setCustomId('tax_zone').setLabel('Taxe Zone').setStyle(ButtonStyle.Primary).setEmoji('🏘️'));
+  }
+  for (const type of currentTaxesFixes()) {
+    const meta = FIXED_TYPE_META[type];
+    buttons.push(new ButtonBuilder().setCustomId(`tax_${type}`).setLabel(meta.title).setStyle(meta.style).setEmoji(meta.emoji));
+  }
+  const venteMeta = FIXED_TYPE_META.vente;
+  buttons.push(new ButtonBuilder().setCustomId('tax_vente').setLabel(venteMeta.title).setStyle(venteMeta.style).setEmoji(venteMeta.emoji));
+
+  const rows: ActionRowBuilder<ButtonBuilder>[] = [];
+  for (let i = 0; i < buttons.length; i += 5) {
+    rows.push(new ActionRowBuilder<ButtonBuilder>().addComponents(buttons.slice(i, i + 5)));
+  }
+  return rows;
+}
+
 /** Édite le message permanent de gestion des taxes (ou le crée s'il n'existe pas encore/plus). */
 export async function initPermanentMessage(client: Client): Promise<void> {
   const channelId = configStore.get().CHANNELS.taxes;
@@ -165,29 +244,23 @@ export async function initPermanentMessage(client: Client): Promise<void> {
       .setColor(0xFEE75C)
       .setDescription(
         'Utilisez les boutons ci-dessous pour enregistrer une taxe.\n\n' +
-        '**Zone** — zone de vente\n**Fertilisant** — récolte\n**Spore X** — production\n**Héroïne** — production\n**Vente** — vente de drogue',
+        'Les zones et les taxes fixes disponibles dépendent du type d\'organisation actuel (voir `/config type-groupe`).',
       );
 
-    const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-      new ButtonBuilder().setCustomId('tax_zone').setLabel('Taxe Zone').setStyle(ButtonStyle.Primary).setEmoji('🏘️'),
-      new ButtonBuilder().setCustomId('tax_fertilisant').setLabel('Taxe Fertilisant').setStyle(ButtonStyle.Primary).setEmoji('🌱'),
-      new ButtonBuilder().setCustomId('tax_sporex').setLabel('Taxe Spore X').setStyle(ButtonStyle.Primary).setEmoji('🧪'),
-      new ButtonBuilder().setCustomId('tax_heroine').setLabel('Taxe Héroïne').setStyle(ButtonStyle.Primary).setEmoji('💉'),
-      new ButtonBuilder().setCustomId('tax_vente').setLabel('Taxe Vente').setStyle(ButtonStyle.Secondary).setEmoji('💊'),
-    );
-
-    const row2 = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    const searchRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder().setCustomId('tax_rechercher').setLabel('Rechercher une taxe').setStyle(ButtonStyle.Secondary).setEmoji('🔍'),
       new ButtonBuilder().setCustomId('tax_supprimer').setLabel('Supprimer une taxe').setStyle(ButtonStyle.Danger).setEmoji('🗑️'),
     );
 
+    const components = [...buildCreationButtonRows(), searchRow];
+
     const storedId = await db.getSetting('taxes_message_id');
     if (storedId) {
       const msg = await channel.messages.fetch(storedId).catch(() => null);
-      if (msg) { await msg.edit({ embeds: [embed], components: [row, row2] }); return; }
+      if (msg) { await msg.edit({ embeds: [embed], components }); return; }
     }
 
-    const newMsg = await channel.send({ embeds: [embed], components: [row, row2] });
+    const newMsg = await channel.send({ embeds: [embed], components });
     await db.setSetting('taxes_message_id', newMsg.id);
   } catch (err) {
     console.error('[taxes] initPermanentMessage:', (err as Error).message);
@@ -201,7 +274,7 @@ export async function checkExpiredTaxes(client: Client): Promise<void> {
   const channelId = configStore.get().CHANNELS.alertes_taxes;
   if (!channelId) return;
   try {
-    const expired = await db.getExpiredTaxes(ZONES.map(slugifyZone));
+    const expired = await db.getExpiredTaxes(ALL_ZONES.map(slugifyZone));
     if (!expired.length) return;
 
     const channel = await client.channels.fetch(channelId).catch(() => null);
@@ -232,11 +305,9 @@ export function getCommands() {
 
 // ─── HANDLER BOUTONS ─────────────────────────────────────────────────────────
 
-const FIXED_TITLES: Record<FixedType, string> = { sporex: 'Taxe Spore X', heroine: 'Taxe Héroïne', vente: 'Taxe Vente', fertilisant: 'Taxe Fertilisant' };
-
 /** Modal de création d'une taxe (fixe ou de zone), avec le champ téléphone en plus pour les zones. */
 function buildCreationModal(type: string): ModalBuilder {
-  const title = isZoneType(type) ? `Taxe — ${ZONE_BY_KEY.get(type)}` : FIXED_TITLES[type as FixedType];
+  const title = isZoneType(type) ? `Taxe — ${ZONE_BY_KEY.get(type)}` : FIXED_TYPE_META[type as FixedType].title;
   const rows = [
     new ActionRowBuilder<TextInputBuilder>().addComponents(
       new TextInputBuilder().setCustomId('nom').setLabel('Nom du groupe').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(50),
@@ -261,8 +332,15 @@ function buildCreationModal(type: string): ModalBuilder {
 export async function handleButton(interaction: ButtonInteraction): Promise<void> {
   const id = interaction.customId;
 
-  if (id === 'tax_sporex' || id === 'tax_heroine' || id === 'tax_vente' || id === 'tax_fertilisant') {
-    const type = id.replace('tax_', '');
+  if (id.startsWith('tax_') && (FIXED_TYPES as readonly string[]).includes(id.replace('tax_', ''))
+      && !['tax_zone', 'tax_renew_', 'tax_rechercher', 'tax_supprimer', 'tax_toggle_paye_', 'tax_delete_'].some(p => id.startsWith(p))) {
+    const type = id.replace('tax_', '') as FixedType;
+    // Filet de sécurité : un bouton resté affiché sur un panneau pas encore
+    // rafraîchi après un changement de tier ne doit pas permettre de créer
+    // une taxe hors barème (même principe que `enabled` dans quotas.ts).
+    if (type !== 'vente' && !currentTaxesFixes().includes(type)) {
+      return replyAutoDelete(interaction, `❌ **${typeLabel(type)}** n'est pas disponible pour le type d'organisation actuel.`);
+    }
     const existing = await db.getActiveTaxeByType(type);
     if (existing) {
       return replyAutoDelete(interaction, `🚫 **${typeLabel(type)}** a déjà une taxe active : **${existing.nom}** (expire le ${formatDate(existing.echeance)}). Supprime-la ou attends son expiration avant d'en créer une nouvelle.`);
@@ -271,10 +349,13 @@ export async function handleButton(interaction: ButtonInteraction): Promise<void
   }
 
   if (id === 'tax_zone') {
+    const zones = currentZones();
+    if (!zones.length) return replyAutoDelete(interaction, "❌ Aucune zone disponible pour le type d'organisation actuel.");
+
     const select = new StringSelectMenuBuilder()
       .setCustomId('tax_select_zone_create')
       .setPlaceholder('Quelle zone ?')
-      .addOptions(ZONES.map(zone => ({ label: zone, value: slugifyZone(zone) })));
+      .addOptions(zones.map(zone => ({ label: zone, value: slugifyZone(zone) })));
 
     return replyAutoDelete(interaction, {
       content: '🏘️ Pour quelle zone ?',
