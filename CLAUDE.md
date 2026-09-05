@@ -6,10 +6,13 @@ Notes de conventions et de pièges pour un agent Claude Code reprenant ce projet
 
 - TypeScript (compilé en CommonJS via `tsc`, pas d'ESM), discord.js v14, Prisma/PostgreSQL, `node-cron`, `dotenv`.
 - `npm run dev` (tsx, à chaud) en développement ; `npm run build && npm start` en production.
-- Process géré par systemd de préférence (pas de PM2/Docker imposé) :
-  - Après un déploiement : `git pull && npm install && npx prisma migrate deploy && npm run build && sudo systemctl restart bot-famille.service`
-  - Logs : `sudo journalctl -u bot-famille.service -n 50 --no-pager`
-  - Toujours `npx tsc --noEmit` avant de redémarrer, pour attraper les erreurs de type/syntaxe sans faire planter le service.
+- Deux modes de déploiement supportés, au choix de l'utilisateur (pas de PM2) :
+  - **systemd** (préféré pour un serveur nu) : après un déploiement : `git pull && npm install && npx prisma migrate deploy && npm run build && sudo systemctl restart bot-famille.service`
+    - Logs : `sudo journalctl -u bot-famille.service -n 50 --no-pager`
+    - Toujours `npx tsc --noEmit` avant de redémarrer, pour attraper les erreurs de type/syntaxe sans faire planter le service.
+  - **Docker** (`Dockerfile` + `docker-compose.yml`, à la racine) : conteneurise le bot ET PostgreSQL (service `db`, volume nommé). `docker-entrypoint.sh` lance `prisma migrate deploy` avant de démarrer le bot à chaque `docker compose up`/redémarrage de conteneur — pas besoin de l'appeler à la main comme en systemd. Mise à jour : `git pull && docker compose up -d --build`.
+    - L'image (`node:20-alpine`) a besoin d'`apk add openssl` : sans ça, le moteur Prisma échoue au démarrage avec une erreur de parsing qui masque le vrai problème.
+    - Build observé cassé (`invalid file request`) avec BuildKit sur Windows + OneDrive sur ce poste précisément — `DOCKER_BUILDKIT=0` en solution de contournement si ça se reproduit.
 - Le langage de toutes les interactions Discord (embeds, messages, boutons) et de la conversation avec l'utilisateur est le **français**.
 
 ## Le modèle de configuration — piège n°1 : orthographe des items FiveM

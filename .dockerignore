@@ -1,0 +1,10 @@
+node_modules
+dist
+.git
+.gitignore
+.env
+.env.example
+*.log
+bot.pid
+_*.ts
+README.md
