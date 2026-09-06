@@ -83,6 +83,7 @@ export const TYPE_GROUPE_SETTING_KEY = 'type_groupe';
  */
 const DEFAULT_GROUP_TIER: GroupTier = 'petite_frappe';
 
+/** Millisecondes dans une heure — raccourci pour écrire les cooldowns ci-dessous de façon lisible (`3 * H` = 3h) plutôt qu'en valeur brute. */
 const H = 3_600_000;
 
 /**

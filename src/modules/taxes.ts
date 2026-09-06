@@ -5,7 +5,9 @@
  * Deux familles de types de taxe, toutes deux fixes dans le code (pas
  * configurables via `/config` — voir plus bas pourquoi) :
  *  - Types fixes avec leur propre bouton : 'sporex' (labo Spore X), 'heroine'
- *    (labo Héroïne), 'vente' (vente de drogue), 'fertilisant' (récolte).
+ *    (labo Héroïne), 'vente' (vente de drogue), 'fertilisant' (récolte),
+ *    'cannabis' (labo Cannabis, Gang), 'mexicana' (labo Mexicana, Organisation),
+ *    'cocaine' (labo Cocaïne, Organisation).
  *  - Taxes de zone : un seul bouton "Taxe Zone" qui demande d'abord de
  *    choisir une zone, puis affiche le même formulaire que les autres types
  *    (+ téléphone). Le nom de la zone choisie EST directement stocké comme
@@ -30,15 +32,20 @@
  * universelle (disponible à tous les tiers, y compris Indépendant qui n'a ni
  * zone ni taxe fixe). Le bouton "Taxe Zone" lui-même disparaît
  * entièrement si `ZONES_BY_TIER` est vide pour ce tier (pas de select vide).
- * Gang et Organisation sont volontairement vides pour l'instant (zones et
- * taxes fixes restant à définir) — les remplir suffit, aucune autre
- * modification n'est nécessaire pour qu'elles apparaissent.
+ * Gang et Organisation partagent les mêmes 18 zones ({@link GANG_ORGA_ZONES})
+ * — contrairement aux labos (`LABO_TIERS`), la répartition des zones n'est
+ * pas exclusive par tier. Leurs taxes fixes, en revanche, le sont bien
+ * (Cannabis pour Gang, Mexicana + Cocaïne pour Organisation) et ne suivent
+ * pas forcément `LABO_TIERS` : Mexicana est produite par les deux tiers via
+ * les labos, mais sa taxe reste réservée à Organisation (décision métier).
  *
- * Une fois créée, une taxe reste gérable (recherche, suppression, paiement,
- * renouvellement) même si son type/zone sort du barème suite à un changement
- * de tier — seule la CRÉATION de nouvelles taxes est filtrée par tier ;
- * {@link TYPES_RECHERCHE} liste donc l'union de tous les tiers, pas
- * seulement le tier courant.
+ * "Rechercher une taxe"/"Supprimer une taxe" ne proposent que les types du
+ * tier courant (voir {@link currentTypesRecherche}), comme la création —
+ * une Organisation ne doit pas se retrouver à chercher une taxe Spore X
+ * qu'elle n'a jamais pu poser. Une taxe existante dont le type est sorti du
+ * barème après un changement de tier reste néanmoins gérable directement via
+ * les boutons Renouveler/Supprimer de son alerte d'expiration (qui agissent
+ * par ID, indépendamment de cette liste).
  *
  * Une seule taxe active à la fois par type (voir `db.getActiveTaxeByType`,
  * qui ignore les taxes expirées — seule une taxe encore dans les temps
@@ -74,7 +81,7 @@ import { replyAutoDelete, updateAutoDelete } from '../interaction-helpers';
 type Taxe = NonNullable<Awaited<ReturnType<typeof db.getTaxe>>>;
 
 /** Tous les types fixes connus (hors zones) — `vente` est universelle, les autres sont filtrées par tier via {@link TAXES_FIXES_BY_TIER}. */
-const FIXED_TYPES = ['sporex', 'heroine', 'vente', 'fertilisant'] as const;
+const FIXED_TYPES = ['sporex', 'heroine', 'vente', 'fertilisant', 'cannabis', 'mexicana', 'cocaine'] as const;
 type FixedType = (typeof FIXED_TYPES)[number];
 
 /** Titre de bouton, emoji et style par type fixe — source unique pour le panneau et les modals. */
@@ -82,33 +89,45 @@ const FIXED_TYPE_META: Record<FixedType, { title: string; emoji: string; style: 
   sporex: { title: 'Taxe Spore X', emoji: '🧪', style: ButtonStyle.Primary },
   heroine: { title: 'Taxe Héroïne', emoji: '💉', style: ButtonStyle.Primary },
   fertilisant: { title: 'Taxe Fertilisant', emoji: '🌱', style: ButtonStyle.Primary },
+  cannabis: { title: 'Taxe Cannabis', emoji: '🌿', style: ButtonStyle.Primary },
+  mexicana: { title: 'Taxe Mexicana', emoji: '🌵', style: ButtonStyle.Primary },
+  cocaine: { title: 'Taxe Cocaïne', emoji: '❄️', style: ButtonStyle.Primary },
   vente: { title: 'Taxe Vente', emoji: '💊', style: ButtonStyle.Secondary },
 };
 
 /**
  * Taxes fixes proposées à la création, par tier — `vente` n'y figure
- * jamais (elle est universelle, voir docstring de fichier). Gang et
- * Organisation sont vides pour l'instant : à compléter avec leurs propres
- * taxes fixes (liées à leurs labos, voir LABO_TIERS) dès qu'elles
- * sont définies.
+ * jamais (elle est universelle, voir docstring de fichier). Gang a la taxe
+ * Cannabis, Organisation les taxes Mexicana + Cocaïne (même répartition que
+ * LABO_TIERS dans config-store.ts pour ces drogues, mais indépendante :
+ * Mexicana est produite par Gang ET Organisation via LABO_TIERS, alors que
+ * sa taxe reste réservée à Organisation — décision métier, pas un miroir
+ * automatique de LABO_TIERS).
  */
 const TAXES_FIXES_BY_TIER: Record<GroupTier, readonly FixedType[]> = {
   independant: [],
   petite_frappe: ['sporex', 'heroine', 'fertilisant'],
-  gang: [],
-  organisation: [],
+  gang: ['cannabis'],
+  organisation: ['mexicana', 'cocaine'],
 };
 
-/** Zones taxables par tier — Indépendant n'en a aucune ; Gang/Organisation à compléter. */
+/** Les 18 zones de vente, identiques pour Gang et Organisation (pas de découpage par tier pour ces deux-là, contrairement aux labos). */
+const GANG_ORGA_ZONES: readonly string[] = [
+  'New Cayo Perico', 'Paleto', 'Sandy Shores', 'Grapeseed', 'Vinewood', 'Aéroport',
+  'Wardog', 'Mirror Park', 'Fête Foraine', 'Barillo Plage', 'Del Perro', 'Roxwood Est',
+  'Eclypse Tower', 'Vespucci', 'Roxwood Ouest', 'Terrain de cross', "Champ d'éolienne", 'Cayo Perico',
+];
+
+/** Zones taxables par tier — Indépendant n'en a aucune ; Gang et Organisation partagent les mêmes 18 zones (voir {@link GANG_ORGA_ZONES}). */
 const ZONES_BY_TIER: Record<GroupTier, readonly string[]> = {
   independant: [],
   petite_frappe: ['Roxwood Village', 'Grapeseed Valley', 'Richman', 'Cinéma', 'Hawick', 'Carson'],
-  gang: [],
-  organisation: [],
+  gang: GANG_ORGA_ZONES,
+  organisation: GANG_ORGA_ZONES,
 };
 
-/** Toutes les zones, tous tiers confondus — sert à résoudre le libellé d'une zone même si elle est sortie du barème du tier courant (voir docstring de fichier). */
-const ALL_ZONES: readonly string[] = Object.values(ZONES_BY_TIER).flat();
+/** Toutes les zones, tous tiers confondus (dédupliquées — Gang et Organisation partagent {@link GANG_ORGA_ZONES}) — sert à résoudre le libellé d'une zone même si elle est sortie du barème du tier courant (voir docstring de fichier). */
+const ALL_ZONES: readonly string[] = [...new Set(Object.values(ZONES_BY_TIER).flat())];
 
 /** Zones proposées à la création pour le tier actuellement configuré. */
 function currentZones(): readonly string[] {
@@ -132,8 +151,10 @@ function slugifyZone(zone: string): string {
 /** Clé de zone → libellé affiché, pour toutes les zones connues (tous tiers). */
 const ZONE_BY_KEY = new Map<string, string>(ALL_ZONES.map(zone => [slugifyZone(zone), zone]));
 
-/** Types proposés dans les select menus "Rechercher"/"Supprimer une taxe" — union de tous les tiers, pas seulement le tier courant (voir docstring de fichier). */
-const TYPES_RECHERCHE: readonly string[] = [...FIXED_TYPES, ...ALL_ZONES.map(slugifyZone)];
+/** Types proposés dans les select menus "Rechercher"/"Supprimer une taxe" pour le tier actuellement configuré — même filtrage que la création (voir docstring de fichier). */
+function currentTypesRecherche(): readonly string[] {
+  return ['vente', ...currentTaxesFixes(), ...currentZones().map(slugifyZone)];
+}
 
 /** Vrai si `type` est une clé de zone (voir ZONE_BY_KEY), par opposition à un type fixe (sporex/heroine/vente/fertilisant). */
 function isZoneType(type: string): boolean {
@@ -206,6 +227,9 @@ function buildAlertButtons(taxeId: number): ActionRowBuilder<ButtonBuilder> {
 
 // ─── MESSAGE PERMANENT ────────────────────────────────────────────────────────
 
+/** Discord limite à 5 ActionRows par message — la 5e est toujours réservée à la rangée Rechercher/Supprimer (voir `initPermanentMessage`), donc 4 rangées de 5 boutons max ici. */
+const MAX_CREATION_BUTTONS = 20;
+
 /**
  * Boutons de création proposés pour le tier courant : Taxe Zone (seulement si
  * ce tier a au moins une zone), les taxes fixes de ce tier, puis
@@ -224,8 +248,12 @@ function buildCreationButtonRows(): ActionRowBuilder<ButtonBuilder>[] {
   const venteMeta = FIXED_TYPE_META.vente;
   buttons.push(new ButtonBuilder().setCustomId('tax_vente').setLabel(venteMeta.title).setStyle(venteMeta.style).setEmoji(venteMeta.emoji));
 
+  if (buttons.length > MAX_CREATION_BUTTONS) {
+    console.warn(`[taxes] ${buttons.length - MAX_CREATION_BUTTONS} bouton(s) de création en trop pour le tier courant (limite Discord) — voir ZONES_BY_TIER/TAXES_FIXES_BY_TIER dans taxes.ts.`);
+  }
+
   const rows: ActionRowBuilder<ButtonBuilder>[] = [];
-  for (let i = 0; i < buttons.length; i += 5) {
+  for (let i = 0; i < Math.min(buttons.length, MAX_CREATION_BUTTONS); i += 5) {
     rows.push(new ActionRowBuilder<ButtonBuilder>().addComponents(buttons.slice(i, i + 5)));
   }
   return rows;
@@ -378,11 +406,14 @@ export async function handleButton(interaction: ButtonInteraction): Promise<void
   }
 
   if (id === 'tax_rechercher' || id === 'tax_supprimer') {
+    // Select direct, sans modal de recherche préalable : currentTypesRecherche()
+    // est filtrée par tier (voir docstring de fichier), donc largement sous
+    // la limite Discord de 25 options dans tous les cas réels.
     const action = id === 'tax_rechercher' ? 'rechercher' : 'supprimer';
     const select = new StringSelectMenuBuilder()
       .setCustomId(`tax_select_${action}_type`)
       .setPlaceholder(action === 'rechercher' ? 'Quel type de taxe ?' : 'Quel type de taxe supprimer ?')
-      .addOptions(TYPES_RECHERCHE.map(type => ({ label: typeLabel(type), value: type })));
+      .addOptions(currentTypesRecherche().map(type => ({ label: typeLabel(type), value: type })));
 
     return replyAutoDelete(interaction, {
       content: action === 'rechercher' ? '🔍 Quel type de taxe veux-tu rechercher ?' : '🗑️ Quel type de taxe veux-tu supprimer ?',
@@ -520,7 +551,7 @@ export async function handleSelect(interaction: StringSelectMenuInteraction): Pr
   if (interaction.customId === 'tax_select_supprimer_type' || interaction.customId === 'tax_select_rechercher_type') {
     const forSuppression = interaction.customId === 'tax_select_supprimer_type';
     const type = interaction.values[0];
-    if (!TYPES_RECHERCHE.includes(type)) return updateAutoDelete(interaction, { content: '❌ Type invalide.', components: [] });
+    if (!currentTypesRecherche().includes(type)) return updateAutoDelete(interaction, { content: '❌ Type invalide.', components: [] });
 
     const modal = new ModalBuilder()
       .setCustomId(`${forSuppression ? 'modal_tax_supprimer_recherche_' : 'modal_tax_recherche_'}${type}`)
