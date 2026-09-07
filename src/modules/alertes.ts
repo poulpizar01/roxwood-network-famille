@@ -162,11 +162,14 @@ export async function setLaboStatut(client: Client, laboKey: string, available: 
 export async function initLaboTimers(client: Client): Promise<void> {
   const activityTypes = configStore.get().ACTIVITY_TYPES;
   for (const [laboKey, cfg] of Object.entries(activityTypes)) {
-    // `enabled` : un labo hors du barème du tier courant (voir
-    // config-store.ts) ne doit pas voir son salon géré (renommage
-    // rouge/vert) même si un timer avait été laissé en base par un tier
-    // précédent.
-    if (!cfg.labo || !cfg.enabled) continue;
+    // Pas de filtre sur `enabled` ici, volontairement : cette fonction ne
+    // fait jamais que ramener au vert (immédiatement ou après le temps
+    // restant), jamais l'inverse. Un labo désactivé entre-temps par un
+    // changement de tier (voir config-store.ts) alors qu'il tournait encore
+    // doit quand même repasser au vert à l'heure prévue — sinon son salon
+    // reste bloqué au rouge indéfiniment si le bot redémarre avant
+    // l'expiration du timer en mémoire.
+    if (!cfg.labo) continue;
     const stored = await db.getSetting(`labo_end_${laboKey}`);
     const endsAt = stored ? parseInt(stored, 10) : 0;
     const remaining = endsAt - Date.now();

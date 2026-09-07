@@ -39,13 +39,16 @@
  * pas forcément `LABO_TIERS` : Mexicana est produite par les deux tiers via
  * les labos, mais sa taxe reste réservée à Organisation (décision métier).
  *
- * "Rechercher une taxe"/"Supprimer une taxe" ne proposent que les types du
- * tier courant (voir {@link currentTypesRecherche}), comme la création —
- * une Organisation ne doit pas se retrouver à chercher une taxe Spore X
- * qu'elle n'a jamais pu poser. Une taxe existante dont le type est sorti du
- * barème après un changement de tier reste néanmoins gérable directement via
- * les boutons Renouveler/Supprimer de son alerte d'expiration (qui agissent
- * par ID, indépendamment de cette liste).
+ * "Rechercher une taxe"/"Supprimer une taxe" proposent les types du tier
+ * courant (voir {@link currentTypesRecherche}), comme la création — une
+ * Organisation ne doit pas se retrouver à chercher une taxe Spore X qu'elle
+ * n'a jamais pu poser — **complétés par tout type ayant une taxe existante
+ * mais sorti du barème après un changement de tier**. Sans ce complément,
+ * une taxe de zone orpheline serait injoignable : contrairement aux taxes
+ * fixes hors barème (qui restent gérables via les boutons Renouveler/
+ * Supprimer de leur alerte d'expiration quotidienne, par ID), une taxe de
+ * zone n'a **aucune** alerte automatique (voir plus bas) — sans ce
+ * complément, ce serait le seul moyen de la retrouver.
  *
  * Une seule taxe active à la fois par type (voir `db.getActiveTaxeByType`,
  * qui ignore les taxes expirées — seule une taxe encore dans les temps
@@ -151,9 +154,23 @@ function slugifyZone(zone: string): string {
 /** Clé de zone → libellé affiché, pour toutes les zones connues (tous tiers). */
 const ZONE_BY_KEY = new Map<string, string>(ALL_ZONES.map(zone => [slugifyZone(zone), zone]));
 
-/** Types proposés dans les select menus "Rechercher"/"Supprimer une taxe" pour le tier actuellement configuré — même filtrage que la création (voir docstring de fichier). */
-function currentTypesRecherche(): readonly string[] {
-  return ['vente', ...currentTaxesFixes(), ...currentZones().map(slugifyZone)];
+/**
+ * Types proposés dans les select menus "Rechercher"/"Supprimer une taxe" :
+ * le barème du tier courant, complété par tout type ayant une taxe active
+ * en base mais sorti de ce barème (voir docstring de fichier — sinon une
+ * taxe de zone orpheline par un changement de tier deviendrait injoignable).
+ * Capé à 25 (limite Discord d'un select) ; le tier courant prime toujours
+ * sur les types orphelins en cas de dépassement (peu probable en pratique).
+ */
+async function currentTypesRecherche(): Promise<string[]> {
+  const types = new Set(['vente', ...currentTaxesFixes(), ...currentZones().map(slugifyZone)]);
+  for (const taxe of await db.getAllTaxes()) types.add(taxe.type);
+
+  const all = [...types];
+  if (all.length > 25) {
+    console.warn(`[taxes] ${all.length - 25} type(s) en trop dans le select Rechercher/Supprimer (limite Discord) — des taxes orphelines resteront injoignables depuis ce menu.`);
+  }
+  return all.slice(0, 25);
 }
 
 /** Vrai si `type` est une clé de zone (voir ZONE_BY_KEY), par opposition à un type fixe (sporex/heroine/vente/fertilisant). */
@@ -231,12 +248,20 @@ function buildAlertButtons(taxeId: number): ActionRowBuilder<ButtonBuilder> {
 const MAX_CREATION_BUTTONS = 20;
 
 /**
- * Boutons de création proposés pour le tier courant : Taxe Zone (seulement si
- * ce tier a au moins une zone), les taxes fixes de ce tier, puis
- * Taxe Vente (toujours). Chunké par 5 (limite Discord par `ActionRow`).
+ * Boutons de création proposés pour le tier courant : Taxe Vente (toujours,
+ * en premier — voir plus bas pourquoi), puis Taxe Zone (seulement si ce
+ * tier a au moins une zone), puis les taxes fixes de ce tier. Chunké par 5
+ * (limite Discord par `ActionRow`).
  */
 function buildCreationButtonRows(): ActionRowBuilder<ButtonBuilder>[] {
   const buttons: ButtonBuilder[] = [];
+
+  // Vente est poussée en premier, pas en dernier : en cas de dépassement de
+  // MAX_CREATION_BUTTONS (voir le console.warn plus bas), la troncature
+  // coupe la fin du tableau — Vente, seule taxe universelle à tous les
+  // tiers, ne doit jamais être le bouton sacrifié.
+  const venteMeta = FIXED_TYPE_META.vente;
+  buttons.push(new ButtonBuilder().setCustomId('tax_vente').setLabel(venteMeta.title).setStyle(venteMeta.style).setEmoji(venteMeta.emoji));
 
   if (currentZones().length) {
     buttons.push(new ButtonBuilder().setCustomId('tax_zone').setLabel('Taxe Zone').setStyle(ButtonStyle.Primary).setEmoji('🏘️'));
@@ -245,8 +270,6 @@ function buildCreationButtonRows(): ActionRowBuilder<ButtonBuilder>[] {
     const meta = FIXED_TYPE_META[type];
     buttons.push(new ButtonBuilder().setCustomId(`tax_${type}`).setLabel(meta.title).setStyle(meta.style).setEmoji(meta.emoji));
   }
-  const venteMeta = FIXED_TYPE_META.vente;
-  buttons.push(new ButtonBuilder().setCustomId('tax_vente').setLabel(venteMeta.title).setStyle(venteMeta.style).setEmoji(venteMeta.emoji));
 
   if (buttons.length > MAX_CREATION_BUTTONS) {
     console.warn(`[taxes] ${buttons.length - MAX_CREATION_BUTTONS} bouton(s) de création en trop pour le tier courant (limite Discord) — voir ZONES_BY_TIER/TAXES_FIXES_BY_TIER dans taxes.ts.`);
@@ -407,13 +430,12 @@ export async function handleButton(interaction: ButtonInteraction): Promise<void
 
   if (id === 'tax_rechercher' || id === 'tax_supprimer') {
     // Select direct, sans modal de recherche préalable : currentTypesRecherche()
-    // est filtrée par tier (voir docstring de fichier), donc largement sous
-    // la limite Discord de 25 options dans tous les cas réels.
+    // reste sous la limite Discord de 25 options dans tous les cas réels.
     const action = id === 'tax_rechercher' ? 'rechercher' : 'supprimer';
     const select = new StringSelectMenuBuilder()
       .setCustomId(`tax_select_${action}_type`)
       .setPlaceholder(action === 'rechercher' ? 'Quel type de taxe ?' : 'Quel type de taxe supprimer ?')
-      .addOptions(currentTypesRecherche().map(type => ({ label: typeLabel(type), value: type })));
+      .addOptions((await currentTypesRecherche()).map(type => ({ label: typeLabel(type), value: type })));
 
     return replyAutoDelete(interaction, {
       content: action === 'rechercher' ? '🔍 Quel type de taxe veux-tu rechercher ?' : '🗑️ Quel type de taxe veux-tu supprimer ?',
@@ -551,7 +573,7 @@ export async function handleSelect(interaction: StringSelectMenuInteraction): Pr
   if (interaction.customId === 'tax_select_supprimer_type' || interaction.customId === 'tax_select_rechercher_type') {
     const forSuppression = interaction.customId === 'tax_select_supprimer_type';
     const type = interaction.values[0];
-    if (!currentTypesRecherche().includes(type)) return updateAutoDelete(interaction, { content: '❌ Type invalide.', components: [] });
+    if (!(await currentTypesRecherche()).includes(type)) return updateAutoDelete(interaction, { content: '❌ Type invalide.', components: [] });
 
     const modal = new ModalBuilder()
       .setCustomId(`${forSuppression ? 'modal_tax_supprimer_recherche_' : 'modal_tax_recherche_'}${type}`)

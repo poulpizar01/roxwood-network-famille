@@ -39,6 +39,9 @@ import * as db from '../db';
 import * as configStore from '../config-store';
 import * as quotas from './quotas';
 import * as stocks from './stocks';
+import * as taxes from './taxes';
+import * as armurerie from './armurerie';
+import * as alertes from './alertes';
 
 const ROLE_TARGETS = [
   { name: 'Rôle admin (commandes sensibles)', value: 'admin' },
@@ -183,6 +186,21 @@ async function handleChannel(interaction: ChatInputCommandInteraction, sub: stri
     const role = interaction.options.getString('role', true);
     const salon = interaction.options.getChannel('salon', true);
     await configStore.mutate(() => db.setChannelRole(role, salon.id));
+    // Sans ça, un salon de panneau permanent (quotas/armurerie/taxes/stock)
+    // configuré après le démarrage du bot resterait vide jusqu'au prochain
+    // événement qui rafraîchit ce panneau (un mouvement de coffre, une
+    // déclaration d'activité…) — voire jusqu'à un redémarrage pour `taxes`,
+    // qui n'a aucun déclencheur de rafraîchissement indirect. Le bot n'étant
+    // pas censé redémarrer une fois lancé, on crée/rafraîchit le panneau
+    // immédiatement ici plutôt que de compter sur un événement indirect.
+    if (role === 'stock_general') await stocks.updateStockMessage(interaction.client);
+    if (role === 'armurerie') await armurerie.updatePermanentMessage(interaction.client);
+    if (role === 'quotas') await quotas.updatePermanentMessage(interaction.client);
+    if (role === 'taxes') await taxes.initPermanentMessage(interaction.client);
+    // Idem pour le préfixe 🟢 d'un salon de labo : sans ça, il resterait sans
+    // préfixe (ni rouge ni vert) jusqu'à la première déclaration de ce labo.
+    // No-op silencieux si ce labo n'est pas actif pour le tier courant.
+    if (role.startsWith('labo_')) await alertes.setLaboStatut(interaction.client, role, true);
     await interaction.reply({ content: `✅ Salon **${role}** → <#${salon.id}>`, flags: MessageFlags.Ephemeral });
     return;
   }
@@ -330,8 +348,12 @@ async function handleTypeGroupe(interaction: ChatInputCommandInteraction, sub: s
     // les champs "Drogue à vendre"/"Drogue de production" du Stock Général —
     // sans ce refresh, ce message resterait faux jusqu'au prochain mouvement.
     await stocks.updateStockMessage(interaction.client);
+    // Le tier change aussi les zones/taxes fixes proposées à la création (voir
+    // taxes.ts) — sans ce refresh, le panneau taxes resterait figé sur les
+    // boutons de l'ancien tier jusqu'au prochain redémarrage du bot.
+    await taxes.initPermanentMessage(interaction.client);
     const label = configStore.GROUP_TIERS.find(t => t.key === tier)?.label ?? tier;
-    await interaction.reply({ content: `✅ Type d'organisation → **${label}**. Panneau d'activités et Stock Général mis à jour.`, flags: MessageFlags.Ephemeral });
+    await interaction.reply({ content: `✅ Type d'organisation → **${label}**. Panneau d'activités, Stock Général et panneau Taxes mis à jour.`, flags: MessageFlags.Ephemeral });
     return;
   }
   if (sub === 'list') {

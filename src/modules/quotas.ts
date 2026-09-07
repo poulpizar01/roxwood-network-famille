@@ -617,13 +617,19 @@ async function handleMinuterie(interaction: ButtonInteraction): Promise<void> {
     }),
   );
 
-  const laboLines = await Promise.all(
-    entries.filter(([, cfg]) => cfg.labo && cfg.enabled).map(async ([key, cfg]) => {
+  // Un labo désactivé entre-temps par un changement de tier (voir
+  // config-store.ts) reste quand même affiché ici tant que son timer tourne
+  // encore — sinon quelqu'un en train de le faire tourner perdrait toute
+  // visibilité sur son temps restant (le salon, lui, continue de repasser au
+  // vert normalement à l'heure prévue, voir `initLaboTimers`).
+  const laboLines = (await Promise.all(
+    entries.filter(([, cfg]) => cfg.labo).map(async ([key, cfg]) => {
       const endsAt = parseInt((await db.getSetting(`labo_end_${key}`)) || '0', 10);
       const remaining = endsAt > 0 ? endsAt - Date.now() : 0;
+      if (!cfg.enabled && remaining <= 0) return null;
       return remaining > 0 ? `🔴 **${activityDisplayLabel(cfg)}** : ${formatTime(remaining)}` : `🟢 **${activityDisplayLabel(cfg)}** : Disponible`;
     }),
-  );
+  )).filter((line): line is string => line !== null);
 
   const embed = new EmbedBuilder().setTitle('⏱️ Minuterie').setColor(0x5865F2).setTimestamp();
   if (cooldownLines.length) embed.addFields({ name: '⚡ Cooldowns (perso)', value: cooldownLines.join('\n') });
