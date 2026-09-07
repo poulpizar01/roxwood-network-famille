@@ -10,7 +10,8 @@
  *
  * Un message permanent dans le salon `armurerie` expose : Ajouter, Perdu,
  * Prêter, Rendu, Liste des Pertes, et deux déclarations indicatives de
- * munitions (Fabrication / Vente, plafonds fixes ci-dessous) — Historique.
+ * munitions — Fabrication (plafond hebdomadaire fixe ci-dessous) et Vente
+ * (juste un total suivi, sans plafond) — Historique.
  *
  * Le stock réel de munitions affiché en tête de ce message vient de
  * `/config item add` comme n'importe quel item de coffre — voir
@@ -85,9 +86,8 @@ const ARME_TYPES: Array<{ key: string; label: string }> = [
   { key: 'ar_7', label: 'AR 7' },
 ];
 
-/** Plafonds indicatifs hebdomadaires de munitions — valeurs fixes, ne bougent jamais. */
+/** Plafond indicatif hebdomadaire de fabrication — valeur fixe, ne bouge jamais. La vente n'a volontairement aucun plafond (juste le total suivi, voir buildArmurierieEmbed). */
 const MUNITIONS_FABRICATION_QUOTA_HEBDO = 5000;
-const MUNITIONS_VENTE_QUOTA_HEBDO = 5000;
 
 /**
  * Libellé de regroupement (`/config item add nom:"..." groupe:"Munitions de
@@ -156,7 +156,7 @@ async function buildArmurierieEmbed(armes: Arme[]): Promise<EmbedBuilder> {
   const fabriquees = await db.getMunitionsFabriqueesDepuis(sinceReset);
   const vendues = await db.getMunitionsVenduesDepuis(sinceReset);
   const blocs = [
-    `__Munitions de pistolet__\n🧰 ${munitions} balles en stock\n🛠️ ${fabriquees} / ${MUNITIONS_FABRICATION_QUOTA_HEBDO} fabriquées cette semaine\n💰 ${vendues} / ${MUNITIONS_VENTE_QUOTA_HEBDO} vendues cette semaine`,
+    `__Munitions de pistolet__\n🧰 ${munitions} balles en stock\n🛠️ ${fabriquees} / ${MUNITIONS_FABRICATION_QUOTA_HEBDO} fabriquées cette semaine\n💰 ${vendues} vendues cette semaine`,
   ];
 
   if (!armes.length) {
