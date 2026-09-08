@@ -97,8 +97,13 @@ const MUNITIONS_FABRICATION_QUOTA_HEBDO = 5000;
  * `groupe` est choisi librement par l'admin, il n'a pas besoin de coïncider
  * avec l'orthographe FiveM — ça permet aussi de regrouper plusieurs items
  * (ex. plusieurs calibres) sous un seul total ici.
+ *
+ * Exportée pour que `src/default-items.ts` pré-remplisse l'item "Munition de
+ * pistolet" avec exactement ce groupe au premier démarrage — sans ce lien,
+ * un admin qui ne devine pas cette constante voit silencieusement "0 balles
+ * en stock" sans jamais comprendre pourquoi (voir discussion CLAUDE.md).
  */
-const MUNITIONS_STOCK_GROUP = 'Munitions de pistolet';
+export const MUNITIONS_STOCK_GROUP = 'Munitions de pistolet';
 
 /** Stock total des items regroupés sous {@link MUNITIONS_STOCK_GROUP} (0 si aucun item n'est configuré avec ce groupe). */
 async function getMunitionsStock(): Promise<number> {

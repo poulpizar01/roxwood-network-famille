@@ -25,6 +25,10 @@ Toute écriture de config passe par `configStore.mutate(() => db.xxx(...))` plut
 
 **Ne jamais deviner/renommer un nom d'item sans vérification.** Avant tout ajout, aller lire les vrais logs récents du salon coffre concerné pour confirmer l'orthographe exacte utilisée en jeu (voir « Scripts d'investigation » ci-dessous).
 
+Comme `MUNITIONS_STOCK_GROUP` pour les munitions, `CONFIRME_VENTE_ITEM` (`modules/ventes.ts`, "Argent Sale") est un nom d'item fixé en dur plutôt qu'un flag `/config item add` : un seul item confirme les ventes de drogue en attente en pratique, pas besoin d'exposer une option que personne d'autre ne touchera jamais. `/config item list` affiche quand même un badge 🪙 dessus (comparaison par nom, pas un champ en base) pour rester visible. Contrairement à `MUNITIONS_STOCK_GROUP` (un `groupe` choisi librement par l'admin), `CONFIRME_VENTE_ITEM` EST un nom d'item exact comparé aux dépôts réels — le piège n°1 s'applique donc pleinement ici : ne jamais changer cette constante sans vérification explicite avec l'utilisateur.
+
+`src/default-items.ts` pré-remplit trois items connus (nom vérifié avec l'utilisateur, pas deviné) s'ils sont absents — "Munition de pistolet" (`groupe` = `MUNITIONS_STOCK_GROUP`), l'item `CONFIRME_VENTE_ITEM` lui-même ("Argent Sale", simple item de stock ici — c'est `ventes.ts` qui lui donne son rôle, pas un flag posé à la création) et "Argent" (simple item de stock, distinct de l'Argent Sale — ne confirme rien). Déclenché à la fois au démarrage du bot (`index.ts`) et à chaque usage de `/config` (`modules/config.ts`) — pas seulement au tout premier démarrage du process, pour qu'un bot déjà en cours d'exécution en profite aussi (idempotent, sans double-appel problématique). Jamais d'écrasement d'un item déjà configuré (comparaison par nom exact avant insertion) — reste un point de départ éditable via `/config item`, pas un registre fixe comme `ACTIVITY_TYPES_FIXED`. Ajouter une entrée ici sans la même vérification explicite auprès de l'utilisateur reproduirait exactement le piège n°1.
+
 ## Portée de la généralisation (décisions de conception)
 
 - **Configurables via `/config`** : items, objectifs de quota, taux de paie, salons, rôles — tout ce qui peut réellement changer/être renégocié après le déploiement du bot.
@@ -71,6 +75,10 @@ Pattern établi pour toute opération ad hoc (backfill, vérification de logs, c
 ## Rafraîchir un message permanent après une correction manuelle en base
 
 Chaque module avec un message permanent (stock, quotas, armurerie, taxes) expose une fonction de refresh (`updateStockMessage`, `initPermanentMessage`/`updatePermanentMessage`…). Après une correction directe en base via un script `_*.ts`, toujours appeler cette fonction dans un mini-script avec client Discord pour que le message affiché reflète le changement immédiatement.
+
+**Aucun de ces rafraîchissements ne doit dépendre d'un (re)démarrage du bot** — le process n'est pas censé redémarrer une fois lancé en prod. Toute écriture `/config` qui touche un panneau (salon, item, tier…) doit appeler explicitement la fonction de refresh concernée dans son handler, plutôt que compter sur le prochain événement qui la déclencherait indirectement (un mouvement de coffre, une déclaration d'activité…) ou sur le cron horaire de rattrapage des quotas — voir `handleChannel`/`handleTypeGroupe`/`handleItem`/`handleCategory` dans `config.ts` pour le pattern à suivre à chaque nouvelle sous-commande.
+
+À l'inverse, `stocks.updateStockMessage` ne doit **pas** rafraîchir systématiquement l'armurerie sur n'importe quel mouvement de coffre — seulement si l'item déplacé appartient à `MUNITIONS_STOCK_GROUP` (voir le paramètre `skipArmurerie`, utilisé uniquement par `stocks.handleMessage`, le point d'entrée à très haute fréquence). Les autres appelants (resync, correction manuelle, changement de salon/tier — tous rares) gardent le comportement par défaut, plus simple.
 
 ## Discord : limites à connaître
 

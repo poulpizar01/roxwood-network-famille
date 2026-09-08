@@ -55,8 +55,12 @@ model DiscordRole {
 /// Items de coffre suivis. Le nom doit correspondre exactement (accents,
 /// casse) à ce qu'écrit le bot de jeu FiveM dans les logs de coffre — voir
 /// /config item add. stockGroup fusionne plusieurs items sous un même
-/// libellé dans le message de stock (ex. "Drogue à vendre"). vente/
-/// ventePaiement pilotent le cycle de vente automatique (modules/ventes.ts).
+/// libellé dans le message de stock (ex. "Drogue à vendre"). vente =
+/// déclarable en vente PNJ (retrait qui ouvre une vente en attente, voir
+/// modules/ventes.ts). Pas de flag équivalent pour la confirmation du
+/// paiement : un seul item joue ce rôle en pratique ("Argent Sale"), fixé en
+/// dur dans modules/ventes.ts (`CONFIRME_VENTE_ITEM`, même principe que
+/// `MUNITIONS_STOCK_GROUP` dans armurerie.ts) plutôt qu'un flag par item.
 /// visibleStock : l'item reste suivi (stock à jour, historique) même à
 /// `false` — seul son affichage dans le message "Stock Général" est masqué.
 /// laboLie : clé d'une activité "labo" (ex. "labo_cocaine", voir
@@ -70,7 +74,6 @@ model Item {
   name          String  @id
   stockGroup    String? @map("stock_group")
   vente         Boolean @default(false)
-  ventePaiement Boolean @default(false) @map("vente_paiement")
   displayOrder  Int     @default(0) @map("display_order")
   visibleStock  Boolean @default(true) @map("visible_stock")
   laboLie       String? @map("labo_lie")

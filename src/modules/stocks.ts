@@ -67,7 +67,13 @@ export async function handleMessage(message: Message): Promise<void> {
 
   const entries = await parseAndApplyAll(extractText(message), true);
   if (entries.length > 0) {
-    await updateStockMessage(message.client);
+    // `entry.item` est déjà en minuscules (voir parseAndApply) — comparé tel
+    // quel au groupe munitions pour éviter de rafraîchir l'armurerie sur un
+    // mouvement qui n'a rien à voir (voir docstring de updateStockMessage).
+    const munitionsItems = new Set((configStore.get().STOCK_GROUPS[armurerie.MUNITIONS_STOCK_GROUP] ?? []).map(i => i.toLowerCase()));
+    const toucheMunitions = entries.some(e => munitionsItems.has(e.item));
+    await updateStockMessage(message.client, { skipArmurerie: !toucheMunitions });
+    if (toucheMunitions) await armurerie.updatePermanentMessage(message.client);
     for (const entry of entries) {
       await logStockToChannel(message.client, entry, message.channelId);
       if (!(await db.getUserMappings(entry.joueur)).length) {
@@ -222,8 +228,20 @@ export async function fullResync(client: Client): Promise<number> {
 
 // ─── MESSAGE PERMANENT ────────────────────────────────────────────────────────
 
-/** Édite le message permanent "Stock Général" (ou le crée s'il n'existe pas encore/plus), puis rafraîchit l'embed armurerie (munitions). */
-export async function updateStockMessage(client: Client): Promise<void> {
+/**
+ * Édite le message permanent "Stock Général" (ou le crée s'il n'existe pas
+ * encore/plus), puis rafraîchit l'embed armurerie (munitions) par défaut.
+ *
+ * `skipArmurerie` : à ne passer que depuis un point d'entrée à très haute
+ * fréquence qui sait déjà que le mouvement ne concerne pas les munitions
+ * (voir `handleMessage`) — sans ça, `armurerie.updatePermanentMessage`
+ * (plusieurs requêtes DB + un edit Discord) se déclencherait à CHAQUE
+ * mouvement de coffre, quel que soit l'item, même pour un retrait d'ATM ou
+ * de drogue sans aucun rapport. Tous les autres appelants (resync, correction
+ * manuelle, changement de salon/tier…) sont rares et gagnent à rester
+ * simples : ils laissent le défaut rafraîchir armurerie systématiquement.
+ */
+export async function updateStockMessage(client: Client, opts: { skipArmurerie?: boolean } = {}): Promise<void> {
   const c = configStore.get();
   if (c.CHANNELS.stock_general) {
     try {
@@ -248,8 +266,7 @@ export async function updateStockMessage(client: Client): Promise<void> {
     }
   }
 
-  // Les munitions sont affichées dans l'embed armurerie — rafraîchi à chaque mouvement.
-  await armurerie.updatePermanentMessage(client);
+  if (!opts.skipArmurerie) await armurerie.updatePermanentMessage(client);
 }
 
 /** Construit l'embed affichant l'état actuel des stocks, avec regroupements STOCK_GROUPS. */

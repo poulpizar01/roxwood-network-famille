@@ -91,7 +91,6 @@ export interface ItemInput {
   name: string;
   stock_group?: string | null;
   vente?: boolean;
-  vente_paiement?: boolean;
   display_order?: number;
   /** Défaut `true` (contrairement aux autres flags, défaut `false`) : omettre cette option ne doit pas faire disparaître un item du Stock Général. */
   visible_stock?: boolean;
@@ -107,7 +106,6 @@ export async function upsertItem(data: ItemInput): Promise<void> {
       name: data.name,
       stockGroup: data.stock_group ?? null,
       vente: !!data.vente,
-      ventePaiement: !!data.vente_paiement,
       displayOrder: data.display_order ?? 0,
       visibleStock: data.visible_stock !== false,
       laboLie: data.labo_lie ?? null,
@@ -115,7 +113,6 @@ export async function upsertItem(data: ItemInput): Promise<void> {
     update: {
       stockGroup: data.stock_group ?? null,
       vente: !!data.vente,
-      ventePaiement: !!data.vente_paiement,
       displayOrder: data.display_order ?? 0,
       visibleStock: data.visible_stock !== false,
       laboLie: data.labo_lie ?? null,

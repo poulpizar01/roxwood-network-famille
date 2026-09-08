@@ -3,10 +3,10 @@
  * @description Cycle de vie des ventes de drogue (retrait coffre → dépôt argent).
  *
  * Flux : un retrait sur un item marqué `vente: true` (voir `/config item add
- * --vente`) crée une vente en attente et alerte dans `ventes_drogue`. Le
+ * --vente_pnj`) crée une vente en attente et alerte dans `ventes_drogue`. Le
  * joueur peut Déclarer (attend un dépôt d'argent), Reposer (attend un
- * redépôt), ou corriger la quantité. Un dépôt sur un item marqué `paiement:
- * true` confirme automatiquement (fenêtre de {@link WINDOW_MS}), log dans
+ * redépôt), ou corriger la quantité. Un dépôt sur {@link CONFIRME_VENTE_ITEM}
+ * confirme automatiquement (fenêtre de {@link WINDOW_MS}), log dans
  * `log_ventes`, met à jour stats/quota.
  */
 import {
@@ -39,6 +39,16 @@ const WINDOW_MS = 3 * 60 * 60 * 1000;
 /** Fenêtre max (ms) entre deux retraits successifs cumulés dans la même alerte (5 min). */
 const ACCUMULATION_WINDOW_MS = 5 * 60 * 1000;
 
+/**
+ * Nom EXACT (accents, casse — voir piège n°1 dans CLAUDE.md) de l'item dont
+ * le dépôt confirme automatiquement une vente de drogue en attente. Fixe
+ * dans le code plutôt qu'un flag par item (`/config item add`) : un seul
+ * item joue ce rôle en pratique — même principe que `MUNITIONS_STOCK_GROUP`
+ * dans `armurerie.ts`. Exportée pour que `/config item list` (config.ts)
+ * puisse signaler visuellement quel item joue ce rôle.
+ */
+export const CONFIRME_VENTE_ITEM = 'Argent Sale';
+
 type PendingSale = Awaited<ReturnType<typeof db.getPendingSale>>;
 
 // ─── POINT D'ENTRÉE DEPUIS STOCKS ────────────────────────────────────────────
@@ -48,13 +58,12 @@ export async function onStockEntry(client: Client, entry: StockEntry): Promise<v
   const c = configStore.get();
   const itemLower = entry.item.toLowerCase();
   const venteItems = c.VENTE_ITEMS.map(i => i.toLowerCase());
-  const argentItems = c.VENTE_ARGENT_ITEMS.map(i => i.toLowerCase());
 
   if (entry.action === 'retire' && venteItems.includes(itemLower)) {
     await createPendingSale(client, entry);
     return;
   }
-  if (entry.action === 'depose' && argentItems.includes(itemLower)) {
+  if (entry.action === 'depose' && itemLower === CONFIRME_VENTE_ITEM.toLowerCase()) {
     await tryConfirmMoneyDeposit(client, entry);
     return;
   }

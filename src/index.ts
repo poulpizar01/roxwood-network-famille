@@ -40,6 +40,7 @@ import cron from 'node-cron';
 
 import * as configStore from './config-store';
 import * as db from './db';
+import { seedDefaultItems } from './default-items';
 import * as configModule from './modules/config';
 import * as stocks from './modules/stocks';
 import * as quotas from './modules/quotas';
@@ -88,6 +89,10 @@ client.once('clientReady', async (readyClient) => {
 
   // Charge la configuration depuis la base AVANT tout usage (voir config-store.ts).
   await configStore.reload();
+  // Pré-remplit les items connus absents (ex. munitions, argent sale) — voir
+  // src/default-items.ts. N'écrase jamais un item déjà configuré ; recharge
+  // le cache seulement si quelque chose a effectivement été inséré.
+  await seedDefaultItems();
 
   await deployCommands();
 

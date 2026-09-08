@@ -42,6 +42,8 @@ import * as stocks from './stocks';
 import * as taxes from './taxes';
 import * as armurerie from './armurerie';
 import * as alertes from './alertes';
+import { CONFIRME_VENTE_ITEM } from './ventes';
+import { seedDefaultItems } from '../default-items';
 
 const ROLE_TARGETS = [
   { name: 'Rôle admin (commandes sensibles)', value: 'admin' },
@@ -96,7 +98,6 @@ export function getCommands() {
       .setDescription("Ajoute ou remplace un item suivi (orthographe exacte des logs FiveM)")
       .addStringOption(o => o.setName('nom').setDescription("Nom exact tel qu'écrit dans les logs FiveM").setRequired(true))
       .addBooleanOption(o => o.setName('vente_pnj').setDescription('Déclarable en vente aux PNJ (marché noir) — pas une vente entre joueurs (défaut : non)').setRequired(false))
-      .addBooleanOption(o => o.setName('paiement').setDescription('Compte comme paiement de vente (défaut : non)').setRequired(false))
       .addStringOption(o => o.setName('groupe').setDescription('Libellé de regroupement dans le message de stock (optionnel)').setRequired(false))
       .addBooleanOption(o => o.setName('stock_general').setDescription('Afficher dans le message Stock Général (défaut : oui — le stock reste suivi même à non)').setRequired(false))
       .addStringOption(o => o.setName('labo_lie').setDescription("Ce labo produit cet item ? Exclut alors la vente PNJ pour les tiers ayant ce labo actif (optionnel)").setRequired(false)
@@ -148,6 +149,15 @@ export function getCommands() {
         .addChoices(...configStore.GROUP_TIERS.map(t => ({ name: t.label, value: t.key })))))
     .addSubcommand(s => s.setName('list').setDescription("Affiche le type actuel et le barème de chaque type")));
 
+  cmd.addSubcommandGroup(g => g
+    .setName('category')
+    .setDescription('Création automatique des salons manquants dans une catégorie')
+    .addSubcommand(s => s
+      .setName('set')
+      .setDescription('Crée dans cette catégorie tous les salons de rôle pas encore configurés, et les associe')
+      .addChannelOption(o => o.setName('categorie').setDescription('Catégorie Discord où créer les salons manquants').setRequired(true)
+        .addChannelTypes(ChannelType.GuildCategory))));
+
   return [{ data: cmd }];
 }
 
@@ -169,6 +179,12 @@ export async function handleCommand(interaction: ChatInputCommandInteraction): P
     return;
   }
 
+  // Pas seulement au démarrage global du process (voir index.ts) : dès que
+  // quelqu'un touche /config, quel que soit le moment (y compris un bot déjà
+  // en cours d'exécution depuis un moment) — no-op si déjà fait, voir
+  // seedDefaultItems.
+  await seedDefaultItems();
+
   const group = interaction.options.getSubcommandGroup();
   const sub = interaction.options.getSubcommand();
 
@@ -178,6 +194,7 @@ export async function handleCommand(interaction: ChatInputCommandInteraction): P
   if (group === 'quota') return handleQuota(interaction, sub);
   if (group === 'salaire') return handleSalaire(interaction, sub);
   if (group === 'type-groupe') return handleTypeGroupe(interaction, sub);
+  if (group === 'category') return handleCategory(interaction, sub);
 }
 
 /** `/config channel set|add-log-coffre|remove-log-coffre|list`. */
@@ -247,18 +264,22 @@ async function handleItem(interaction: ChatInputCommandInteraction, sub: string)
   if (sub === 'add') {
     const nom = interaction.options.getString('nom', true);
     const ventePnj = interaction.options.getBoolean('vente_pnj') ?? false;
-    const paiement = interaction.options.getBoolean('paiement') ?? false;
     const groupe = interaction.options.getString('groupe');
     const stockGeneral = interaction.options.getBoolean('stock_general') ?? true;
     const laboLie = interaction.options.getString('labo_lie');
-    await configStore.mutate(() => db.upsertItem({ name: nom, stock_group: groupe, vente: ventePnj, vente_paiement: paiement, visible_stock: stockGeneral, labo_lie: laboLie }));
+    await configStore.mutate(() => db.upsertItem({ name: nom, stock_group: groupe, vente: ventePnj, visible_stock: stockGeneral, labo_lie: laboLie }));
+    // Sans ça, un item tout juste ajouté/masqué/regroupé n'apparaîtrait
+    // correctement dans le Stock Général (et l'armurerie, si lié aux
+    // munitions) qu'au prochain mouvement de coffre — pas immédiat.
+    await stocks.updateStockMessage(interaction.client);
     const laboLabel = laboLie ? configStore.get().ACTIVITY_TYPES[laboLie]?.label : null;
-    await interaction.reply({ content: `✅ Item **${nom}** enregistré${groupe ? ` (groupe : ${groupe})` : ''}${ventePnj ? ' — vente PNJ' : ''}${paiement ? ' — paiement' : ''}${!stockGeneral ? ' — masqué du Stock Général (stock toujours suivi)' : ''}${laboLabel ? ` — lié à ${laboLabel}` : ''}.`, flags: MessageFlags.Ephemeral });
+    await interaction.reply({ content: `✅ Item **${nom}** enregistré${groupe ? ` (groupe : ${groupe})` : ''}${ventePnj ? ' — vente PNJ' : ''}${!stockGeneral ? ' — masqué du Stock Général (stock toujours suivi)' : ''}${laboLabel ? ` — lié à ${laboLabel}` : ''}.`, flags: MessageFlags.Ephemeral });
     return;
   }
   if (sub === 'remove') {
     const nom = interaction.options.getString('nom', true);
     await configStore.mutate(() => db.deleteItem(nom));
+    await stocks.updateStockMessage(interaction.client);
     await interaction.reply({ content: `✅ Item **${nom}** retiré.`, flags: MessageFlags.Ephemeral });
     return;
   }
@@ -273,12 +294,13 @@ async function handleItem(interaction: ChatInputCommandInteraction, sub: string)
     const activityTypes = configStore.get().ACTIVITY_TYPES;
     const lines = items.slice(0, 60).map(i => {
       const laboLabel = i.laboLie ? activityTypes[i.laboLie]?.label ?? i.laboLie : null;
-      return `**${i.name}**${i.stockGroup ? ` _(${i.stockGroup})_` : ''}${i.vente ? ' 💰' : ''}${i.ventePaiement ? ' 🪙' : ''}${!i.visibleStock ? ' 🙈' : ''}${laboLabel ? ` 🧪${laboLabel}` : ''}`;
+      const confirmeVente = i.name.toLowerCase() === CONFIRME_VENTE_ITEM.toLowerCase();
+      return `**${i.name}**${i.stockGroup ? ` _(${i.stockGroup})_` : ''}${i.vente ? ' 💰' : ''}${confirmeVente ? ' 🪙' : ''}${!i.visibleStock ? ' 🙈' : ''}${laboLabel ? ` 🧪${laboLabel}` : ''}`;
     });
     const embed = new EmbedBuilder()
       .setTitle(`⚙️ Items suivis (${items.length})`)
       .setDescription(lines.join('\n').slice(0, 4000))
-      .setFooter({ text: '💰 vente PNJ · 🪙 paiement · 🙈 masqué du Stock Général · 🧪 lié à un labo (vente PNJ exclue si ce labo est actif pour le tier)' })
+      .setFooter({ text: '💰 vente PNJ · 🪙 confirme les ventes · 🙈 masqué du Stock Général · 🧪 lié à un labo (vente PNJ exclue si ce labo est actif pour le tier)' })
       .setColor(0x5865f2);
     await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
   }
@@ -375,6 +397,107 @@ async function handleTypeGroupe(interaction: ChatInputCommandInteraction, sub: s
       .setColor(0x5865f2);
     await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
   }
+}
+
+/**
+ * Salons de rôle alimentés par le bot de jeu FiveM (pas par ce bot Discord) —
+ * exclus de la création automatique (`/config category set`) : ils doivent
+ * pointer vers le vrai salon de logs déjà existant, jamais un salon vide
+ * fraîchement créé. `logs_coffres` (plusieurs salons possibles, voir
+ * `add-log-coffre`) n'a de toute façon pas d'entrée dans {@link
+ * CHANNEL_NAME_BY_ROLE} donc n'a pas besoin d'être listé ici.
+ */
+const CATEGORY_EXCLUDED_ROLES: readonly configStore.ChannelRole[] = ['coffre_admin', 'logs_garages'];
+
+/**
+ * Nom de salon par défaut pour chaque rôle auto-créable via `/config category
+ * set` — seuls les rôles présents ici sont candidats à la création (les rôles
+ * de {@link CATEGORY_EXCLUDED_ROLES} en sont volontairement absents).
+ */
+const CHANNEL_NAME_BY_ROLE: Partial<Record<configStore.ChannelRole, string>> = {
+  stock_general: 'stock',
+  logs_activites: 'logs-activites',
+  alertes_braquages: 'alertes-braquages',
+  alertes_actions: 'alertes-actions',
+  bilan: 'bilan',
+  paie: 'paie',
+  armurerie: 'armurerie',
+  quotas: 'quotas',
+  taxes: 'taxes',
+  alertes_taxes: 'alertes-taxes',
+  historique_stock: 'historique-stock',
+  ventes_drogue: 'ventes-drogue',
+  log_ventes: 'log-ventes',
+  admin: 'admin',
+  labo_heroine: 'labo-heroine',
+  labo_sporex: 'labo-sporex',
+  labo_mexicana: 'labo-mexicana',
+  labo_cannabis: 'labo-cannabis',
+  labo_cocaine: 'labo-cocaine',
+};
+
+/**
+ * `/config category set` : crée dans la catégorie donnée un salon texte pour
+ * chaque rôle fonctionnel pas encore configuré (voir {@link
+ * CHANNEL_NAME_BY_ROLE}/{@link CATEGORY_EXCLUDED_ROLES}), l'associe en base,
+ * puis rafraîchit immédiatement les panneaux concernés — même rattrapage que
+ * `/config channel set` (voir `handleChannel`), pour plusieurs salons d'un
+ * coup. Un rôle déjà configuré n'est jamais recréé ni touché (ré-exécutable
+ * sans risque de doublons).
+ */
+async function handleCategory(interaction: ChatInputCommandInteraction, sub: string): Promise<void> {
+  if (sub !== 'set') return;
+
+  const categorie = interaction.options.getChannel('categorie', true);
+  if (!interaction.guild) {
+    await interaction.reply({ content: '❌ Cette commande ne peut être utilisée que dans un serveur.', flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  const existing = configStore.get().CHANNELS;
+  const toCreate = (Object.entries(CHANNEL_NAME_BY_ROLE) as Array<[configStore.ChannelRole, string]>)
+    .filter(([role]) => !CATEGORY_EXCLUDED_ROLES.includes(role) && !existing[role]);
+
+  const created: string[] = [];
+  const failed: string[] = [];
+
+  for (const [role, name] of toCreate) {
+    try {
+      const channel = await interaction.guild.channels.create({ name, type: ChannelType.GuildText, parent: categorie.id });
+      await configStore.mutate(() => db.setChannelRole(role, channel.id));
+      created.push(`**${role}** → <#${channel.id}>`);
+    } catch (err) {
+      console.error(`[config] category set — création du salon ${role} :`, (err as Error).message);
+      failed.push(role);
+    }
+  }
+
+  if (created.length) {
+    // Même rattrapage que /config channel set (voir handleChannel) : sans
+    // ça, ces panneaux resteraient vides jusqu'au prochain événement
+    // indirect (mouvement de coffre, déclaration…), voire jusqu'à un
+    // redémarrage pour taxes, qui n'a aucun rattrapage indirect.
+    if (!existing.stock_general) await stocks.updateStockMessage(interaction.client);
+    if (!existing.armurerie) await armurerie.updatePermanentMessage(interaction.client);
+    if (!existing.quotas) await quotas.updatePermanentMessage(interaction.client);
+    if (!existing.taxes) await taxes.initPermanentMessage(interaction.client);
+    for (const [role] of toCreate) {
+      if (role.startsWith('labo_')) await alertes.setLaboStatut(interaction.client, role, true);
+    }
+  }
+
+  const alreadyConfigured = (Object.keys(CHANNEL_NAME_BY_ROLE) as configStore.ChannelRole[])
+    .filter(role => !CATEGORY_EXCLUDED_ROLES.includes(role) && !!existing[role]);
+
+  const lines = [
+    created.length ? `✅ **${created.length} salon(s) créé(s)** dans <#${categorie.id}> :\n${created.join('\n')}` : null,
+    failed.length ? `⚠️ Échec pour : ${failed.join(', ')} (permission "Gérer les salons" manquante ?)` : null,
+    alreadyConfigured.length ? `ℹ️ Déjà configurés, non touchés : ${alreadyConfigured.join(', ')}` : null,
+  ].filter((l): l is string => l !== null);
+
+  await interaction.editReply({ content: lines.join('\n\n') || 'Rien à faire — tous les salons sont déjà configurés.' });
 }
 
 /** Autocomplete pour les options `nom`/`cle` des sous-commandes `remove`. */

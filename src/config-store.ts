@@ -150,7 +150,6 @@ export interface ItemConfig {
   name: string;
   stockGroup: string | null;
   vente: boolean;
-  ventePaiement: boolean;
   displayOrder: number;
   visibleStock: boolean;
   laboLie: string | null;
@@ -162,7 +161,6 @@ export interface BotConfig {
   ITEMS_BY_NAME: Record<string, ItemConfig>;
   STOCK_GROUPS: Record<string, string[]>;
   VENTE_ITEMS: string[];
-  VENTE_ARGENT_ITEMS: string[];
   /** Items dont le `laboLie` est actif pour le tier courant — drogues en production interne, complément exact de VENTE_ITEMS pour ces items-là (voir `laboLie` dans db.ts). */
   LABO_ITEMS: string[];
   ACTIVITY_TYPES: Record<string, ActivityTypeConfig>;
@@ -204,7 +202,6 @@ export async function reload(): Promise<BotConfig> {
   const STOCK_GROUPS: Record<string, string[]> = {};
   const ALLOWED_ITEMS: string[] = [];
   const VENTE_ITEMS: string[] = [];
-  const VENTE_ARGENT_ITEMS: string[] = [];
   const LABO_ITEMS: string[] = [];
   for (const it of items) {
     ITEMS_BY_NAME[it.name] = it;
@@ -219,7 +216,6 @@ export async function reload(): Promise<BotConfig> {
     const produitParLabo = !!it.laboLie && (LABO_TIERS[it.laboLie]?.includes(TYPE_GROUPE) ?? false);
     if (it.vente && !produitParLabo) VENTE_ITEMS.push(it.name);
     if (produitParLabo) LABO_ITEMS.push(it.name);
-    if (it.ventePaiement) VENTE_ARGENT_ITEMS.push(it.name);
   }
 
   const ACTIVITY_TYPES: Record<string, ActivityTypeConfig> = {};
@@ -257,7 +253,6 @@ export async function reload(): Promise<BotConfig> {
     ITEMS_BY_NAME,
     STOCK_GROUPS,
     VENTE_ITEMS,
-    VENTE_ARGENT_ITEMS,
     LABO_ITEMS,
     ACTIVITY_TYPES,
     QUOTA_TARGETS,

@@ -69,10 +69,13 @@ Si `docker compose build` échoue avec `invalid file request` (observé sur Wind
 Contrairement à un `config.js` à éditer, **toute la configuration métier vit en base et se pilote avec la commande `/config`**, réservée aux administrateurs Discord natifs (permission `Administrator` — volontairement indépendante du rôle admin configurable, pour éviter un problème d'œuf-et-poule sur un serveur tout juste configuré).
 
 ### `/config channel`
-Associe un salon Discord à un rôle fonctionnel du bot (`stock_general`, `quotas`, `armurerie`, `taxes`, `admin`, …) ou gère la liste des salons de logs de coffre surveillés.
+Associe un salon Discord à un rôle fonctionnel du bot (`stock_general`, `quotas`, `armurerie`, `taxes`, `admin`, …) ou gère la liste des salons de logs de coffre surveillés. `set` crée/rafraîchit immédiatement le panneau concerné (stock, armurerie, quotas, taxes) plutôt que d'attendre un événement indirect — pas besoin de redémarrer le bot après coup.
 - `/config channel set <role> <#salon>`
 - `/config channel add-log-coffre <#salon>` / `remove-log-coffre`
 - `/config channel list`
+
+### `/config category` — création automatique des salons
+`/config category set <catégorie>` crée en une fois, dans la catégorie Discord donnée, un salon pour chaque rôle fonctionnel pas encore configuré (nom par défaut dérivé du rôle, ex. `stock`, `armurerie`, `alertes-braquages`), les associe automatiquement, puis rafraîchit les panneaux comme `channel set`. Exclut volontairement les salons alimentés par le bot de jeu FiveM (`coffre_admin`, `logs_garages`, et les logs de coffre gérés séparément via `add-log-coffre`) : ceux-là doivent pointer vers un salon de logs déjà existant, jamais un salon vide fraîchement créé. Un rôle déjà configuré n'est jamais recréé — ré-exécutable sans risque de doublons.
 
 ### `/config role`
 Associe un rôle Discord à un usage (`admin` : commandes sensibles ; `taxes` : accès back-office taxes).
@@ -80,13 +83,16 @@ Associe un rôle Discord à un usage (`admin` : commandes sensibles ; `taxes` : 
 
 ### `/config item`
 Items de coffre suivis. **L'orthographe doit correspondre exactement** (accents, casse) à ce qu'écrit le bot de jeu FiveM — tout item absent de cette liste est silencieusement ignoré lors du parsing des logs. C'est la source de bug la plus fréquente sur ce type de bot : avant d'ajouter un item, vérifier l'orthographe exacte dans les logs récents du salon coffre.
-- `/config item add <nom> [vente_pnj] [paiement] [groupe] [stock_general] [labo_lie]`
+- `/config item add <nom> [vente_pnj] [groupe] [stock_general] [labo_lie]`
   - `vente_pnj` : déclarable en vente aux PNJ (marché noir) — pas une vente entre joueurs.
-  - `paiement` : un dépôt de cet item confirme automatiquement une vente en attente.
   - `groupe` : libellé de regroupement dans le message Stock Général (ex. "Munitions").
   - `stock_general` : afficher dans le message Stock Général (défaut oui — le stock reste suivi même à non).
   - `labo_lie` : ce labo produit cet item ? Exclut alors la vente PNJ pour tout tier ayant ce labo actif (voir `/config type-groupe` ci-dessous).
 - `/config item remove <nom>` (autocomplete) / `/config item list [filtre]`
+
+Pas d'option pour désigner l'item qui confirme une vente de drogue (voir `/config item list`, badge 🪙) : un seul item joue ce rôle en pratique, fixé en dur (`CONFIRME_VENTE_ITEM` dans `modules/ventes.ts`, "Argent Sale" par défaut — même principe que `MUNITIONS_STOCK_GROUP` pour les munitions dans `armurerie.ts`) plutôt qu'un flag à poser à la main sur chaque item.
+
+Trois items sont pré-remplis s'ils sont absents (`src/default-items.ts`) : **Munition de pistolet** (`groupe: "Munitions de pistolet"`, alimente le compteur de l'armurerie), **Argent Sale** (= `CONFIRME_VENTE_ITEM`, confirme les ventes en attente) et **Argent** (simple item de stock, distinct de l'Argent Sale). Déclenché au démarrage du bot ET à chaque usage de `/config` (pas seulement au tout premier démarrage — un bot déjà en cours d'exécution en profite dès la prochaine commande `/config`). Un item déjà configuré n'est jamais écrasé — ce n'est qu'un point de départ, modifiable/supprimable ensuite comme n'importe quel autre item via `/config item`.
 
 ### `/config type-groupe` — type d'organisation
 Le déploiement passe par 4 tiers — **Indépendant / Petite Frappe / Gang / Organisation** — qui font varier deux choses sans toucher au code :
@@ -111,7 +117,7 @@ Exemple : `/config salaire set vente 30` → chaque unité vendue rapporte 30$. 
 ## Modules
 
 ### `src/modules/stocks.ts` — Stocks de coffre
-Parse les logs des salons de coffre suivis, met à jour la table `stocks` et le message permanent du salon `stock_general`. Gère le rattrapage au démarrage et un resync complet à la demande (`/sync-stock`). `/set-stock` et `/historique-stock` utilisent l'autocomplete (la liste d'items peut dépasser la limite de 25 choix Discord). Le Stock Général affiche en plus deux sections dynamiques (dépendantes du tier, voir `/config type-groupe`) : **💊 Drogue à vendre** (total seul, détail via `/drogues-a-vendre`) et **🧪 Drogue de production** (détail par item). Dès qu'un mouvement de coffre (retrait ou dépôt, n'importe quel item) concerne un joueur sans compte Discord mappé, une alerte est postée dans `admin` (voir `/adduser`).
+Parse les logs des salons de coffre suivis, met à jour la table `stocks` et le message permanent du salon `stock_general`. Gère le rattrapage au démarrage et un resync complet à la demande (`/sync-stock`). `/config item add`/`remove` rafraîchit ce panneau immédiatement, sans attendre le prochain mouvement de coffre. `/set-stock` et `/historique-stock` utilisent l'autocomplete (la liste d'items peut dépasser la limite de 25 choix Discord). Le Stock Général affiche en plus deux sections dynamiques (dépendantes du tier, voir `/config type-groupe`) : **💊 Drogue à vendre** (total seul, détail via `/drogues-a-vendre`) et **🧪 Drogue de production** (détail par item). Dès qu'un mouvement de coffre (retrait ou dépôt, n'importe quel item) concerne un joueur sans compte Discord mappé, une alerte est postée dans `admin` (voir `/adduser`).
 
 ### `src/modules/quotas.ts` — Activités & quotas hebdomadaires
 Panneau de boutons **généré dynamiquement** à partir du registre fixe `ACTIVITY_TYPES` (`src/config-store.ts`) : jusqu'à 3 rangées de boutons directs, un menu déroulant de repli au-delà, puis la rangée fixe des vues (mon quota, ma paie, classement, bilan, minuterie). Reset automatique chaque dimanche 19h (bilan + paie envoyés, stats remises à zéro), auto-réparant si le bot était arrêté au moment du cron.
@@ -128,10 +134,10 @@ Types fixes avec leur propre bouton, **dépendants du type d'organisation** (`/c
 ### `src/modules/armurerie.ts` — Armurerie & munitions
 Inventaire d'armes individuelles (nom, référence unique, statut `en_stock`/`pretee`/`perdue`). Types d'armes fixes dans le code (constante `ARME_TYPES` en tête de fichier — pas de `/config` dédié, cette liste ne bouge jamais une fois posée), regroupés en 4 catégories (armes de poing, fusils à pompe, armes automatiques, armes lourdes) avec plus de 25 modèles : l'ajout d'une arme passe donc par un modal de recherche avant le select (limite Discord de 25 options). Munitions : ligne de stock + deux déclarations indicatives (Fabrication / Vente) avec compteur hebdomadaire — Fabrication a un plafond fixe (5000) dans le code, Vente n'a volontairement aucun plafond (juste le total suivi).
 
-Le stock réel de munitions affiché en tête du panneau vient d'un item suivi comme les autres — il faut l'ajouter via `/config item add nom:"<nom exact des logs FiveM>" groupe:"Munitions de pistolet"` (le libellé de groupe doit correspondre exactement à cette chaîne, câblée dans `armurerie.ts`). Sans cet item configuré, le panneau affiche `0` en stock, silencieusement.
+Le stock réel de munitions affiché en tête du panneau vient d'un item suivi comme les autres, associé via son `groupe` à la constante `MUNITIONS_STOCK_GROUP` (`"Munitions de pistolet"`, câblée dans `armurerie.ts`) — item pré-rempli automatiquement (voir `/config item` ci-dessus), donc plus besoin d'y penser. Le panneau armurerie n'est rafraîchi à chaque mouvement de coffre que si l'item déplacé appartient à ce groupe (voir `stocks.updateStockMessage`) — pas à chaque mouvement, quel qu'il soit, pour éviter des requêtes et des éditions Discord inutiles.
 
 ### `src/modules/ventes.ts` — Cycle de vie des ventes de drogue
-Un retrait de coffre sur un item marqué `vente_pnj: true` crée une vente en attente et alerte dans le salon `ventes_drogue`. Confirmation automatique dès le dépôt d'un item marqué `paiement: true` (fenêtre de 3h), log dans `log_ventes`, mise à jour des stats/quota. `/adduser`, `/removeuser` et `/listusers` gèrent les associations nom en jeu ↔ compte Discord, utilisées ici comme par l'alerte "joueur non mappé" de `stocks.ts`.
+Un retrait de coffre sur un item marqué `vente_pnj: true` crée une vente en attente et alerte dans le salon `ventes_drogue`. Confirmation automatique dès le dépôt de l'item `CONFIRME_VENTE_ITEM` (fixé en dur dans `ventes.ts`, "Argent Sale" par défaut — fenêtre de 3h), log dans `log_ventes`, mise à jour des stats/quota. `/adduser`, `/removeuser` et `/listusers` gèrent les associations nom en jeu ↔ compte Discord, utilisées ici comme par l'alerte "joueur non mappé" de `stocks.ts`.
 
 ---
 
@@ -139,7 +145,7 @@ Un retrait de coffre sur un item marqué `vente_pnj: true` crée une vente en at
 
 PostgreSQL via [Prisma](https://www.prisma.io/) (`prisma/schema.prisma`, migrations dans `prisma/migrations/`). Voir `npx prisma studio` pour explorer les données, `npx prisma migrate dev` pour créer une nouvelle migration en développement (après une modif de `schema.prisma`), `npx prisma migrate deploy` pour appliquer les migrations existantes (production, ou premier lancement).
 
-Tables de configuration (pilotées par `/config`) : `channels` (rôle fonctionnel → salon(s)), `discord_roles` (admin/taxes → rôle Discord), `items` (nom, groupe, `vente`/`ventePaiement`/`visibleStock`/`laboLie`), `quota_targets`, `salary_rates`. Le type d'organisation (`/config type-groupe`) est stocké comme un `Setting` scalaire (clé `type_groupe`). Le registre des activités déclarables et les barèmes par tier (braquage, labos) n'ont pas de table — ce sont des constantes fixes dans `src/config-store.ts` (voir plus haut).
+Tables de configuration (pilotées par `/config`) : `channels` (rôle fonctionnel → salon(s)), `discord_roles` (admin/taxes → rôle Discord), `items` (nom, groupe, `vente`/`visibleStock`/`laboLie`), `quota_targets`, `salary_rates`. Le type d'organisation (`/config type-groupe`) est stocké comme un `Setting` scalaire (clé `type_groupe`). Le registre des activités déclarables et les barèmes par tier (braquage, labos) n'ont pas de table — ce sont des constantes fixes dans `src/config-store.ts` (voir plus haut).
 Tables métier (génériques) : `stocks`, `stock_history`, `transactions`, `stats`, `cooldowns`, `braquages`, `taxes`, `armurerie`, `user_mapping`, `pending_sales`, `vehicules`, `fourrieres`, `munitions_ventes`.
 
 ---
