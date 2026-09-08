@@ -347,15 +347,38 @@ function buildTransactionEmbed(txId: number, userId: string, userTag: string, ac
 
 // ─── BOUTONS ──────────────────────────────────────────────────────────────────
 
-const MAX_DIRECT_BUTTONS = 15; // 3 rangées de 5
+const MAX_DIRECT_ROWS = 3; // 3 rangées de boutons directs (5e rangée réservée aux vues, voir plus bas)
 
 /**
- * Construit les rangées de boutons du panneau : jusqu'à 3 rangées d'activités
- * déclarables (`panelButton: true` ET `enabled` pour le tier courant — voir
- * config-store.ts, triées par ordre d'affichage), un menu déroulant de repli
- * si plus de {@link MAX_DIRECT_BUTTONS} sont configurées (limite Discord de 5
- * boutons/rangée × 5 rangées/message), puis la rangée fixe des vues (mon
- * quota, ma paie, classement, bilan, minuterie).
+ * Famille d'une activité déclarable, pour le regroupement visuel des rangées
+ * (voir {@link buildButtonRows}) : 0 = action simple (ATM, Cambu…), 1 =
+ * braquage (limite hebdomadaire), 2 = récolte/labo (quantité ou minuterie).
+ * Une activité n'est jamais à cheval sur deux familles dans le registre fixe
+ * (`ACTIVITY_TYPES_FIXED`), donc `!= null`/`||` suffit à trancher — pas de cas
+ * ambigu à arbitrer.
+ */
+function bucketOf(cfg: ActivityTypeConfig): 0 | 1 | 2 {
+  if (cfg.braquageWeeklyLimit != null) return 1;
+  if (cfg.labo || cfg.quantity) return 2;
+  return 0;
+}
+
+/**
+ * Construit les rangées de boutons du panneau : jusqu'à {@link MAX_DIRECT_ROWS}
+ * rangées d'activités déclarables (`panelButton: true` ET `enabled` pour le
+ * tier courant — voir config-store.ts, triées par ordre d'affichage), un menu
+ * déroulant de repli si ça déborde (limite Discord de 5 boutons/rangée × 5
+ * rangées/message), puis la rangée fixe des vues (mon quota, ma paie,
+ * classement, bilan, minuterie).
+ *
+ * Les boutons sont groupés par {@link bucketOf} : une nouvelle rangée démarre
+ * à chaque changement de famille (pas seulement tous les 5 boutons), pour que
+ * chaque rangée reste visuellement cohérente — sinon un découpage mécanique
+ * par paquets de 5 peut faire atterrir, par exemple, "Récolte" (bleu) au
+ * milieu d'une rangée à dominante braquage (rouge). Avec le registre fixe
+ * actuel, chaque famille tient toujours dans une seule rangée pour les 4
+ * tiers (au plus 5 activités de braquage, au plus 3 labos + récolte) — cette
+ * fonction reste néanmoins générale si le registre grossit un jour.
  */
 function buildButtonRows() {
   const activityTypes = configStore.get().ACTIVITY_TYPES;
@@ -365,20 +388,33 @@ function buildButtonRows() {
 
   const styleFor = (cfg: ActivityTypeConfig): ButtonStyle => {
     if (cfg.labo) return ButtonStyle.Success;
-    if (cfg.braquageWeeklyLimit) return ButtonStyle.Danger;
+    if (cfg.braquageWeeklyLimit != null) return ButtonStyle.Danger;
     return ButtonStyle.Primary;
   };
 
-  const direct = declarable.slice(0, MAX_DIRECT_BUTTONS);
-  const overflow = declarable.slice(MAX_DIRECT_BUTTONS, MAX_DIRECT_BUTTONS + 25);
-  if (declarable.length > MAX_DIRECT_BUTTONS + 25) {
-    console.warn(`[quotas] ${declarable.length - MAX_DIRECT_BUTTONS - 25} activité(s) supplémentaire(s) ne tiennent plus dans le panneau (limite Discord) — voir ACTIVITY_TYPES dans src/config-store.ts.`);
+  const grouped: Array<Array<[string, ActivityTypeConfig]>> = [];
+  let currentBucket: number | null = null;
+  for (const entry of declarable) {
+    const bucket = bucketOf(entry[1]);
+    const lastRow = grouped[grouped.length - 1];
+    if (bucket !== currentBucket || !lastRow || lastRow.length >= 5) {
+      grouped.push([]);
+      currentBucket = bucket;
+    }
+    grouped[grouped.length - 1].push(entry);
+  }
+
+  const direct = grouped.slice(0, MAX_DIRECT_ROWS);
+  const overflow = grouped.slice(MAX_DIRECT_ROWS).flat().slice(0, 25);
+  const overflowTotal = grouped.slice(MAX_DIRECT_ROWS).flat().length;
+  if (overflowTotal > 25) {
+    console.warn(`[quotas] ${overflowTotal - 25} activité(s) supplémentaire(s) ne tiennent plus dans le panneau (limite Discord) — voir ACTIVITY_TYPES dans src/config-store.ts.`);
   }
 
   const rows: ActionRowBuilder<ButtonBuilder | UserSelectMenuBuilder>[] = [];
-  for (let i = 0; i < direct.length; i += 5) {
+  for (const rowEntries of direct) {
     const row = new ActionRowBuilder<ButtonBuilder>();
-    for (const [key, cfg] of direct.slice(i, i + 5)) {
+    for (const [key, cfg] of rowEntries) {
       row.addComponents(new ButtonBuilder().setCustomId(`act_${key}`).setLabel(activityDisplayLabel(cfg).slice(0, 80)).setStyle(styleFor(cfg)));
     }
     rows.push(row as ActionRowBuilder<ButtonBuilder | UserSelectMenuBuilder>);
