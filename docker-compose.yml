@@ -18,8 +18,15 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    # Sans rotation, le driver json-file par defaut grossit indefiniment sur
+    # le disque de l'hote — aucune limite de memoire ici : Postgres gere la
+    # sienne (shared_buffers etc.), une limite arbitraire risquerait de le
+    # sous-dimensionner sans connaitre le volume de donnees reel.
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
 
-  bot:
+  roxwood-network-famille:
     build: .
     restart: unless-stopped
     depends_on:
@@ -37,6 +44,14 @@ services:
     # ici (inoffensif si l'API est desactivee — rien n'ecoute dessus alors).
     ports:
       - "${API_PORT:-3001}:${API_PORT:-3001}"
+    # Sans limite, une fuite memoire (ou un pic de charge inhabituel) ferait
+    # tomber tout l'hote au lieu du seul conteneur. 512m est large pour un
+    # bot Discord + petite API — a ajuster si des logs de crash memoire
+    # apparaissent (`docker compose logs roxwood-network-famille` / `docker stats`).
+    mem_limit: 512m
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
 
 volumes:
   db_data:

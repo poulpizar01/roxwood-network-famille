@@ -122,6 +122,10 @@ export function handleCallback(client: Client): (req: Request, res: Response) =>
           code: authCode,
           redirect_uri: `${API_BASE_URL}/auth/callback`,
         }),
+        // Sans timeout, un Discord qui traîne laisse la requête /auth/callback
+        // pendue indéfiniment côté navigateur (fetch/undici attend par défaut
+        // bien au-delà de ce qui est raisonnable pour un flux de connexion).
+        signal: AbortSignal.timeout(10_000),
       });
       if (!tokenResp.ok) {
         res.status(502).send('Échange du code OAuth refusé par Discord.');
@@ -131,6 +135,7 @@ export function handleCallback(client: Client): (req: Request, res: Response) =>
 
       const meResp = await fetch('https://discord.com/api/users/@me', {
         headers: { Authorization: `Bearer ${access_token}` },
+        signal: AbortSignal.timeout(10_000),
       });
       if (!meResp.ok) {
         res.status(502).send('Impossible de récupérer ton identité Discord.');

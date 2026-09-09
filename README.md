@@ -56,9 +56,11 @@ cp .env.example .env
 # (DATABASE_URL est recalculé par docker-compose pour pointer vers le service "db" — inutile de l'éditer)
 
 docker compose up -d --build
-docker compose logs -f bot
+docker compose logs -f roxwood-network-famille
 ```
 Mise à jour après un `git pull` : `docker compose up -d --build`. Le port `5432` du service `db` est publié sur l'hôte par défaut (pratique pour `prisma studio`/`psql` en local) — à retirer ou restreindre par pare-feu sur un déploiement exposé publiquement.
+
+Les deux services ont une rotation de logs (`max-size: 10m`, `max-file: 3` — sinon le driver `json-file` par défaut grossit indéfiniment sur le disque de l'hôte) ; le service `bot` a en plus une limite mémoire (`mem_limit: 512m`, large pour un bot Discord + petite API — à ajuster si `docker stats` montre un dépassement).
 
 Si `docker compose build` échoue avec `invalid file request` (observé sur Windows + OneDrive avec BuildKit sur ce projet), désactiver BuildKit pour ce build : `set DOCKER_BUILDKIT=0 && docker compose build` (PowerShell : `$env:DOCKER_BUILDKIT=0`).
 

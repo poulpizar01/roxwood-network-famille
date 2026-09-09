@@ -23,10 +23,23 @@ import * as configStore from '../config-store';
  * Vérifie les cooldowns expirés non encore notifiés et envoie un rappel au
  * membre concerné dans le salon `alertes_actions`. Appelée périodiquement.
  */
+/**
+ * Verrou de ré-entrance : ce cron tourne toutes les minutes (voir index.ts)
+ * et `node-cron` n'attend pas la fin d'une exécution avant de programmer la
+ * suivante — sans ce verrou, un batch de cooldowns expirés qui prend plus
+ * d'une minute (beaucoup de notifs + latence API Discord) ferait démarrer un
+ * 2ᵉ passage sur les MÊMES lignes pas encore marquées `notified` (le
+ * marquage se fait une par une, après l'envoi, dans la boucle ci-dessous) —
+ * même membre notifié deux fois pour le même cooldown.
+ */
+let cooldownCheckRunning = false;
+
 export async function checkExpiredCooldowns(client: Client): Promise<void> {
-  const c = configStore.get();
-  if (!c.CHANNELS.alertes_actions) return;
+  if (cooldownCheckRunning) return;
+  cooldownCheckRunning = true;
   try {
+    const c = configStore.get();
+    if (!c.CHANNELS.alertes_actions) return;
     const expired = await db.getExpiredUnnotifiedCooldowns();
     if (!expired.length) return;
 
@@ -50,6 +63,8 @@ export async function checkExpiredCooldowns(client: Client): Promise<void> {
     }
   } catch (err) {
     console.error('[alertes] checkExpiredCooldowns:', (err as Error).message);
+  } finally {
+    cooldownCheckRunning = false;
   }
 }
 

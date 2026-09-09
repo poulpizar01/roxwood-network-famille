@@ -404,6 +404,19 @@ export async function cleanupExpiredSales(client: Client): Promise<void> {
   }
 }
 
+/** Fenêtre de rétention des ventes terminées avant purge — pur debris opérationnel passé ce délai, voir `deleteOldPendingSales` dans db.ts. */
+const PENDING_SALE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** Cron quotidien : purge les ventes terminées (confirmée/reposée/ignorée/expirée) de plus de 30 jours. */
+export async function purgeOldPendingSales(): Promise<void> {
+  try {
+    const count = await db.deleteOldPendingSales(Date.now() - PENDING_SALE_RETENTION_MS);
+    if (count > 0) console.log(`[ventes] Purge : ${count} vente(s) en attente terminée(s) de plus de 30 jours supprimée(s).`);
+  } catch (err) {
+    console.error('[ventes] purgeOldPendingSales:', (err as Error).message);
+  }
+}
+
 // ─── COMMANDES SLASH ─────────────────────────────────────────────────────────
 
 /** Déclare les commandes `/adduser`, `/removeuser`, `/listusers`. */

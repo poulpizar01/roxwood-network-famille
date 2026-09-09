@@ -524,6 +524,19 @@ export async function getMunitionsVentesHistorique(limite = 15) {
   return rows.map(r => ({ timestamp: toMs(r.timestamp), quantite: r.quantite, acheteur_id: r.acheteurId, prix: r.prix }));
 }
 
+/**
+ * Purge les ventes de munitions antérieures à `beforeTs`, retourne le nombre
+ * supprimé. Contrairement à `transactions` (voir `getUserActionTotals` /
+ * `*ForRange` dans quotas.ts), cette table n'alimente aucune navigation par
+ * semaine passée — juste un compteur "cette semaine" et les 15 dernières
+ * ventes (voir `getMunitionsVentesDepuis`/`getMunitionsVentesHistorique`) —
+ * rien ne justifie de la garder indéfiniment.
+ */
+export async function deleteOldMunitionVentes(beforeTs: number): Promise<number> {
+  const { count } = await prisma.munitionVente.deleteMany({ where: { timestamp: { lt: new Date(beforeTs) } } });
+  return count;
+}
+
 /** Incrémente (upsert) le compteur et les points d'une stat pour un joueur/action. */
 export async function incrementStat(userId: string, action: string, countDelta = 1, pointsDelta = 0): Promise<void> {
   await prisma.stat.upsert({
@@ -892,6 +905,23 @@ export async function getExpiredPendingSales(before: number) {
     where: { statut: { in: ['en_attente', 'declare', 'repose'] }, timestamp: { lt: new Date(before) }, messageId: { not: null } },
   });
   return rows.map(mapPendingSale);
+}
+
+/**
+ * Purge les ventes en attente TERMINÉES (confirmée/reposée/ignorée/expirée)
+ * antérieures à `beforeTs`, retourne le nombre supprimé. Ne touche jamais
+ * 'en_attente'/'declare' (en cours) quelle que soit leur ancienneté — garde-
+ * fou défensif, même si ces statuts ne devraient de toute façon jamais durer
+ * au-delà de la fenêtre de confirmation de 3h (voir `getExpiredPendingSales`,
+ * qui les fait justement basculer vers un statut terminal). Pure debris
+ * opérationnel une fois terminée : le vrai historique de vente vit dans
+ * `transactions`, jamais dans cette table (voir `getVenteTotalsForRange`).
+ */
+export async function deleteOldPendingSales(beforeTs: number): Promise<number> {
+  const { count } = await prisma.pendingSale.deleteMany({
+    where: { timestamp: { lt: new Date(beforeTs) }, statut: { in: ['confirme', 'repose', 'ignore', 'expire'] } },
+  });
+  return count;
 }
 
 // ─── VENTES CONFIRMÉES SUR UNE PLAGE (API) ─────────────────────────────────────

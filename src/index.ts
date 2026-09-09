@@ -61,6 +61,15 @@ const client = new Client({
     GatewayIntentBits.GuildMessageReactions,
   ],
   partials: [Partials.Channel, Partials.Message, Partials.Reaction],
+  // Sans ça, discord.js garde en RAM tous les messages vus (jusqu'à 200 par
+  // salon par défaut) sans jamais les libérer — sur les salons de logs
+  // coffre à fort trafic, ça grossit indéfiniment. Les messages permanents
+  // (stock/quotas/armurerie/taxes) ne dépendent pas de ce cache : ils sont
+  // toujours re-fetchés par ID (`channel.messages.fetch(storedId)`), jamais
+  // lus depuis le cache — donc rien ne casse quand un vieux message en sort.
+  sweepers: {
+    messages: { interval: 3600, lifetime: 3600 },
+  },
 });
 
 // ─── DÉPLOIEMENT DES COMMANDES SLASH ─────────────────────────────────────────
@@ -117,6 +126,12 @@ client.once('clientReady', async (readyClient) => {
 
   // ── CRON : Vérif taxes expirées chaque jour à 10h00 ──────────────────────
   cron.schedule('0 10 * * *', () => taxes.checkExpiredTaxes(client), { timezone: 'Europe/Paris' });
+
+  // ── CRON : Purge des ventes terminées (pending_sales) et des ventes de
+  // munitions de plus de 30 jours — pur debris opérationnel, voir
+  // ventes.purgeOldPendingSales / armurerie.purgeOldMunitionVentes.
+  cron.schedule('0 4 * * *', () => ventes.purgeOldPendingSales(), { timezone: 'Europe/Paris' });
+  cron.schedule('0 4 * * *', () => armurerie.purgeOldMunitionVentes(), { timezone: 'Europe/Paris' });
 
   // ── CRON : Vérif cooldowns expirés chaque minute ──────────────────────────
   cron.schedule('* * * * *', () => alertes.checkExpiredCooldowns(client));

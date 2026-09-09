@@ -127,6 +127,19 @@ export async function getMunitionsSummary() {
   };
 }
 
+/** Fenêtre de rétention des ventes de munitions avant purge — juste indicatif (compteur hebdo + 15 dernières), rien ne justifie de garder plus, voir `deleteOldMunitionVentes` dans db.ts. */
+const MUNITION_VENTE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** Cron quotidien : purge les ventes de munitions de plus de 30 jours. */
+export async function purgeOldMunitionVentes(): Promise<void> {
+  try {
+    const count = await db.deleteOldMunitionVentes(Date.now() - MUNITION_VENTE_RETENTION_MS);
+    if (count > 0) console.log(`[armurerie] Purge : ${count} vente(s) de munitions de plus de 30 jours supprimée(s).`);
+  } catch (err) {
+    console.error('[armurerie] purgeOldMunitionVentes:', (err as Error).message);
+  }
+}
+
 // ─── STATUT LABELS ───────────────────────────────────────────────────────────
 
 /** Libellé affiché pour le statut d'une arme ('en_stock' | 'pretee' | 'perdue'). */
