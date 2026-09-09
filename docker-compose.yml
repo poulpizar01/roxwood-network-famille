@@ -32,6 +32,11 @@ services:
       # via localhost) : a l'interieur du reseau docker-compose, la base est
       # joignable via le nom de service `db`, pas `localhost`.
       DATABASE_URL: postgresql://${POSTGRES_USER:-bot_famille}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-bot_famille}
+    # API REST optionnelle (voir README, section Interoperabilite) : n'ecoute
+    # que si API_PORT est defini dans .env, mais le port est toujours publie
+    # ici (inoffensif si l'API est desactivee — rien n'ecoute dessus alors).
+    ports:
+      - "${API_PORT:-3001}:${API_PORT:-3001}"
 
 volumes:
   db_data:

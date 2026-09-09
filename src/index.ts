@@ -49,6 +49,7 @@ import * as armurerie from './modules/armurerie';
 import * as alertes from './modules/alertes';
 import * as ventes from './modules/ventes';
 import * as garages from './modules/garages';
+import { startApiServer } from './api/server';
 
 // ─── CLIENT ───────────────────────────────────────────────────────────────────
 const client = new Client({
@@ -103,6 +104,8 @@ client.once('clientReady', async (readyClient) => {
   await taxes.initPermanentMessage(client);
   await alertes.initLaboTimers(client);
   await garages.catchUpMissedMessages(client);
+
+  startApiServer(client);
 
   // ── CRON : Reset hebdomadaire (dimanche 19h Europe/Paris), auto-réparant ──
   await quotas.checkWeeklyReset(client);

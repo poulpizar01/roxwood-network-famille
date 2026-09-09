@@ -180,6 +180,16 @@ export async function getStock(item: string): Promise<number> {
   return row ? row.quantite : 0;
 }
 
+/** Somme du stock de plusieurs items en une seule requête (0 si aucun n'existe) — voir `armurerie.getMunitionsStock`, qui regroupe potentiellement plusieurs calibres sous un seul total (contre un `getStock` par item, un N+1 pour un groupe qui peut grossir). */
+export async function getStocksSum(items: string[]): Promise<number> {
+  if (!items.length) return 0;
+  const agg = await prisma.stock.aggregate({
+    where: { item: { in: items.map(i => i.toLowerCase()) } },
+    _sum: { quantite: true },
+  });
+  return agg._sum.quantite ?? 0;
+}
+
 /**
  * Applique un delta au stock d'un item de façon atomique (une seule requête
  * SQL — upsert + valeur précédente lue dans la même instruction), et retourne
@@ -220,9 +230,42 @@ export async function getAllStocks() {
   return prisma.stock.findMany({ orderBy: { item: 'asc' } });
 }
 
-/** Supprime tout le stock (resync complète). */
+/** Supprime tout le stock — global ET par coffre (resync complète, voir `stocks.fullResync`). */
 export async function resetAllStocks(): Promise<void> {
   await prisma.stock.deleteMany();
+  await prisma.coffreStock.deleteMany();
+}
+
+// ─── STOCK PAR COFFRE ─────────────────────────────────────────────────────────
+//
+// Détail par salon `logs_coffres` (voir modèle CoffreStock) — mis à jour EN
+// PLUS du total global (jamais à sa place, voir `applyStockDelta`) à chaque
+// mouvement, avec le même identifiant de salon que celui d'où vient le log.
+
+/**
+ * Applique un delta au stock d'un item POUR UN COFFRE DONNÉ, atomiquement —
+ * même pattern que `applyStockDelta` (upsert + valeur précédente en une
+ * seule requête, contre une course entre deux mouvements concurrents sur le
+ * même coffre/item).
+ */
+export async function applyCoffreStockDelta(channelId: string, item: string, delta: number): Promise<{ avant: number; apres: number }> {
+  const key = item.toLowerCase();
+  const rows = await prisma.$queryRaw<Array<{ avant: number; apres: number }>>`
+    WITH prev AS (
+      SELECT quantite FROM coffre_stocks WHERE channel_id = ${channelId} AND item = ${key}
+    ), upserted AS (
+      INSERT INTO coffre_stocks (channel_id, item, quantite) VALUES (${channelId}, ${key}, GREATEST(${delta}, 0))
+      ON CONFLICT (channel_id, item) DO UPDATE SET quantite = GREATEST(coffre_stocks.quantite + ${delta}, 0)
+      RETURNING quantite
+    )
+    SELECT COALESCE((SELECT quantite FROM prev), 0)::int AS avant, (SELECT quantite FROM upserted)::int AS apres
+  `;
+  return { avant: rows[0]?.avant ?? 0, apres: rows[0]?.apres ?? 0 };
+}
+
+/** Le stock de tous les items d'UN coffre précis, trié par nom (liste vide si ce salon n'a encore aucun mouvement enregistré — pas d'erreur). */
+export async function getCoffreStocks(channelId: string) {
+  return prisma.coffreStock.findMany({ where: { channelId }, orderBy: { item: 'asc' } });
 }
 
 /** Supprime tout l'historique de mouvements de stock (resync complète). */
@@ -240,6 +283,8 @@ export interface StockHistoryInput {
   quantite: number;
   stock_avant: number;
   stock_apres: number;
+  /** Salon `logs_coffres` d'origine (voir modèle CoffreStock) — absent pour un appel qui ne le connaît pas. */
+  channel_id?: string | null;
 }
 
 /** Journalise un mouvement de stock et plafonne l'historique à 500 entrées (les plus anciennes sont purgées). */
@@ -253,6 +298,7 @@ export async function addStockHistory(data: StockHistoryInput): Promise<void> {
       quantite: data.quantite,
       stockAvant: data.stock_avant,
       stockApres: data.stock_apres,
+      channelId: data.channel_id ?? null,
     },
   });
   // Plafonne l'historique à 500 entrées (les plus anciennes sont purgées).
@@ -267,10 +313,19 @@ export async function addStockHistory(data: StockHistoryInput): Promise<void> {
   }
 }
 
-/** Derniers mouvements de stock, du plus récent au plus ancien, filtrés par item si fourni. */
-export async function getRecentStockHistory(item: string | null = null, limit = 20) {
+/**
+ * Derniers mouvements de stock, du plus récent au plus ancien, filtrés par
+ * item et/ou coffre (salon `logs_coffres`) si fournis. `channelId` ne filtre
+ * que les lignes enregistrées depuis l'ajout de ce suivi (voir `channelId`
+ * dans le modèle StockHistory — `null` sur les lignes plus anciennes,
+ * jamais retournées par ce filtre).
+ */
+export async function getRecentStockHistory(item: string | null = null, limit = 20, channelId: string | null = null) {
   const rows = await prisma.stockHistory.findMany({
-    where: item ? { item: item.toLowerCase() } : undefined,
+    where: {
+      ...(item ? { item: item.toLowerCase() } : {}),
+      ...(channelId ? { channelId } : {}),
+    },
     orderBy: { id: 'desc' },
     take: limit,
   });
@@ -363,13 +418,15 @@ export async function getAllUserTotals(): Promise<Array<{ user_id: string; total
 }
 
 /**
- * Retourne le nombre d'événements par type d'action depuis `sinceTs`, tous
- * participants confondus (une transaction = un événement). Les clés listées
- * dans `quantityActions` sont sommées par quantité plutôt que comptées.
+ * Retourne le nombre d'événements par type d'action entre `sinceTs` et
+ * `untilTs` (exclu, défaut maintenant — donc "depuis sinceTs" par défaut,
+ * comme avant), tous participants confondus (une transaction = un
+ * événement). Les clés listées dans `quantityActions` sont sommées par
+ * quantité plutôt que comptées.
  */
-export async function getGroupActionTotals(sinceTs = 0, quantityActions: string[] = []): Promise<Array<{ action: string; total: number }>> {
+export async function getGroupActionTotals(sinceTs = 0, quantityActions: string[] = [], untilTs: number = Date.now()): Promise<Array<{ action: string; total: number }>> {
   const rows = await prisma.transaction.findMany({
-    where: { deleted: false, timestamp: { gte: new Date(sinceTs) } },
+    where: { deleted: false, timestamp: { gte: new Date(sinceTs), lt: new Date(untilTs) } },
     select: { action: true, quantite: true },
   });
   const totals = new Map<string, number>();
@@ -378,6 +435,31 @@ export async function getGroupActionTotals(sinceTs = 0, quantityActions: string[
     totals.set(r.action, (totals.get(r.action) ?? 0) + add);
   }
   return [...totals.entries()].map(([action, total]) => ({ action, total }));
+}
+
+/**
+ * Comme {@link getGroupActionTotals}, mais détaillé par joueur plutôt
+ * qu'agrégé pour tout le groupe — base de la reconstruction de quota/paie
+ * pour une semaine passée depuis `Transaction` (jamais purgée), contrairement
+ * au cache `Stat` qui ne connaît que la période en cours (voir
+ * `modules/quotas.ts`, fonctions `*ForRange`, et `src/api/routes/quotas.ts`).
+ * `userId` optionnel filtre sur un seul joueur (évite de tout charger puis
+ * filtrer en mémoire pour une vue "un seul joueur").
+ */
+export async function getUserActionTotals(sinceTs: number, untilTs: number, quantityActions: string[] = [], userId?: string): Promise<Array<{ userId: string; action: string; total: number }>> {
+  const rows = await prisma.transaction.findMany({
+    where: { deleted: false, timestamp: { gte: new Date(sinceTs), lt: new Date(untilTs) }, ...(userId ? { userId } : {}) },
+    select: { userId: true, action: true, quantite: true },
+  });
+  const totals = new Map<string, { userId: string; action: string; total: number }>();
+  for (const r of rows) {
+    const key = `${r.userId}|${r.action}`;
+    const add = quantityActions.includes(r.action) ? r.quantite : 1;
+    const existing = totals.get(key);
+    if (existing) existing.total += add;
+    else totals.set(key, { userId: r.userId, action: r.action, total: add });
+  }
+  return [...totals.values()];
 }
 
 /** Total de munitions déclarées fabriquées depuis `sinceTs`. */
@@ -409,6 +491,16 @@ export async function getMunitionsVenduesDepuis(sinceTs: number): Promise<number
     _sum: { quantite: true },
   });
   return agg._sum.quantite ?? 0;
+}
+
+/** Ventes de munitions depuis `sinceTs` (détail ligne par ligne, pas juste le total), du plus récent au plus ancien — pas de limite, contrairement à {@link getMunitionsVentesHistorique}. */
+export async function getMunitionsVentesDepuis(sinceTs: number) {
+  const rows = await prisma.munitionVente.findMany({
+    where: { timestamp: { gte: new Date(sinceTs) } },
+    orderBy: { timestamp: 'desc' },
+    select: { timestamp: true, quantite: true, acheteurId: true, prix: true },
+  });
+  return rows.map(r => ({ timestamp: toMs(r.timestamp), quantite: r.quantite, acheteur_id: r.acheteurId, prix: r.prix }));
 }
 
 /** Dernières déclarations de fabrication de munitions, du plus récent au plus ancien. */
@@ -605,13 +697,39 @@ export async function getExpiredTaxes(excludeTypes: string[] = []) {
   return rows.map(mapTaxe);
 }
 
-/** Recherche des taxes actives par sous-chaîne de nom (insensible à la casse), 25 résultats max. */
-export async function searchTaxNames(query: string): Promise<Array<{ id: number; nom: string }>> {
-  return prisma.taxe.findMany({
-    where: { actif: true, nom: { contains: query, mode: 'insensitive' } },
-    select: { id: true, nom: true },
-    take: 25,
+export interface FindTaxesOptions {
+  /** Restreint aux types listés (ex. `taxes.FIXED_TYPES` et/ou `taxes.ZONE_TYPE_KEYS`, voir modules/taxes.ts) — omis = tous types confondus. */
+  types?: string[];
+  /** `true` = uniquement expirées, `false` = uniquement en cours, omis = les deux. */
+  expired?: boolean;
+  /** Sous-chaîne sur `nom`, insensible à la casse — omis = pas de filtre par nom. */
+  query?: string;
+  limit?: number;
+}
+
+/**
+ * Recherche flexible de taxes actives (non soft-deleted) — combine filtre
+ * par type(s), par état (en cours/expirée), et par nom, selon les options
+ * fournies. Base de `GET /api/taxes` (list, filtres type/état) et
+ * `GET /api/taxes/search` (recherche par nom dans un type donné) — voir
+ * `src/api/routes/taxes.ts`. Remplace `getAllTaxes`/`getExpiredTaxes` pour
+ * ces deux usages (gardées telles quelles pour leurs appelants existants,
+ * qui n'ont pas besoin de cette flexibilité).
+ */
+export async function findTaxes(opts: FindTaxesOptions = {}) {
+  const now = new Date();
+  const rows = await prisma.taxe.findMany({
+    where: {
+      actif: true,
+      ...(opts.types ? { type: { in: opts.types } } : {}),
+      ...(opts.expired === true ? { echeance: { lte: now } } : {}),
+      ...(opts.expired === false ? { echeance: { gt: now } } : {}),
+      ...(opts.query ? { nom: { contains: opts.query, mode: 'insensitive' } } : {}),
+    },
+    orderBy: { echeance: 'asc' },
+    take: opts.limit,
   });
+  return rows.map(mapTaxe);
 }
 
 /** Ajoute `days` jours à l'échéance d'une taxe (au moins depuis maintenant) et retourne la nouvelle échéance, ou `null` si introuvable. */
@@ -774,6 +892,38 @@ export async function getExpiredPendingSales(before: number) {
     where: { statut: { in: ['en_attente', 'declare', 'repose'] }, timestamp: { lt: new Date(before) }, messageId: { not: null } },
   });
   return rows.map(mapPendingSale);
+}
+
+// ─── VENTES CONFIRMÉES SUR UNE PLAGE (API) ─────────────────────────────────────
+//
+// Une vente confirmée (voir `tryConfirmMoneyDeposit`/`tryConfirmRedeposit`
+// dans modules/ventes.ts) écrit une `Transaction` (`action: 'vente'`, `type`
+// = l'item vendu, `quantite` = quantité) EN PLUS de créditer le quota — les
+// deux fonctions ci-dessous relisent cette même `Transaction` (jamais
+// purgée), même principe que les fonctions `*ForRange` de `modules/quotas.ts`
+// pour naviguer sur une semaine passée via `?week=` (voir
+// `src/api/routes/ventes.ts`). `total` ici est donc toujours identique à
+// `byQuotaType['vente']` d'un résumé de quota pour la même plage — une seule
+// vérité, jamais deux calculs divergents.
+
+/** Total vendu par joueur (toutes drogues confondues) sur une plage — base de `GET /api/ventes`. */
+export async function getVenteTotalsForRange(sinceTs: number, untilTs: number): Promise<Array<{ userId: string; total: number }>> {
+  const rows = await prisma.transaction.groupBy({
+    by: ['userId'],
+    where: { deleted: false, action: 'vente', timestamp: { gte: new Date(sinceTs), lt: new Date(untilTs) } },
+    _sum: { quantite: true },
+  });
+  return rows.map(r => ({ userId: r.userId, total: r._sum.quantite ?? 0 }));
+}
+
+/** Détail par item vendu (`Transaction.type`) d'UN joueur sur une plage — base de `GET /api/ventes/:userId`. */
+export async function getVenteDetailForUser(userId: string, sinceTs: number, untilTs: number): Promise<Array<{ item: string; quantite: number }>> {
+  const rows = await prisma.transaction.groupBy({
+    by: ['type'],
+    where: { deleted: false, action: 'vente', userId, timestamp: { gte: new Date(sinceTs), lt: new Date(untilTs) } },
+    _sum: { quantite: true },
+  });
+  return rows.map(r => ({ item: r.type ?? 'inconnu', quantite: r._sum.quantite ?? 0 }));
 }
 
 // ─── VÉHICULES / FOURRIÈRE ────────────────────────────────────────────────────

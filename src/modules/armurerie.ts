@@ -108,9 +108,23 @@ export const MUNITIONS_STOCK_GROUP = 'Munitions de pistolet';
 /** Stock total des items regroupés sous {@link MUNITIONS_STOCK_GROUP} (0 si aucun item n'est configuré avec ce groupe). */
 async function getMunitionsStock(): Promise<number> {
   const items = configStore.get().STOCK_GROUPS[MUNITIONS_STOCK_GROUP] ?? [];
-  let total = 0;
-  for (const item of items) total += await db.getStock(item);
-  return total;
+  return db.getStocksSum(items);
+}
+
+/**
+ * Résumé munitions (stock réel + compteurs hebdomadaires indicatifs) —
+ * données brutes, pas d'embed. Exportée pour être réutilisée par l'API en
+ * lecture seule (voir src/api/routes/armurerie.ts) sans dupliquer cette
+ * logique : source unique pour le panneau Discord ET l'API.
+ */
+export async function getMunitionsSummary() {
+  const sinceReset = Number((await db.getSetting('last_weekly_reset')) || 0);
+  return {
+    stock: await getMunitionsStock(),
+    fabriqueesCetteSemaine: await db.getMunitionsFabriqueesDepuis(sinceReset),
+    fabricationQuotaHebdo: MUNITIONS_FABRICATION_QUOTA_HEBDO,
+    vendusCetteSemaine: await db.getMunitionsVenduesDepuis(sinceReset),
+  };
 }
 
 // ─── STATUT LABELS ───────────────────────────────────────────────────────────
@@ -156,12 +170,9 @@ type Arme = Awaited<ReturnType<typeof db.getAllArmes>>[number];
 async function buildArmurierieEmbed(armes: Arme[]): Promise<EmbedBuilder> {
   const embed = new EmbedBuilder().setTitle('🔫 Armurerie').setColor(0xFEE75C).setTimestamp().setFooter({ text: 'Mis à jour' });
 
-  const munitions = await getMunitionsStock();
-  const sinceReset = Number((await db.getSetting('last_weekly_reset')) || 0);
-  const fabriquees = await db.getMunitionsFabriqueesDepuis(sinceReset);
-  const vendues = await db.getMunitionsVenduesDepuis(sinceReset);
+  const { stock, fabriqueesCetteSemaine, vendusCetteSemaine } = await getMunitionsSummary();
   const blocs = [
-    `__Munitions de pistolet__\n🧰 ${munitions} balles en stock\n🛠️ ${fabriquees} / ${MUNITIONS_FABRICATION_QUOTA_HEBDO} fabriquées cette semaine\n💰 ${vendues} vendues cette semaine`,
+    `__Munitions de pistolet__\n🧰 ${stock} balles en stock\n🛠️ ${fabriqueesCetteSemaine} / ${MUNITIONS_FABRICATION_QUOTA_HEBDO} fabriquées cette semaine\n💰 ${vendusCetteSemaine} vendues cette semaine`,
   ];
 
   if (!armes.length) {

@@ -117,7 +117,7 @@ Exemple : `/config salaire set vente 30` → chaque unité vendue rapporte 30$. 
 ## Modules
 
 ### `src/modules/stocks.ts` — Stocks de coffre
-Parse les logs des salons de coffre suivis, met à jour la table `stocks` et le message permanent du salon `stock_general`. Gère le rattrapage au démarrage et un resync complet à la demande (`/sync-stock`). `/config item add`/`remove` rafraîchit ce panneau immédiatement, sans attendre le prochain mouvement de coffre. `/set-stock` et `/historique-stock` utilisent l'autocomplete (la liste d'items peut dépasser la limite de 25 choix Discord). Le Stock Général affiche en plus deux sections dynamiques (dépendantes du tier, voir `/config type-groupe`) : **💊 Drogue à vendre** (total seul, détail via `/drogues-a-vendre`) et **🧪 Drogue de production** (détail par item). Dès qu'un mouvement de coffre (retrait ou dépôt, n'importe quel item) concerne un joueur sans compte Discord mappé, une alerte est postée dans `admin` (voir `/adduser`).
+Parse les logs des salons de coffre suivis, met à jour la table `stocks` (total global, celui du panneau Discord) et le message permanent du salon `stock_general`. Met aussi à jour `coffre_stocks`, le détail par coffre (par salon `logs_coffres`) — pas affiché en Discord, exposé uniquement via l'API (voir section Interopérabilité) ; les deux sont toujours mis à jour ensemble, jamais l'un sans l'autre. Gère le rattrapage au démarrage et un resync complet à la demande (`/sync-stock`). `/config item add`/`remove` rafraîchit ce panneau immédiatement, sans attendre le prochain mouvement de coffre. `/set-stock` et `/historique-stock` utilisent l'autocomplete (la liste d'items peut dépasser la limite de 25 choix Discord). Le Stock Général affiche en plus deux sections dynamiques (dépendantes du tier, voir `/config type-groupe`) : **💊 Drogue à vendre** (total seul, détail via `/drogues-a-vendre`) et **🧪 Drogue de production** (détail par item). Dès qu'un mouvement de coffre (retrait ou dépôt, n'importe quel item) concerne un joueur sans compte Discord mappé, une alerte est postée dans `admin` (voir `/adduser`).
 
 ### `src/modules/quotas.ts` — Activités & quotas hebdomadaires
 Panneau de boutons **généré dynamiquement** à partir du registre fixe `ACTIVITY_TYPES` (`src/config-store.ts`) : jusqu'à 3 rangées de boutons directs, un menu déroulant de repli au-delà, puis la rangée fixe des vues (mon quota, ma paie, classement, bilan, minuterie). Reset automatique chaque dimanche 19h (bilan + paie envoyés, stats remises à zéro), auto-réparant si le bot était arrêté au moment du cron.
@@ -141,12 +141,69 @@ Un retrait de coffre sur un item marqué `vente_pnj: true` crée une vente en at
 
 ---
 
+## Interopérabilité — API REST (optionnelle)
+
+Une petite API REST **en lecture seule**, dans le même process que le bot (`src/api/`), permet à un outil externe (ex. un site web) de récupérer les données du bot. **Désactivée par défaut** — n'existe que si `API_PORT` est défini dans `.env` ; sinon aucun port n'est ouvert, comportement inchangé.
+
+### Mise en place
+
+1. Dans le [Discord Developer Portal](https://discord.com/developers/applications), onglet **OAuth2** de l'application du bot : noter le **Client Secret**, et ajouter une **Redirect URI** = `<API_BASE_URL>/auth/callback` (ex. `http://localhost:3001/auth/callback` en dev, l'URL publique réelle en prod).
+2. Renseigner dans `.env` : `API_PORT`, `DISCORD_CLIENT_SECRET`, `API_JWT_SECRET` (une longue chaîne aléatoire, à générer une fois), `API_BASE_URL`, `FRONTEND_URL` (où rediriger après connexion), `API_CORS_ORIGIN` (origine autorisée pour les appels `fetch()` du site externe) — voir `.env.example`.
+3. Démarrer/redémarrer le bot : `✅ API REST en écoute sur le port <API_PORT>` dans les logs confirme que c'est actif.
+
+### Authentification — connexion via Discord
+
+Pas de clé API statique : l'utilisateur se connecte avec son compte Discord, et l'accès est dérivé de ses rôles sur le serveur configuré (`GUILD_ID`) — les mêmes règles qu'en Discord, pas une logique dupliquée.
+
+1. Le site externe redirige le navigateur vers `<API_BASE_URL>/auth/login`.
+2. Après connexion Discord, l'utilisateur revient sur `<FRONTEND_URL>#token=<jwt>` — le site récupère ce token côté client (fragment d'URL, jamais envoyé à un serveur) et le stocke.
+3. Chaque appel à `/api/*` doit inclure `Authorization: Bearer <jwt>`. Le token expire au bout de 7 jours (pas de refresh token — se reconnecter via `/auth/login`).
+
+Deux niveaux d'accès : **membre du serveur Discord** (suffit pour `/api/stocks`, `/api/quotas`, `/api/armurerie`, `/api/ventes`) et **rôle taxes ou admin** (requis en plus pour `/api/taxes` — le rôle `TAXES_ROLE_ID` de `/config role`, jusqu'ici sans utilisateur réel, sert enfin à ça).
+
+### Endpoints disponibles
+
+| Endpoint | Accès | Retourne |
+|----------|-------|----------|
+| `GET /api/me` | Membre | Identité résolue (id, username, isAdmin, isTaxes) |
+| `GET /api/stocks` | Membre | Stock actuel de chaque item suivi, tous coffres confondus |
+| `GET /api/stocks/:channelId` | Membre | Stock actuel de chaque item pour UN coffre précis |
+| `GET /api/stocks/history?item=&channelId=&limit=` | Membre | Derniers mouvements, filtrables par item et/ou coffre (défaut 20, max 200) |
+| `GET /api/quotas?week=` | Membre | Quota (somme par catégorie + détail brut) de tous les joueurs suivis |
+| `GET /api/quotas/:userId?week=` | Membre | Quota d'un joueur précis |
+| `GET /api/quotas/pay?week=` | Membre | Paie de tous les joueurs suivis, y compris à 0$ |
+| `GET /api/quotas/pay/:userId?week=` | Membre | Paie d'un joueur précis |
+| `GET /api/quotas/ranking?week=` | Membre | Classement groupe : paie triée décroissante, uniquement > 0$ |
+| `GET /api/quotas/summary?week=` | Membre | Bilan groupe : total par activité |
+| `GET /api/armurerie?status=` | Membre | Armes, filtrables par statut (`in_stock`/`loaned`/`lost` — sans filtre : tout sauf perdues) |
+| `GET /api/armurerie/search?q=` | Membre | Recherche par nom ou référence (sous-chaîne) |
+| `GET /api/armurerie/ammo` | Membre | Stock + compteurs hebdomadaires munitions |
+| `GET /api/armurerie/ammo/history` | Membre | Ventes de munitions depuis le dernier reset hebdomadaire (dimanche 19h) |
+| `GET /api/ventes?week=` | Membre | Total vendu par joueur sur la plage (trié décroissant) + total du groupe |
+| `GET /api/ventes/:userId?week=` | Membre | Ventes d'un joueur précis : total + détail par drogue vendue |
+| `GET /api/taxes?type=&status=` | Taxes/Admin | Taxes filtrables par type (fixe, `zone` = toutes les zones groupées, ou la clé d'une zone précise) et statut (`active`/`expired`, défaut `active`) |
+| `GET /api/taxes/search?type=&q=` | Taxes/Admin | Recherche par nom dans un type donné (`type` requis) |
+
+Lecture seule pour l'instant — pas d'écriture depuis l'extérieur (voir docstring de `src/api/server.ts` pour pourquoi).
+
+### Naviguer sur une semaine passée (`?week=`)
+
+Les 6 endpoints `/api/quotas*` et les 2 endpoints `/api/ventes*` acceptent un paramètre `week` (semaine ISO 8601, ex. `2026-W37`, lundi 00:00 UTC → lundi suivant, résolu par `src/api/week.ts`) — sans ce paramètre, ils portent sur la semaine en cours (depuis le dernier reset hebdomadaire). Reconstruit depuis la table `transactions` (jamais purgée, une ligne par déclaration) plutôt que le cache `stats` (vidé entièrement à chaque reset) — voir les fonctions `*ForRange` dans `modules/quotas.ts` et `getVenteTotalsForRange`/`getVenteDetailForUser` dans `db.ts`. Une vente confirmée écrit une `transaction` (`action: 'vente'`) comme n'importe quelle activité, donc le `total` de `/api/ventes` est toujours identique au `vente` d'un quota pour la même plage — une seule vérité.
+
+**Limite à connaître** : les objectifs (`/config quota`) et taux de paie (`/config salaire`) ne sont **pas historisés** — seule la valeur actuelle existe en base. Une requête sur une semaine passée applique donc les objectifs/taux *actuels* à l'activité de cette semaine-là, pas ceux réellement en vigueur à l'époque si l'admin les a changés depuis (n'affecte pas `/api/ventes`, qui ne dépend d'aucun taux). Si ça devient un problème pour `/api/quotas*`, il faudrait historiser `QuotaTarget`/`SalaryRate` (nouvelle table, logique de résolution "valeur en vigueur à telle date") — pas fait pour l'instant.
+
+### Types de taxe (`?type=`)
+
+Valeurs acceptées : les types fixes (`sporex`, `heroine`, `vente`, `fertilisant`, `cannabis`, `mexicana`, `cocaine`), le type fictif `zone` qui regroupe **toutes** les zones (Petite Frappe en a 6, Gang/Organisation en partagent 18 — voir chapitre Taxes plus haut) sous une seule valeur filtrable, ou la clé d'**une** zone précise (ex. `roxwood_village`) pour ne remonter que celle-là. `type` est requis sur `/search`, optionnel sur la liste (omis = tous types confondus).
+
+---
+
 ## Base de données
 
 PostgreSQL via [Prisma](https://www.prisma.io/) (`prisma/schema.prisma`, migrations dans `prisma/migrations/`). Voir `npx prisma studio` pour explorer les données, `npx prisma migrate dev` pour créer une nouvelle migration en développement (après une modif de `schema.prisma`), `npx prisma migrate deploy` pour appliquer les migrations existantes (production, ou premier lancement).
 
 Tables de configuration (pilotées par `/config`) : `channels` (rôle fonctionnel → salon(s)), `discord_roles` (admin/taxes → rôle Discord), `items` (nom, groupe, `vente`/`visibleStock`/`laboLie`), `quota_targets`, `salary_rates`. Le type d'organisation (`/config type-groupe`) est stocké comme un `Setting` scalaire (clé `type_groupe`). Le registre des activités déclarables et les barèmes par tier (braquage, labos) n'ont pas de table — ce sont des constantes fixes dans `src/config-store.ts` (voir plus haut).
-Tables métier (génériques) : `stocks`, `stock_history`, `transactions`, `stats`, `cooldowns`, `braquages`, `taxes`, `armurerie`, `user_mapping`, `pending_sales`, `vehicules`, `fourrieres`, `munitions_ventes`.
+Tables métier (génériques) : `stocks` (total global), `coffre_stocks` (détail par coffre, voir section Interopérabilité), `stock_history`, `transactions`, `stats`, `cooldowns`, `braquages`, `taxes`, `armurerie`, `user_mapping`, `pending_sales`, `vehicules`, `fourrieres`, `munitions_ventes`.
 
 ---
 
@@ -160,15 +217,21 @@ roxwood-network-famille/
 │   ├── db.ts                   # Couche d'accès Prisma/PostgreSQL
 │   ├── permissions.ts          # Vérification admin partagée
 │   ├── interaction-helpers.ts  # Helpers de réponse partagés (réaction 🗑️, auto-suppression)
-│   └── modules/
-│       ├── config.ts       # Commande /config (toute la configuration)
-│       ├── stocks.ts
-│       ├── quotas.ts
-│       ├── alertes.ts
-│       ├── garages.ts
-│       ├── taxes.ts
-│       ├── armurerie.ts
-│       └── ventes.ts
+│   ├── default-items.ts        # Préremplissage d'items connus (voir CLAUDE.md)
+│   ├── modules/
+│   │   ├── config.ts       # Commande /config (toute la configuration)
+│   │   ├── stocks.ts
+│   │   ├── quotas.ts
+│   │   ├── alertes.ts
+│   │   ├── garages.ts
+│   │   ├── taxes.ts
+│   │   ├── armurerie.ts
+│   │   └── ventes.ts
+│   └── api/                    # API REST optionnelle (voir "Interopérabilité")
+│       ├── server.ts
+│       ├── auth.ts             # Connexion via Discord (OAuth2)
+│       ├── week.ts             # Résolution de ?week= (semaine ISO 8601)
+│       └── routes/
 ├── prisma/
 │   ├── schema.prisma
 │   └── migrations/

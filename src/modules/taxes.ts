@@ -83,9 +83,15 @@ import { replyAutoDelete, updateAutoDelete } from '../interaction-helpers';
 
 type Taxe = NonNullable<Awaited<ReturnType<typeof db.getTaxe>>>;
 
-/** Tous les types fixes connus (hors zones) — `vente` est universelle, les autres sont filtrées par tier via {@link TAXES_FIXES_BY_TIER}. */
-const FIXED_TYPES = ['sporex', 'heroine', 'vente', 'fertilisant', 'cannabis', 'mexicana', 'cocaine'] as const;
-type FixedType = (typeof FIXED_TYPES)[number];
+/**
+ * Tous les types fixes connus (hors zones) — `vente` est universelle, les
+ * autres sont filtrées par tier via {@link TAXES_FIXES_BY_TIER}. Exportée
+ * pour l'API (voir `src/api/routes/taxes.ts`), avec {@link ZONE_TYPE_KEYS} :
+ * `type=zone` y regroupe TOUTES les zones sous un type fictif unique, plutôt
+ * que de devoir filtrer une zone précise à la fois.
+ */
+export const FIXED_TYPES = ['sporex', 'heroine', 'vente', 'fertilisant', 'cannabis', 'mexicana', 'cocaine'] as const;
+export type FixedType = (typeof FIXED_TYPES)[number];
 
 /** Titre de bouton, emoji et style par type fixe — source unique pour le panneau et les modals. */
 const FIXED_TYPE_META: Record<FixedType, { title: string; emoji: string; style: ButtonStyle }> = {
@@ -154,6 +160,9 @@ function slugifyZone(zone: string): string {
 /** Clé de zone → libellé affiché, pour toutes les zones connues (tous tiers). */
 const ZONE_BY_KEY = new Map<string, string>(ALL_ZONES.map(zone => [slugifyZone(zone), zone]));
 
+/** Toutes les clés de zone connues (tous tiers) — voir {@link FIXED_TYPES}, le "type fictif" `zone` de l'API s'y résout. */
+export const ZONE_TYPE_KEYS: readonly string[] = [...ZONE_BY_KEY.keys()];
+
 /**
  * Types proposés dans les select menus "Rechercher"/"Supprimer une taxe" :
  * le barème du tier courant, complété par tout type ayant une taxe active
@@ -174,7 +183,7 @@ async function currentTypesRecherche(): Promise<string[]> {
 }
 
 /** Vrai si `type` est une clé de zone (voir ZONE_BY_KEY), par opposition à un type fixe (sporex/heroine/vente/fertilisant). */
-function isZoneType(type: string): boolean {
+export function isZoneType(type: string): boolean {
   return ZONE_BY_KEY.has(type);
 }
 

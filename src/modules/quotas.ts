@@ -105,7 +105,10 @@ function capitalize(s: string): string {
   return s.length ? s[0].toUpperCase() + s.slice(1) : s;
 }
 
-type QuotaSummary = { byQuotaType: Record<string, number>; map: Record<string, { count: number; points: number }> };
+export type QuotaSummary = { byQuotaType: Record<string, number>; map: Record<string, { count: number; points: number }> };
+
+/** Plage [since, until) en ms epoch — voir les fonctions `*ForRange` ci-dessous, utilisées par l'API (src/api/routes/quotas.ts) pour interroger une semaine passée. */
+export type QuotaRange = { since: number; until: number };
 
 /** Dérive la somme par catégorie de quota (`ACTIVITY_TYPES[*].quotaType`) à partir d'une carte de stats déjà chargée. */
 function summarizeByQuotaType(map: Record<string, { count: number; points: number }>): Record<string, number> {
@@ -244,6 +247,84 @@ async function getSalaryRanking(): Promise<Array<{ userId: string; salaire: numb
     if (salaire > 0) results.push({ userId, salaire, byQuotaType });
   }
   return results.sort((a, b) => b.salaire - a.salaire);
+}
+
+// ─── RECONSTRUCTION SUR UNE PLAGE (API — semaines passées) ────────────────────
+//
+// Les fonctions au-dessus (getUserQuotaSummary, getAllUserQuotaSummaries,
+// getSalaryRanking) lisent le cache `Stat`, qui ne connaît QUE la période en
+// cours (vidé entièrement à chaque reset hebdo, voir weeklyReset). Les
+// fonctions ci-dessous reconstruisent le même calcul depuis `Transaction`
+// (jamais purgée, juste soft-delete) sur une plage [since, until) arbitraire
+// — utilisées par l'API pour interroger une semaine passée (voir
+// src/api/routes/quotas.ts). Volontairement un chemin de calcul séparé,
+// jamais utilisé par le panneau Discord en direct : un seul chemin de calcul
+// (Transaction) pour toute plage, plutôt que de faire diverger "semaine en
+// cours" (Stat) et "semaine passée" (Transaction) en deux logiques à
+// maintenir en parallèle.
+//
+// ATTENTION : les objectifs (`/config quota`) et taux de paie (`/config
+// salaire`) ne sont PAS historisés — seule la valeur actuelle existe. Ces
+// fonctions appliquent donc les taux/objectifs ACTUELS à l'activité d'une
+// semaine passée, pas ceux réellement en vigueur à l'époque si l'admin les a
+// changés depuis.
+
+function quantityActionKeys(): string[] {
+  return Object.entries(configStore.get().ACTIVITY_TYPES).filter(([, c]) => c.quantity).map(([k]) => k);
+}
+
+function summaryFromActionTotals(rows: Array<{ action: string; total: number }>): QuotaSummary {
+  const map: Record<string, { count: number; points: number }> = {};
+  for (const r of rows) map[r.action] = { count: r.total, points: 0 };
+  return { byQuotaType: summarizeByQuotaType(map), map };
+}
+
+/** Comme `getUserQuotaSummary`, mais reconstruit depuis `Transaction` sur une plage arbitraire — voir note ci-dessus. */
+export async function getUserQuotaSummaryForRange(userId: string, range: QuotaRange): Promise<QuotaSummary> {
+  const rows = await db.getUserActionTotals(range.since, range.until, quantityActionKeys(), userId);
+  return summaryFromActionTotals(rows);
+}
+
+/** Comme `getAllUserQuotaSummaries`, mais reconstruit depuis `Transaction` sur une plage arbitraire — voir note ci-dessus. */
+export async function getAllUserQuotaSummariesForRange(range: QuotaRange): Promise<Array<{ userId: string } & QuotaSummary>> {
+  const rows = await db.getUserActionTotals(range.since, range.until, quantityActionKeys());
+  const byUser = new Map<string, Array<{ action: string; total: number }>>();
+  for (const r of rows) {
+    const arr = byUser.get(r.userId) ?? [];
+    arr.push({ action: r.action, total: r.total });
+    byUser.set(r.userId, arr);
+  }
+  return [...byUser.entries()].map(([userId, actionRows]) => ({ userId, ...summaryFromActionTotals(actionRows) }));
+}
+
+/** Paie d'un joueur (taux actuels appliqués à l'activité de la plage) — voir note ci-dessus sur les taux non historisés. */
+export async function getUserPayForRange(userId: string, range: QuotaRange): Promise<{ salaire: number; byQuotaType: Record<string, number> }> {
+  const { byQuotaType } = await getUserQuotaSummaryForRange(userId, range);
+  return { salaire: computeSalaire(byQuotaType, configStore.get().SALARY_RATES), byQuotaType };
+}
+
+/** Paie de tous les joueurs suivis sur la plage, y compris à 0$ (contrairement à `getSalaryRankingForRange`) — pas triée. */
+export async function getAllUserPayForRange(range: QuotaRange): Promise<Array<{ userId: string; salaire: number; byQuotaType: Record<string, number> }>> {
+  const rates = configStore.get().SALARY_RATES;
+  const summaries = await getAllUserQuotaSummariesForRange(range);
+  return summaries.map(({ userId, byQuotaType }) => ({ userId, salaire: computeSalaire(byQuotaType, rates), byQuotaType }));
+}
+
+/** Comme `getSalaryRanking`, mais sur une plage arbitraire — mêmes règles (triée décroissant, uniquement salaire > 0). */
+export async function getSalaryRankingForRange(range: QuotaRange): Promise<Array<{ userId: string; salaire: number; byQuotaType: Record<string, number> }>> {
+  const all = await getAllUserPayForRange(range);
+  return all.filter(r => r.salaire > 0).sort((a, b) => b.salaire - a.salaire);
+}
+
+/** Comme `buildBilanEmbed`, mais les données brutes (pas un embed), sur une plage arbitraire — inclut toute action ayant un total, sans filtrer sur `enabled` (le tier actuel ne reflète pas forcément celui d'une semaine passée). */
+export async function getGroupSummaryForRange(range: QuotaRange): Promise<Array<{ action: string; label: string; total: number }>> {
+  const activityTypes = configStore.get().ACTIVITY_TYPES;
+  const totals = await db.getGroupActionTotals(range.since, quantityActionKeys(), range.until);
+  return totals.map(({ action, total }) => ({
+    action,
+    label: activityTypes[action] ? activityDisplayLabel(activityTypes[action]) : action,
+    total,
+  }));
 }
 
 /** Embed de paie personnelle : détail par catégorie payante + salaire total + classement. */

@@ -65,7 +65,7 @@ export async function handleMessage(message: Message): Promise<void> {
 
   await db.setSetting(`last_stock_msg_${message.channelId}`, message.id);
 
-  const entries = await parseAndApplyAll(extractText(message), true);
+  const entries = await parseAndApplyAll(extractText(message), message.channelId, true);
   if (entries.length > 0) {
     // `entry.item` est déjà en minuscules (voir parseAndApply) — comparé tel
     // quel au groupe munitions pour éviter de rafraîchir l'armurerie sur un
@@ -103,7 +103,7 @@ export async function catchUpMissedMessages(client: Client): Promise<number> {
     const messages = await fetchMessagesAfter(channel, lastId);
     for (const msg of messages) {
       await db.setSetting(`last_stock_msg_${channelId}`, msg.id);
-      total += (await parseAndApplyAll(extractText(msg), true)).length;
+      total += (await parseAndApplyAll(extractText(msg), channelId, true)).length;
     }
   }
 
@@ -166,8 +166,16 @@ function extractText(msg: Message): string {
 
 // ─── PARSING D'UNE LIGNE ─────────────────────────────────────────────────────
 
-/** Parse une ligne de log de coffre (retrait/dépôt) et applique le delta au stock si l'item est suivi ; `false` si la ligne ne matche rien ou que l'item est inconnu (voir piège n°1 du projet : orthographe exacte). */
-async function parseAndApply(line: string, log = false): Promise<StockEntry | false> {
+/**
+ * Parse une ligne de log de coffre (retrait/dépôt) et applique le delta au
+ * stock si l'item est suivi ; `false` si la ligne ne matche rien ou que
+ * l'item est inconnu (voir piège n°1 du projet : orthographe exacte).
+ * `channelId` : salon `logs_coffres` d'origine — le delta est appliqué à la
+ * fois au total global (`Stock`, inchangé) ET au détail par coffre
+ * (`CoffreStock`, voir README section Interopérabilité), jamais l'un sans
+ * l'autre.
+ */
+async function parseAndApply(line: string, channelId: string, log = false): Promise<StockEntry | false> {
   const retireMatch = line.match(RE_RETIRE);
   const deposeMatch = line.match(RE_DEPOSE);
   if (!retireMatch && !deposeMatch) return false;
@@ -183,19 +191,20 @@ async function parseAndApply(line: string, log = false): Promise<StockEntry | fa
   const action: 'retire' | 'depose' = retireMatch ? 'retire' : 'depose';
   const delta = retireMatch ? -quantite : quantite;
   const { avant: stockAvant, apres: stockApres } = await db.applyStockDelta(item, delta);
+  await db.applyCoffreStockDelta(channelId, item, delta);
 
   const entry: StockEntry = { joueur, action, item, quantite, stock_avant: stockAvant, stock_apres: stockApres };
 
-  if (log) await db.addStockHistory({ timestamp: Date.now(), ...entry });
+  if (log) await db.addStockHistory({ timestamp: Date.now(), ...entry, channel_id: channelId });
 
   return entry;
 }
 
 /** Applique `parseAndApply` à chaque ligne d'un contenu de message et retourne les mouvements de stock effectivement appliqués. */
-async function parseAndApplyAll(content: string, log = false): Promise<StockEntry[]> {
+async function parseAndApplyAll(content: string, channelId: string, log = false): Promise<StockEntry[]> {
   const entries: StockEntry[] = [];
   for (const line of content.split('\n')) {
-    const entry = await parseAndApply(line, log);
+    const entry = await parseAndApply(line, channelId, log);
     if (entry) entries.push(entry);
   }
   return entries;
@@ -217,7 +226,7 @@ export async function fullResync(client: Client): Promise<number> {
     const messages = await fetchMessagesAfter(channel, '0');
     for (const msg of messages) {
       await db.setSetting(`last_stock_msg_${channelId}`, msg.id);
-      total += (await parseAndApplyAll(extractText(msg), true)).length;
+      total += (await parseAndApplyAll(extractText(msg), channelId, true)).length;
     }
   }
 

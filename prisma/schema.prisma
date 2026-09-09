@@ -103,11 +103,29 @@ model SalaryRate {
 
 // ═══ DONNÉES MÉTIER (génériques, indépendantes de la config ci-dessus) ═══
 
+/// Stock total, tous coffres suivis confondus (`/config channel add-log-coffre`)
+/// — c'est celui qu'affiche le panneau "Stock Général". Voir {@link
+/// CoffreStock} pour le détail par coffre (salon de log), suivi séparément
+/// depuis la mise en place de l'API (voir README, section Interopérabilité).
 model Stock {
   item     String @id
   quantite Int    @default(0)
 
   @@map("stocks")
+}
+
+/// Stock détaillé PAR coffre (un salon `logs_coffres`) — complément de
+/// {@link Stock} (le total global), pas un remplacement : les deux sont mis à
+/// jour ensemble à chaque mouvement (voir `stocks.ts`, `applyCoffreStockDelta`
+/// aux côtés de `applyStockDelta`). Vidé et reconstruit lors d'un `/sync-stock`
+/// complet, comme `Stock`.
+model CoffreStock {
+  channelId String @map("channel_id")
+  item      String
+  quantite  Int    @default(0)
+
+  @@id([channelId, item])
+  @@map("coffre_stocks")
 }
 
 model StockHistory {
@@ -119,6 +137,9 @@ model StockHistory {
   quantite   Int
   stockAvant Int      @map("stock_avant")
   stockApres Int      @map("stock_apres")
+  /// Salon `logs_coffres` d'origine du mouvement — `null` pour les lignes
+  /// enregistrées avant l'ajout de ce suivi par coffre (jamais backfillé).
+  channelId  String?  @map("channel_id")
 
   @@index([item])
   @@map("stock_history")
