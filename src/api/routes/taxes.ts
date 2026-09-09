@@ -56,7 +56,7 @@ router.get('/', async (req, res) => {
     }
   }
 
-  res.json(await db.findTaxes({ types, expired }));
+  res.json(await db.findTaxes(req.apiUser!.guildId, { types, expired }));
 });
 
 /**
@@ -78,7 +78,7 @@ router.get('/search', async (req, res) => {
   }
 
   const query = typeof req.query.q === 'string' ? req.query.q : undefined;
-  res.json(await db.findTaxes({ types, query, limit: 25 }));
+  res.json(await db.findTaxes(req.apiUser!.guildId, { types, query, limit: 25 }));
 });
 
 export default router;

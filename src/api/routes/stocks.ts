@@ -9,6 +9,9 @@
  * Route statique `/history` déclarée AVANT `/:channelId` — sinon Express
  * interpréterait `/stocks/history` comme une recherche du coffre "history"
  * (même principe que `/api/quotas`, `/:userId` toujours en dernier).
+ *
+ * Chaque route filtre par `req.apiUser.guildId` (posé par `requireAuth`,
+ * voir src/api/auth.ts) — jamais les données d'une autre guilde.
  */
 import { Router } from 'express';
 import * as db from '../../db';
@@ -16,8 +19,8 @@ import * as db from '../../db';
 const router = Router();
 
 /** GET /api/stocks — quantité actuelle de chaque item suivi, tous coffres confondus. */
-router.get('/', async (_req, res) => {
-  res.json(await db.getAllStocks());
+router.get('/', async (req, res) => {
+  res.json(await db.getAllStocks(req.apiUser!.guildId));
 });
 
 /** GET /api/stocks/history?item=&channelId=&limit= — derniers mouvements, filtrables par item (nom exact) et/ou par coffre. */
@@ -25,7 +28,7 @@ router.get('/history', async (req, res) => {
   const item = typeof req.query.item === 'string' ? req.query.item : null;
   const channelId = typeof req.query.channelId === 'string' ? req.query.channelId : null;
   const limit = Math.min(Number(req.query.limit) || 20, 200);
-  res.json(await db.getRecentStockHistory(item, limit, channelId));
+  res.json(await db.getRecentStockHistory(req.apiUser!.guildId, item, limit, channelId));
 });
 
 /**
@@ -36,7 +39,7 @@ router.get('/history', async (req, res) => {
  * générique du groupe.
  */
 router.get('/:channelId', async (req, res) => {
-  res.json(await db.getCoffreStocks(req.params.channelId));
+  res.json(await db.getCoffreStocks(req.apiUser!.guildId, req.params.channelId));
 });
 
 export default router;

@@ -3,10 +3,21 @@
  * @description API REST en lecture seule pour un outil externe (ex. un site
  * web qui affiche les données du bot) — dans le même process que le bot
  * Discord (cohérent avec l'archi mono-serveur du projet, pas de service
- * supplémentaire à déployer). Authentification par connexion Discord (voir
- * auth.ts) : chaque route sous `/api` exige un membre du serveur Discord
- * configuré (`GUILD_ID`), et `/api/taxes` exige en plus le rôle taxes (ou
- * admin) — voir `requireAuth`/`requireTaxesAccess`.
+ * supplémentaire à déployer), mais **multi-tenant** : une seule instance sert
+ * les sites externes de plusieurs guildes à la fois. Authentification par
+ * connexion Discord (voir auth.ts) : chaque route sous `/api` exige un
+ * membre de LA guilde portée par le JWT (`req.apiUser.guildId`, résolu au
+ * login via `?guild=`), et `/api/taxes` exige en plus le rôle taxes (ou
+ * admin) de cette guilde — voir `requireAuth`/`requireTaxesAccess`.
+ *
+ * Le CORS est décidé sur "cet `Origin` correspond-il au site d'AU MOINS une
+ * guilde active connue" (voir `guild-registry.isKnownCorsOrigin`) — grossier
+ * par nature, pas par guilde précise : au moment du preflight CORS, le JWT
+ * (qui porte le `guildId`) n'existe pas encore. La vraie isolation des
+ * données se fait ensuite, à chaque requête, via `req.apiUser.guildId`
+ * injecté dans chaque appel `db.*` des fichiers de `src/api/routes/` — un
+ * site qui n'est membre d'aucune guilde active ne peut de toute façon jamais
+ * obtenir de JWT valide, CORS ou pas.
  *
  * Lecture seule pour l'instant, volontairement : écrire depuis l'extérieur
  * (ex. marquer une taxe payée depuis le web) demanderait de dupliquer ici la
@@ -15,13 +26,15 @@
  *
  * Démarré depuis `index.ts` une fois le bot connecté (`clientReady`) : les
  * routes de données n'ont besoin que de la base (déjà prête après
- * `configStore.reload()`), mais `/auth/callback` a besoin du client Discord
- * pour résoudre les rôles de l'utilisateur qui se connecte.
+ * `configStore.reload()`/`guildRegistry.warmCorsCache()`), mais
+ * `/auth/callback` a besoin du client Discord pour résoudre les rôles de
+ * l'utilisateur qui se connecte.
  */
 import express from 'express';
 import cors from 'cors';
 import type { Client } from 'discord.js';
 import { assertAuthEnv, handleLogin, handleCallback, requireAuth, requireTaxesAccess } from './auth';
+import * as guildRegistry from '../guild-registry';
 import stocksRouter from './routes/stocks';
 import quotasRouter from './routes/quotas';
 import taxesRouter from './routes/taxes';
@@ -38,7 +51,16 @@ export function startApiServer(client: Client): void {
   const API_PORT = Number(process.env.API_PORT) || 3001;
 
   const app = express();
-  app.use(cors({ origin: process.env.API_CORS_ORIGIN, credentials: false }));
+  // Origine acceptée si elle correspond au site d'au moins une guilde active
+  // connue (voir docstring de fichier) — pas de credentials (le JWT voyage en
+  // en-tête Authorization, jamais en cookie cross-site).
+  app.use(cors({
+    origin(origin, callback) {
+      if (!origin || guildRegistry.isKnownCorsOrigin(origin)) callback(null, true);
+      else callback(null, false);
+    },
+    credentials: false,
+  }));
 
   app.get('/health', (_req, res) => res.json({ ok: true }));
 
