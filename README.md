@@ -10,8 +10,8 @@ Le bot reste **mono-serveur** (un déploiement = un serveur Discord), mais devie
 
 - [Prérequis](#prérequis) ([Créer l'application Discord](#créer-lapplication-discord))
 - [Installation](#installation) ([Via systemd](#via-systemd-production-sans-docker), [Via Docker](#via-docker))
-- [Configuration — `/config`](#configuration--tout-se-fait-depuis-discord-via-config)
 - [Interopérabilité — API REST](#interopérabilité--api-rest-optionnelle)
+- [Configuration — `/config`](#configuration--tout-se-fait-depuis-discord-via-config)
 - [Modules](#modules)
 - [Robustesse & fiabilité](#robustesse--fiabilité)
 - [Base de données](#base-de-données)
@@ -111,56 +111,6 @@ Si `docker compose build` échoue avec `invalid file request` (observé sur Wind
 
 ---
 
-## Configuration — tout se fait depuis Discord via `/config`
-
-Contrairement à un `config.js` à éditer, **toute la configuration métier vit en base et se pilote avec la commande `/config`**, réservée aux administrateurs Discord natifs (permission `Administrator` — volontairement indépendante du rôle admin configurable, pour éviter un problème d'œuf-et-poule sur un serveur tout juste configuré).
-
-### `/config channel`
-Associe un salon Discord à un rôle fonctionnel du bot (`stock_general`, `quotas`, `armurerie`, `taxes`, `admin`, …) ou gère la liste des salons de logs de coffre surveillés. `set` crée/rafraîchit immédiatement le panneau concerné (stock, armurerie, quotas, taxes) plutôt que d'attendre un événement indirect — pas besoin de redémarrer le bot après coup.
-- `/config channel set <role> <#salon>`
-- `/config channel add-log-coffre <#salon>` / `remove-log-coffre`
-- `/config channel list`
-
-### `/config category` — création automatique des salons
-`/config category set <catégorie>` crée en une fois, dans la catégorie Discord donnée, un salon pour chaque rôle fonctionnel pas encore configuré (nom par défaut dérivé du rôle, ex. `stock`, `armurerie`, `alertes-braquages`), les associe automatiquement, puis rafraîchit les panneaux comme `channel set`. Exclut volontairement les salons alimentés par le bot de jeu FiveM (`coffre_admin`, `logs_garages`, et les logs de coffre gérés séparément via `add-log-coffre`) : ceux-là doivent pointer vers un salon de logs déjà existant, jamais un salon vide fraîchement créé. Un rôle déjà configuré n'est jamais recréé — ré-exécutable sans risque de doublons.
-
-### `/config role`
-Associe un rôle Discord à un usage (`admin` : commandes sensibles ; `taxes` : accès back-office taxes).
-- `/config role set <cible> <@rôle>` / `list`
-
-### `/config item`
-Items de coffre suivis. **L'orthographe doit correspondre exactement** (accents, casse) à ce qu'écrit le bot de jeu FiveM — tout item absent de cette liste est silencieusement ignoré lors du parsing des logs. C'est la source de bug la plus fréquente sur ce type de bot : avant d'ajouter un item, vérifier l'orthographe exacte dans les logs récents du salon coffre.
-- `/config item add <nom> [vente_pnj] [groupe] [stock_general] [labo_lie]`
-  - `vente_pnj` : déclarable en vente aux PNJ (marché noir) — pas une vente entre joueurs.
-  - `groupe` : libellé de regroupement dans le message Stock Général (ex. "Munitions").
-  - `stock_general` : afficher dans le message Stock Général (défaut oui — le stock reste suivi même à non).
-  - `labo_lie` : ce labo produit cet item ? Exclut alors la vente PNJ pour tout tier ayant ce labo actif (voir `/config type-groupe` ci-dessous).
-- `/config item remove <nom>` (autocomplete) / `/config item list [filtre]`
-
-Pas d'option pour désigner l'item qui confirme une vente de drogue (voir `/config item list`, badge 🪙) : un seul item joue ce rôle en pratique, fixé en dur (`CONFIRME_VENTE_ITEM` dans `modules/ventes.ts`, "Argent Sale" par défaut — même principe que `MUNITIONS_STOCK_GROUP` pour les munitions dans `armurerie.ts`) plutôt qu'un flag à poser à la main sur chaque item.
-
-Trois items sont pré-remplis s'ils sont absents (`src/default-items.ts`) : **Munition de pistolet** (`groupe: "Munitions de pistolet"`, alimente le compteur de l'armurerie), **Argent Sale** (= `CONFIRME_VENTE_ITEM`, confirme les ventes en attente) et **Argent** (simple item de stock, distinct de l'Argent Sale). Déclenché au démarrage du bot ET à chaque usage de `/config` (pas seulement au tout premier démarrage — un bot déjà en cours d'exécution en profite dès la prochaine commande `/config`). Un item déjà configuré n'est jamais écrasé — ce n'est qu'un point de départ, modifiable/supprimable ensuite comme n'importe quel autre item via `/config item`.
-
-### `/config type-groupe` — type d'organisation
-Le déploiement passe par 4 tiers — **Indépendant / Petite Frappe / Gang / Organisation** — qui font varier deux choses sans toucher au code :
-- Les limites hebdomadaires de braquage (Fleeca, Armurerie, Bijouterie, Pinebank, Human Labs) : plus le tier est élevé, plus la limite est haute (`0` pour un tier sans accès à l'activité).
-- Les labos accessibles (Indépendant : aucun ; Petite Frappe : Héroïne + Sporex ; Gang : Mexicana + Cannabis ; Organisation : Mexicana + Cocaïne) — un labo hors barème du tier disparaît du panneau, et toute drogue liée (`labo_lie`) devient indisponible en vente PNJ mais apparaît dans la section "🧪 Drogue de production" du Stock Général (voir plus bas).
-- `/config type-groupe set <tier>` / `list` (affiche le barème complet des 4 tiers)
-
-Tant qu'aucun tier n'a jamais été choisi, le bot se comporte comme `Petite Frappe` par défaut.
-
-### `/config quota`
-Objectif hebdomadaire par catégorie de quota (`actions`, `vente`, `recolte`, `labos` — celles utilisées par le registre d'activités ci-dessus). C'est la seule partie du système de quotas qui reste pilotable depuis Discord, parce que les objectifs peuvent être renégociés. **Une catégorie sans objectif défini n'apparaît dans aucun affichage de quota** (panneau perso, `/listquota`, paie hebdomadaire) même si des activités lui sont rattachées — seul le détail par activité la montre encore.
-- `/config quota set <quota_type> <valeur>` / `remove` / `list`
-
-### `/config salaire`
-Taux de paie ($ par unité) par catégorie de quota — mêmes catégories que `/config quota`. **Une catégorie sans taux configuré ne génère aucune paie**, même si des activités lui sont rattachées : "Ma Paie", le classement de groupe et la paie hebdomadaire n'affichent que les catégories ayant un taux.
-- `/config salaire set <quota_type> <valeur>` / `remove` / `list`
-
-Exemple : `/config salaire set vente 30` → chaque unité vendue rapporte 30$. On peut faire pareil pour `labos`, `recolte`, etc. — indépendamment des objectifs fixés par `/config quota` (une catégorie peut avoir un objectif sans taux de paie, un taux sans objectif, ou les deux).
-
----
-
 ## Interopérabilité — API REST (optionnelle)
 
 Une petite API REST **en lecture seule**, dans le même process que le bot (`src/api/`), permet à un outil externe (ex. un site web) de récupérer les données du bot. **Désactivée par défaut** — n'existe que si `API_PORT` est défini dans `.env` ; sinon aucun port n'est ouvert, comportement inchangé.
@@ -215,6 +165,56 @@ Les 6 endpoints `/api/quotas*` et les 2 endpoints `/api/ventes*` acceptent un pa
 ### Types de taxe (`?type=`)
 
 Valeurs acceptées : les types fixes (`sporex`, `heroine`, `vente`, `fertilisant`, `cannabis`, `mexicana`, `cocaine`), le type fictif `zone` qui regroupe **toutes** les zones (Petite Frappe en a 6, Gang/Organisation en partagent 18 — voir chapitre Taxes plus bas) sous une seule valeur filtrable, ou la clé d'**une** zone précise (ex. `roxwood_village`) pour ne remonter que celle-là. `type` est requis sur `/search`, optionnel sur la liste (omis = tous types confondus).
+
+---
+
+## Configuration — tout se fait depuis Discord via `/config`
+
+Contrairement à un `config.js` à éditer, **toute la configuration métier vit en base et se pilote avec la commande `/config`**, réservée aux administrateurs Discord natifs (permission `Administrator` — volontairement indépendante du rôle admin configurable, pour éviter un problème d'œuf-et-poule sur un serveur tout juste configuré).
+
+### `/config channel`
+Associe un salon Discord à un rôle fonctionnel du bot (`stock_general`, `quotas`, `armurerie`, `taxes`, `admin`, …) ou gère la liste des salons de logs de coffre surveillés. `set` crée/rafraîchit immédiatement le panneau concerné (stock, armurerie, quotas, taxes) plutôt que d'attendre un événement indirect — pas besoin de redémarrer le bot après coup.
+- `/config channel set <role> <#salon>`
+- `/config channel add-log-coffre <#salon>` / `remove-log-coffre`
+- `/config channel list`
+
+### `/config category` — création automatique des salons
+`/config category set <catégorie>` crée en une fois, dans la catégorie Discord donnée, un salon pour chaque rôle fonctionnel pas encore configuré (nom par défaut dérivé du rôle, ex. `stock`, `armurerie`, `alertes-braquages`), les associe automatiquement, puis rafraîchit les panneaux comme `channel set`. Exclut volontairement les salons alimentés par le bot de jeu FiveM (`coffre_admin`, `logs_garages`, et les logs de coffre gérés séparément via `add-log-coffre`) : ceux-là doivent pointer vers un salon de logs déjà existant, jamais un salon vide fraîchement créé. Un rôle déjà configuré n'est jamais recréé — ré-exécutable sans risque de doublons.
+
+### `/config role`
+Associe un rôle Discord à un usage (`admin` : commandes sensibles ; `taxes` : accès back-office taxes).
+- `/config role set <cible> <@rôle>` / `list`
+
+### `/config item`
+Items de coffre suivis. **L'orthographe doit correspondre exactement** (accents, casse) à ce qu'écrit le bot de jeu FiveM — tout item absent de cette liste est silencieusement ignoré lors du parsing des logs. C'est la source de bug la plus fréquente sur ce type de bot : avant d'ajouter un item, vérifier l'orthographe exacte dans les logs récents du salon coffre.
+- `/config item add <nom> [vente_pnj] [groupe] [stock_general] [labo_lie]`
+  - `vente_pnj` : déclarable en vente aux PNJ (marché noir) — pas une vente entre joueurs.
+  - `groupe` : libellé de regroupement dans le message Stock Général (ex. "Munitions").
+  - `stock_general` : afficher dans le message Stock Général (défaut oui — le stock reste suivi même à non).
+  - `labo_lie` : ce labo produit cet item ? Exclut alors la vente PNJ pour tout tier ayant ce labo actif (voir `/config type-groupe` ci-dessous).
+- `/config item remove <nom>` (autocomplete) / `/config item list [filtre]`
+
+Pas d'option pour désigner l'item qui confirme une vente de drogue (voir `/config item list`, badge 🪙) : un seul item joue ce rôle en pratique, fixé en dur (`CONFIRME_VENTE_ITEM` dans `modules/ventes.ts`, "Argent Sale" par défaut — même principe que `MUNITIONS_STOCK_GROUP` pour les munitions dans `armurerie.ts`) plutôt qu'un flag à poser à la main sur chaque item.
+
+Trois items sont pré-remplis s'ils sont absents (`src/default-items.ts`) : **Munition de pistolet** (`groupe: "Munitions de pistolet"`, alimente le compteur de l'armurerie), **Argent Sale** (= `CONFIRME_VENTE_ITEM`, confirme les ventes en attente) et **Argent** (simple item de stock, distinct de l'Argent Sale). Déclenché au démarrage du bot ET à chaque usage de `/config` (pas seulement au tout premier démarrage — un bot déjà en cours d'exécution en profite dès la prochaine commande `/config`). Un item déjà configuré n'est jamais écrasé — ce n'est qu'un point de départ, modifiable/supprimable ensuite comme n'importe quel autre item via `/config item`.
+
+### `/config type-groupe` — type d'organisation
+Le déploiement passe par 4 tiers — **Indépendant / Petite Frappe / Gang / Organisation** — qui font varier deux choses sans toucher au code :
+- Les limites hebdomadaires de braquage (Fleeca, Armurerie, Bijouterie, Pinebank, Human Labs) : plus le tier est élevé, plus la limite est haute (`0` pour un tier sans accès à l'activité).
+- Les labos accessibles (Indépendant : aucun ; Petite Frappe : Héroïne + Sporex ; Gang : Mexicana + Cannabis ; Organisation : Mexicana + Cocaïne) — un labo hors barème du tier disparaît du panneau, et toute drogue liée (`labo_lie`) devient indisponible en vente PNJ mais apparaît dans la section "🧪 Drogue de production" du Stock Général (voir plus bas).
+- `/config type-groupe set <tier>` / `list` (affiche le barème complet des 4 tiers)
+
+Tant qu'aucun tier n'a jamais été choisi, le bot se comporte comme `Petite Frappe` par défaut.
+
+### `/config quota`
+Objectif hebdomadaire par catégorie de quota (`actions`, `vente`, `recolte`, `labos` — celles utilisées par le registre d'activités décrit dans "Modules" plus bas). C'est la seule partie du système de quotas qui reste pilotable depuis Discord, parce que les objectifs peuvent être renégociés. **Une catégorie sans objectif défini n'apparaît dans aucun affichage de quota** (panneau perso, `/listquota`, paie hebdomadaire) même si des activités lui sont rattachées — seul le détail par activité la montre encore.
+- `/config quota set <quota_type> <valeur>` / `remove` / `list`
+
+### `/config salaire`
+Taux de paie ($ par unité) par catégorie de quota — mêmes catégories que `/config quota`. **Une catégorie sans taux configuré ne génère aucune paie**, même si des activités lui sont rattachées : "Ma Paie", le classement de groupe et la paie hebdomadaire n'affichent que les catégories ayant un taux.
+- `/config salaire set <quota_type> <valeur>` / `remove` / `list`
+
+Exemple : `/config salaire set vente 30` → chaque unité vendue rapporte 30$. On peut faire pareil pour `labos`, `recolte`, etc. — indépendamment des objectifs fixés par `/config quota` (une catégorie peut avoir un objectif sans taux de paie, un taux sans objectif, ou les deux).
 
 ---
 
