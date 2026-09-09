@@ -51,19 +51,19 @@ function extractLignes(message: Message): string[] {
  * applicable. `chargerAmendes` est false pendant le rattrapage au démarrage
  * (on reconstruit l'état sans facturer de fourrière rétroactive).
  */
-async function traiterLigne(ligne: string, chargerAmendes: boolean): Promise<Facturation | null> {
+async function traiterLigne(guildId: string, ligne: string, chargerAmendes: boolean): Promise<Facturation | null> {
   let m: RegExpMatchArray | null;
 
   if ((m = ligne.match(RE_SORTIE_FOURRIERE))) {
     const [, joueurBrut, modele, plaque] = m;
     const joueur = joueurBrut.trim();
-    const precedent = await db.getVehiculeEtat(plaque);
+    const precedent = await db.getVehiculeEtat(guildId, plaque);
 
     let facturation: Facturation | null = null;
     if (chargerAmendes && precedent && (precedent.discordId || precedent.joueur)) {
-      const discordIds = await db.getUserMappings(precedent.joueur || '');
+      const discordIds = await db.getUserMappings(guildId, precedent.joueur || '');
       const discordId = precedent.discordId || (discordIds.length === 1 ? discordIds[0] : null);
-      await db.addFourriere({
+      await db.addFourriere(guildId, {
         discord_id: discordId,
         joueur: precedent.joueur!,
         plaque,
@@ -73,8 +73,8 @@ async function traiterLigne(ligne: string, chargerAmendes: boolean): Promise<Fac
       facturation = { discordId, joueur: precedent.joueur!, plaque, modele: precedent.modele || modele };
     }
 
-    const discordIdsActuel = await db.getUserMappings(joueur);
-    await db.setVehiculeEtat({
+    const discordIdsActuel = await db.getUserMappings(guildId, joueur);
+    await db.setVehiculeEtat(guildId, {
       plaque, modele,
       discord_id: discordIdsActuel.length === 1 ? discordIdsActuel[0] : null,
       joueur,
@@ -86,8 +86,8 @@ async function traiterLigne(ligne: string, chargerAmendes: boolean): Promise<Fac
   if ((m = ligne.match(RE_SORTIE_GARAGE))) {
     const [, joueurBrut, modele, plaque] = m;
     const joueur = joueurBrut.trim();
-    const discordIds = await db.getUserMappings(joueur);
-    await db.setVehiculeEtat({
+    const discordIds = await db.getUserMappings(guildId, joueur);
+    await db.setVehiculeEtat(guildId, {
       plaque, modele,
       discord_id: discordIds.length === 1 ? discordIds[0] : null,
       joueur,
@@ -97,7 +97,7 @@ async function traiterLigne(ligne: string, chargerAmendes: boolean): Promise<Fac
 
   if ((m = ligne.match(RE_RANGEMENT))) {
     const [, , , plaque] = m;
-    await db.clearVehiculeEtat(plaque);
+    await db.clearVehiculeEtat(guildId, plaque);
     return null;
   }
 
@@ -106,14 +106,15 @@ async function traiterLigne(ligne: string, chargerAmendes: boolean): Promise<Fac
 
 /** Point d'entrée temps réel : traite un nouveau message posté dans le salon `logs_garages`. */
 export async function handleMessage(message: Message): Promise<void> {
-  if (message.channelId !== configStore.get().CHANNELS.logs_garages) return;
+  const guildId = message.guildId;
+  if (!guildId || message.channelId !== configStore.get(guildId).CHANNELS.logs_garages) return;
 
   const lignes = extractLignes(message);
   if (!lignes.length) return;
 
   for (const ligne of lignes) {
-    const facturation = await traiterLigne(ligne, true);
-    if (facturation) await notifierFourriere(message.client, facturation);
+    const facturation = await traiterLigne(guildId, ligne, true);
+    if (facturation) await notifierFourriere(message.client, guildId, facturation);
   }
 }
 
@@ -122,13 +123,13 @@ export async function handleMessage(message: Message): Promise<void> {
  * depuis l'historique du salon, SANS facturer de fourrière rétroactive.
  * @returns Nombre de lignes traitées.
  */
-export async function catchUpMissedMessages(client: Client): Promise<number> {
-  const channelId = configStore.get().CHANNELS.logs_garages;
+export async function catchUpMissedMessages(client: Client, guildId: string): Promise<number> {
+  const channelId = configStore.get(guildId).CHANNELS.logs_garages;
   if (!channelId) return 0;
   const channel = await client.channels.fetch(channelId).catch(() => null);
   if (!channel || !channel.isTextBased() || channel.isDMBased()) return 0;
 
-  const lastId = await db.getSetting('last_garages_msg');
+  const lastId = await db.getSetting(guildId, 'last_garages_msg');
   let total = 0;
 
   if (!lastId) {
@@ -146,12 +147,12 @@ export async function catchUpMissedMessages(client: Client): Promise<number> {
     const sortedInit = collected.sort((a, b) => a.createdTimestamp - b.createdTimestamp);
     for (const msg of sortedInit) {
       for (const ligne of extractLignes(msg)) {
-        await traiterLigne(ligne, false);
+        await traiterLigne(guildId, ligne, false);
         total++;
       }
     }
-    if (sortedInit.length) await db.setSetting('last_garages_msg', sortedInit[sortedInit.length - 1].id);
-    console.log(`[garages] Premier démarrage : ${total} ligne(s) sur ${sortedInit.length} message(s) d'historique traitée(s) pour reconstruire l'état (aucune amende rétroactive).`);
+    if (sortedInit.length) await db.setSetting(guildId, 'last_garages_msg', sortedInit[sortedInit.length - 1].id);
+    console.log(`[garages] Premier démarrage (${guildId}) : ${total} ligne(s) sur ${sortedInit.length} message(s) d'historique traitée(s) pour reconstruire l'état (aucune amende rétroactive).`);
     return total;
   }
 
@@ -163,22 +164,22 @@ export async function catchUpMissedMessages(client: Client): Promise<number> {
     const sorted = [...batch.values()].sort((a, b) => a.createdTimestamp - b.createdTimestamp);
     for (const msg of sorted) {
       for (const ligne of extractLignes(msg)) {
-        await traiterLigne(ligne, false);
+        await traiterLigne(guildId, ligne, false);
         total++;
       }
-      await db.setSetting('last_garages_msg', msg.id);
+      await db.setSetting(guildId, 'last_garages_msg', msg.id);
     }
     cursor = sorted[sorted.length - 1].id;
     if (batch.size < 100) break;
   }
 
-  if (total > 0) console.log(`[garages] Rattrapage : ${total} ligne(s) traitée(s) (état reconstruit, aucune amende rétroactive).`);
+  if (total > 0) console.log(`[garages] Rattrapage (${guildId}) : ${total} ligne(s) traitée(s) (état reconstruit, aucune amende rétroactive).`);
   return total;
 }
 
 /** Envoie une notification immédiate dans `admin` quand une fourrière est facturée. */
-async function notifierFourriere(client: Client, facturation: Facturation): Promise<void> {
-  const c = configStore.get();
+async function notifierFourriere(client: Client, guildId: string, facturation: Facturation): Promise<void> {
+  const c = configStore.get(guildId);
   if (!c.CHANNELS.admin) return;
   const channel = await client.channels.fetch(c.CHANNELS.admin).catch(() => null);
   if (!channel || !channel.isSendable()) return;
@@ -208,9 +209,9 @@ const CLASSEMENT_TITLE = '🚗 Classement des fourrières';
  * plus élevé au moins élevé. Purement informatif — personne n'est facturé,
  * le montant configuré n'est affiché qu'à titre indicatif (footer).
  */
-async function buildClassementEmbed(): Promise<EmbedBuilder> {
+async function buildClassementEmbed(guildId: string): Promise<EmbedBuilder> {
   const montant = MONTANT_FOURRIERE;
-  const classement = await db.getFourriereClassement();
+  const classement = await db.getFourriereClassement(guildId);
 
   const lignes = classement.map((c, i) => {
     const qui = c.discord_id ? `<@${c.discord_id}>` : `**${c.joueur}**`;
@@ -235,11 +236,12 @@ export function getCommands() {
 
 /** Gère la commande `/fourrieres` (admin) : affiche le classement à la demande. */
 export async function handleClassementCommand(interaction: ChatInputCommandInteraction): Promise<void> {
-  if (!isAdmin(interaction.member)) {
+  const guildId = interaction.guildId!;
+  if (!isAdmin(guildId, interaction.member)) {
     await interaction.reply({ content: '❌ Commande réservée aux administrateurs.', flags: MessageFlags.Ephemeral });
     return;
   }
-  await interaction.reply({ embeds: [await buildClassementEmbed()], flags: MessageFlags.Ephemeral });
+  await interaction.reply({ embeds: [await buildClassementEmbed(guildId)], flags: MessageFlags.Ephemeral });
 }
 
 /**
@@ -248,20 +250,20 @@ export async function handleClassementCommand(interaction: ChatInputCommandInter
  * la semaine écoulée dans `bilan`, puis vide le compteur. L'état courant des
  * véhicules n'est pas affecté, seul le compteur de fourrières l'est.
  */
-export async function resetFourrieresHebdo(client: Client, entete: string): Promise<void> {
+export async function resetFourrieresHebdo(client: Client, guildId: string, entete: string): Promise<void> {
   try {
-    const c = configStore.get();
+    const c = configStore.get(guildId);
     if (c.CHANNELS.bilan) {
       const channel = await client.channels.fetch(c.CHANNELS.bilan).catch(() => null);
       if (channel && channel.isSendable()) {
-        const embed = (await buildClassementEmbed()).setTitle(`📊 Bilan fourrières — ${entete}`);
+        const embed = (await buildClassementEmbed(guildId)).setTitle(`📊 Bilan fourrières — ${entete}`);
         await channel.send({ embeds: [embed] }).catch(() => null);
       }
     }
 
-    await db.clearFourrieres();
-    console.log(`[garages] Classement des fourrières remis à zéro — ${entete}.`);
+    await db.clearFourrieres(guildId);
+    console.log(`[garages] Classement des fourrières remis à zéro (${guildId}) — ${entete}.`);
   } catch (err) {
-    console.error('[garages] resetFourrieresHebdo:', (err as Error).message);
+    console.error(`[garages] resetFourrieresHebdo(${guildId}):`, (err as Error).message);
   }
 }

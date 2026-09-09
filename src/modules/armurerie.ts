@@ -106,9 +106,9 @@ const MUNITIONS_FABRICATION_QUOTA_HEBDO = 5000;
 export const MUNITIONS_STOCK_GROUP = 'Munitions de pistolet';
 
 /** Stock total des items regroupés sous {@link MUNITIONS_STOCK_GROUP} (0 si aucun item n'est configuré avec ce groupe). */
-async function getMunitionsStock(): Promise<number> {
-  const items = configStore.get().STOCK_GROUPS[MUNITIONS_STOCK_GROUP] ?? [];
-  return db.getStocksSum(items);
+async function getMunitionsStock(guildId: string): Promise<number> {
+  const items = configStore.get(guildId).STOCK_GROUPS[MUNITIONS_STOCK_GROUP] ?? [];
+  return db.getStocksSum(guildId, items);
 }
 
 /**
@@ -117,26 +117,26 @@ async function getMunitionsStock(): Promise<number> {
  * lecture seule (voir src/api/routes/armurerie.ts) sans dupliquer cette
  * logique : source unique pour le panneau Discord ET l'API.
  */
-export async function getMunitionsSummary() {
-  const sinceReset = Number((await db.getSetting('last_weekly_reset')) || 0);
+export async function getMunitionsSummary(guildId: string) {
+  const sinceReset = Number((await db.getSetting(guildId, 'last_weekly_reset')) || 0);
   return {
-    stock: await getMunitionsStock(),
-    fabriqueesCetteSemaine: await db.getMunitionsFabriqueesDepuis(sinceReset),
+    stock: await getMunitionsStock(guildId),
+    fabriqueesCetteSemaine: await db.getMunitionsFabriqueesDepuis(guildId, sinceReset),
     fabricationQuotaHebdo: MUNITIONS_FABRICATION_QUOTA_HEBDO,
-    vendusCetteSemaine: await db.getMunitionsVenduesDepuis(sinceReset),
+    vendusCetteSemaine: await db.getMunitionsVenduesDepuis(guildId, sinceReset),
   };
 }
 
 /** Fenêtre de rétention des ventes de munitions avant purge — juste indicatif (compteur hebdo + 15 dernières), rien ne justifie de garder plus, voir `deleteOldMunitionVentes` dans db.ts. */
 const MUNITION_VENTE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
-/** Cron quotidien : purge les ventes de munitions de plus de 30 jours. */
-export async function purgeOldMunitionVentes(): Promise<void> {
+/** Cron quotidien : purge les ventes de munitions de plus de 30 jours, pour une guilde. */
+export async function purgeOldMunitionVentes(guildId: string): Promise<void> {
   try {
-    const count = await db.deleteOldMunitionVentes(Date.now() - MUNITION_VENTE_RETENTION_MS);
-    if (count > 0) console.log(`[armurerie] Purge : ${count} vente(s) de munitions de plus de 30 jours supprimée(s).`);
+    const count = await db.deleteOldMunitionVentes(guildId, Date.now() - MUNITION_VENTE_RETENTION_MS);
+    if (count > 0) console.log(`[armurerie] Purge (${guildId}) : ${count} vente(s) de munitions de plus de 30 jours supprimée(s).`);
   } catch (err) {
-    console.error('[armurerie] purgeOldMunitionVentes:', (err as Error).message);
+    console.error(`[armurerie] purgeOldMunitionVentes(${guildId}):`, (err as Error).message);
   }
 }
 
@@ -180,10 +180,10 @@ function comparerNomsNaturel(a: { nom: string }, b: { nom: string }): number {
 type Arme = Awaited<ReturnType<typeof db.getAllArmes>>[number];
 
 /** Construit l'embed de l'armurerie : bloc munitions (stock + quotas indicatifs), puis les armes groupées par type (voir ARME_TYPES). */
-async function buildArmurierieEmbed(armes: Arme[]): Promise<EmbedBuilder> {
+async function buildArmurierieEmbed(guildId: string, armes: Arme[]): Promise<EmbedBuilder> {
   const embed = new EmbedBuilder().setTitle('🔫 Armurerie').setColor(0xFEE75C).setTimestamp().setFooter({ text: 'Mis à jour' });
 
-  const { stock, fabriqueesCetteSemaine, vendusCetteSemaine } = await getMunitionsSummary();
+  const { stock, fabriqueesCetteSemaine, vendusCetteSemaine } = await getMunitionsSummary(guildId);
   const blocs = [
     `__Munitions de pistolet__\n🧰 ${stock} balles en stock\n🛠️ ${fabriqueesCetteSemaine} / ${MUNITIONS_FABRICATION_QUOTA_HEBDO} fabriquées cette semaine\n💰 ${vendusCetteSemaine} vendues cette semaine`,
   ];
@@ -245,33 +245,33 @@ function buildArmurierieButtons(): ActionRowBuilder<ButtonBuilder>[] {
 // ─── MESSAGE PERMANENT ────────────────────────────────────────────────────────
 
 /** Édite le message permanent de l'armurerie (ou le crée s'il n'existe pas encore/plus). */
-export async function updatePermanentMessage(client: Client): Promise<void> {
-  const channelId = configStore.get().CHANNELS.armurerie;
+export async function updatePermanentMessage(client: Client, guildId: string): Promise<void> {
+  const channelId = configStore.get(guildId).CHANNELS.armurerie;
   if (!channelId) return;
   try {
     const channel = await client.channels.fetch(channelId).catch(() => null);
     if (!channel?.isSendable()) return;
 
-    const armes = (await db.getAllArmes()).filter(a => a.statut !== 'perdue');
-    const embed = await buildArmurierieEmbed(armes);
+    const armes = (await db.getAllArmes(guildId)).filter(a => a.statut !== 'perdue');
+    const embed = await buildArmurierieEmbed(guildId, armes);
     const rows = buildArmurierieButtons();
 
-    const storedId = await db.getSetting('armurerie_message_id');
+    const storedId = await db.getSetting(guildId, 'armurerie_message_id');
     if (storedId) {
       const msg = await channel.messages.fetch(storedId).catch(() => null);
       if (msg) { await msg.edit({ embeds: [embed], components: rows }); return; }
     }
 
     const newMsg = await channel.send({ embeds: [embed], components: rows });
-    await db.setSetting('armurerie_message_id', newMsg.id);
+    await db.setSetting(guildId, 'armurerie_message_id', newMsg.id);
   } catch (err) {
-    console.error('[armurerie] updatePermanentMessage:', (err as Error).message);
+    console.error(`[armurerie] updatePermanentMessage(${guildId}):`, (err as Error).message);
   }
 }
 
 /** Initialise le message permanent de l'armurerie au démarrage du bot. */
-export async function initPermanentMessage(client: Client): Promise<void> {
-  await updatePermanentMessage(client);
+export async function initPermanentMessage(client: Client, guildId: string): Promise<void> {
+  await updatePermanentMessage(client, guildId);
 }
 
 // ─── HANDLER BOUTONS ─────────────────────────────────────────────────────────
@@ -279,6 +279,7 @@ export async function initPermanentMessage(client: Client): Promise<void> {
 /** Route les clics de bouton du message permanent (`arm_*`) vers le modal de recherche/saisie approprié. */
 export async function handleButton(interaction: ButtonInteraction): Promise<void> {
   const id = interaction.customId;
+  const guildId = interaction.guildId!;
 
   if (id === 'arm_ajouter') {
     if (!ARME_TYPES.length) {
@@ -347,7 +348,7 @@ export async function handleButton(interaction: ButtonInteraction): Promise<void
   }
 
   if (id === 'arm_pertes') {
-    const pertes = await db.getArmesPerdue();
+    const pertes = await db.getArmesPerdue(guildId);
     const embed = new EmbedBuilder()
       .setTitle('📋 Armes perdues')
       .setColor(0xED4245)
@@ -358,8 +359,8 @@ export async function handleButton(interaction: ButtonInteraction): Promise<void
   if (id === 'arm_historique_munitions') {
     const formatDate = (ts: number) => new Date(ts).toLocaleDateString('fr-FR', { timeZone: 'Europe/Paris' });
 
-    const fabrications = await db.getFabricationMunitionsHistorique(15);
-    const ventes = await db.getMunitionsVentesHistorique(15);
+    const fabrications = await db.getFabricationMunitionsHistorique(guildId, 15);
+    const ventes = await db.getMunitionsVentesHistorique(guildId, 15);
 
     const blocFab = fabrications.length ? fabrications.map(f => `${formatDate(f.timestamp)} — **${f.quantite}** munitions`).join('\n') : '*Aucune déclaration*';
     const blocVente = ventes.length ? ventes.map(v => `${formatDate(v.timestamp)} — **${v.quantite}** munitions à \`${v.acheteur_id}\` pour **${v.prix}$**`).join('\n') : '*Aucune déclaration*';
@@ -380,6 +381,7 @@ export async function handleButton(interaction: ButtonInteraction): Promise<void
 /** Route les sélections de menu (`arm_select_*`) : choix du type à l'ajout, ou de l'arme visée par retirer/prêter/rendu. */
 export async function handleSelect(interaction: StringSelectMenuInteraction): Promise<void> {
   const id = interaction.customId;
+  const guildId = interaction.guildId!;
 
   if (id === 'arm_select_ajouter_type') {
     const typeKey = interaction.values[0];
@@ -402,17 +404,17 @@ export async function handleSelect(interaction: StringSelectMenuInteraction): Pr
 
   if (id === 'arm_select_retirer') {
     const armeId = parseInt(interaction.values[0], 10);
-    const arme = await db.getArme(armeId);
+    const arme = await db.getArme(guildId, armeId);
     if (!arme) return updateAutoDelete(interaction, { content: '❌ Arme introuvable.', components: [] });
-    await db.updateArmeStatut(armeId, 'perdue', null);
+    await db.updateArmeStatut(guildId, armeId, 'perdue', null);
     await updateAutoDelete(interaction, { content: `🔴 **${arme.nom}** (\`${arme.reference}\`) marquée comme **perdue**.`, components: [] });
-    await updatePermanentMessage(interaction.client);
+    await updatePermanentMessage(interaction.client, guildId);
     return;
   }
 
   if (id === 'arm_select_preter') {
     const armeId = interaction.values[0];
-    const arme = await db.getArme(parseInt(armeId, 10));
+    const arme = await db.getArme(guildId, parseInt(armeId, 10));
     if (!arme) return updateAutoDelete(interaction, { content: '❌ Arme introuvable.', components: [] });
 
     const modal = new ModalBuilder()
@@ -428,11 +430,11 @@ export async function handleSelect(interaction: StringSelectMenuInteraction): Pr
 
   if (id === 'arm_select_rendu') {
     const armeId = parseInt(interaction.values[0], 10);
-    const arme = await db.getArme(armeId);
+    const arme = await db.getArme(guildId, armeId);
     if (!arme) return updateAutoDelete(interaction, { content: '❌ Arme introuvable.', components: [] });
-    await db.updateArmeStatut(armeId, 'en_stock', null);
+    await db.updateArmeStatut(guildId, armeId, 'en_stock', null);
     await updateAutoDelete(interaction, { content: `✅ **${arme.nom}** (\`${arme.reference}\`) rendue par **${arme.preteeA || '?'}** — remise en stock.`, components: [] });
-    await updatePermanentMessage(interaction.client);
+    await updatePermanentMessage(interaction.client, guildId);
   }
 }
 
@@ -450,6 +452,7 @@ interface RechercheConfig {
 /** Route les soumissions de modal (`modal_arm_*`) : recherche, ajout, prêt, fabrication/vente de munitions. */
 export async function handleModal(interaction: ModalSubmitInteraction): Promise<void> {
   const id = interaction.customId;
+  const guildId = interaction.guildId!;
 
   if (id === 'modal_arm_recherche_ajouter') {
     const query = interaction.fields.getTextInputValue('recherche').trim().toLowerCase();
@@ -479,7 +482,7 @@ export async function handleModal(interaction: ModalSubmitInteraction): Promise<
 
     const configs: Record<string, RechercheConfig> = {
       retirer: {
-        armes: await db.getAllArmes(),
+        armes: await db.getAllArmes(guildId),
         selectId: 'arm_select_retirer',
         placeholder: 'Choisir une arme à retirer…',
         content: '🗑️ Quelle arme supprimer ?',
@@ -487,7 +490,7 @@ export async function handleModal(interaction: ModalSubmitInteraction): Promise<
         description: (a) => statutLabel(a),
       },
       preter: {
-        armes: (await db.getAllArmes()).filter(a => a.statut === 'en_stock'),
+        armes: (await db.getAllArmes(guildId)).filter(a => a.statut === 'en_stock'),
         selectId: 'arm_select_preter',
         placeholder: 'Choisir une arme à prêter…',
         content: '🤝 Quelle arme prêter ?',
@@ -495,7 +498,7 @@ export async function handleModal(interaction: ModalSubmitInteraction): Promise<
         description: null,
       },
       rendu: {
-        armes: (await db.getAllArmes()).filter(a => a.statut === 'pretee'),
+        armes: (await db.getAllArmes(guildId)).filter(a => a.statut === 'pretee'),
         selectId: 'arm_select_rendu',
         placeholder: 'Quelle arme a été rendue ?',
         content: "✅ Sélectionne l'arme rendue :",
@@ -541,26 +544,26 @@ export async function handleModal(interaction: ModalSubmitInteraction): Promise<
     if (!type) return replyAutoDelete(interaction, '❌ Type invalide.');
 
     try {
-      await db.addArme(nom, reference, type.key);
+      await db.addArme(guildId, nom, reference, type.key);
     } catch {
       return replyAutoDelete(interaction, '❌ Cette référence existe déjà.');
     }
 
     await replyAutoDelete(interaction, `✅ **${nom}** (\`${reference}\`) — ${type.label} — ajoutée à l'armurerie.`);
-    await updatePermanentMessage(interaction.client);
+    await updatePermanentMessage(interaction.client, guildId);
     return;
   }
 
   if (id.startsWith('modal_arm_preter_')) {
     const armeId = parseInt(id.replace('modal_arm_preter_', ''), 10);
-    const arme = await db.getArme(armeId);
+    const arme = await db.getArme(guildId, armeId);
     const preteaA = interaction.fields.getTextInputValue('pretee_a').trim();
 
     if (!arme) return replyAutoDelete(interaction, '❌ Arme introuvable.');
 
-    await db.updateArmeStatut(armeId, 'pretee', preteaA);
+    await db.updateArmeStatut(guildId, armeId, 'pretee', preteaA);
     await replyAutoDelete(interaction, `✅ **${arme.nom}** marquée comme prêtée à **${preteaA}**.`);
-    await updatePermanentMessage(interaction.client);
+    await updatePermanentMessage(interaction.client, guildId);
     return;
   }
 
@@ -568,7 +571,7 @@ export async function handleModal(interaction: ModalSubmitInteraction): Promise<
     const quantite = parseInt(interaction.fields.getTextInputValue('quantite').trim(), 10);
     if (!Number.isInteger(quantite) || quantite <= 0) return replyAutoDelete(interaction, '❌ Quantité invalide.');
 
-    await db.addTransaction({
+    await db.addTransaction(guildId, {
       user_id: interaction.user.id,
       username: interaction.member && 'displayName' in interaction.member ? interaction.member.displayName : interaction.user.username,
       action: 'fabrication_munitions',
@@ -576,7 +579,7 @@ export async function handleModal(interaction: ModalSubmitInteraction): Promise<
     });
 
     await replyAutoDelete(interaction, `🛠️ **${quantite}** munitions déclarées fabriquées.`);
-    await updatePermanentMessage(interaction.client);
+    await updatePermanentMessage(interaction.client, guildId);
     return;
   }
 
@@ -589,7 +592,7 @@ export async function handleModal(interaction: ModalSubmitInteraction): Promise<
     if (!acheteurId) return replyAutoDelete(interaction, '❌ ID acheteur manquant.');
     if (!Number.isFinite(prix) || prix < 0) return replyAutoDelete(interaction, '❌ Prix invalide.');
 
-    await db.addMunitionVente({
+    await db.addMunitionVente(guildId, {
       vendeur_id: interaction.user.id,
       vendeur_username: interaction.member && 'displayName' in interaction.member ? interaction.member.displayName : interaction.user.username,
       acheteur_id: acheteurId,
@@ -598,6 +601,6 @@ export async function handleModal(interaction: ModalSubmitInteraction): Promise<
     });
 
     await replyAutoDelete(interaction, `💰 **${quantite}** munitions vendues à \`${acheteurId}\` pour **${prix}$**.`);
-    await updatePermanentMessage(interaction.client);
+    await updatePermanentMessage(interaction.client, guildId);
   }
 }
