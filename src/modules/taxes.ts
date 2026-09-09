@@ -100,7 +100,7 @@ const FIXED_TYPE_META: Record<FixedType, { title: string; emoji: string; style: 
   fertilisant: { title: 'Taxe Fertilisant', emoji: '🌱', style: ButtonStyle.Primary },
   cannabis: { title: 'Taxe Cannabis', emoji: '🌿', style: ButtonStyle.Primary },
   mexicana: { title: 'Taxe Mexicana', emoji: '🌵', style: ButtonStyle.Primary },
-  cocaine: { title: 'Taxe Cocaïne', emoji: '❄️', style: ButtonStyle.Primary },
+  cocaine: { title: 'Taxe Cocaïne', emoji: '⚪', style: ButtonStyle.Primary },
   vente: { title: 'Taxe Vente', emoji: '💊', style: ButtonStyle.Secondary },
 };
 
