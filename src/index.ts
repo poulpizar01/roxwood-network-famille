@@ -89,7 +89,7 @@ async function deployCommandsForGuild(guildId: string): Promise<void> {
     ...stocks.getCommands(),
     ...ventes.getCommands(),
     ...garages.getCommands(),
-    ...configModule.getCommands(),
+    ...configModule.getCommands(guildId),
   ].map(c => c.data.toJSON());
 
   try {

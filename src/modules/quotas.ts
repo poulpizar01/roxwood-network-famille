@@ -111,8 +111,8 @@ export type QuotaSummary = { byQuotaType: Record<string, number>; map: Record<st
 export type QuotaRange = { since: number; until: number };
 
 /** Dérive la somme par catégorie de quota (`ACTIVITY_TYPES[*].quotaType`) à partir d'une carte de stats déjà chargée. */
-function summarizeByQuotaType(map: Record<string, { count: number; points: number }>): Record<string, number> {
-  const activityTypes = configStore.get().ACTIVITY_TYPES;
+function summarizeByQuotaType(guildId: string, map: Record<string, { count: number; points: number }>): Record<string, number> {
+  const activityTypes = configStore.get(guildId).ACTIVITY_TYPES;
   const byQuotaType: Record<string, number> = {};
   for (const [key, cfg] of Object.entries(activityTypes)) {
     if (!cfg.quotaType) continue;
@@ -127,9 +127,9 @@ function summarizeByQuotaType(map: Record<string, { count: number; points: numbe
  * Paie") — pour tous les joueurs suivis à la fois, voir
  * `getAllUserQuotaSummaries` (une seule requête au lieu d'une par joueur).
  */
-async function getUserQuotaSummary(userId: string): Promise<QuotaSummary> {
-  const map = await db.getUserStatMap(userId);
-  return { byQuotaType: summarizeByQuotaType(map), map };
+async function getUserQuotaSummary(guildId: string, userId: string): Promise<QuotaSummary> {
+  const map = await db.getUserStatMap(guildId, userId);
+  return { byQuotaType: summarizeByQuotaType(guildId, map), map };
 }
 
 /**
@@ -138,8 +138,8 @@ async function getUserQuotaSummary(userId: string): Promise<QuotaSummary> {
  * `/listquota`, le classement de groupe et la paie hebdomadaire pour éviter
  * une requête par joueur (N+1).
  */
-async function getAllUserQuotaSummaries(): Promise<Map<string, QuotaSummary>> {
-  const rows = await db.getAllStats();
+async function getAllUserQuotaSummaries(guildId: string): Promise<Map<string, QuotaSummary>> {
+  const rows = await db.getAllStats(guildId);
   const statMaps = new Map<string, Record<string, { count: number; points: number }>>();
   for (const r of rows) {
     const m = statMaps.get(r.userId) ?? {};
@@ -147,7 +147,7 @@ async function getAllUserQuotaSummaries(): Promise<Map<string, QuotaSummary>> {
     statMaps.set(r.userId, m);
   }
   const result = new Map<string, QuotaSummary>();
-  for (const [userId, map] of statMaps) result.set(userId, { byQuotaType: summarizeByQuotaType(map), map });
+  for (const [userId, map] of statMaps) result.set(userId, { byQuotaType: summarizeByQuotaType(guildId, map), map });
   return result;
 }
 
@@ -161,14 +161,14 @@ async function getAllUserQuotaSummaries(): Promise<Map<string, QuotaSummary>> {
  * lieu de montrer "0/0" : inutile d'exposer une info sur une activité
  * inaccessible à ce tier.
  */
-async function buildMainEmbed(): Promise<EmbedBuilder> {
-  const activityTypes = configStore.get().ACTIVITY_TYPES;
+async function buildMainEmbed(guildId: string): Promise<EmbedBuilder> {
+  const activityTypes = configStore.get(guildId).ACTIVITY_TYPES;
   const braquageEntries = Object.entries(activityTypes)
     .filter(([, cfg]) => cfg.enabled && cfg.braquageWeeklyLimit != null)
     .sort((a, b) => a[1].displayOrder - b[1].displayOrder);
 
   const slotLines = await Promise.all(braquageEntries.map(async ([key, cfg]) => {
-    const used = await db.getBraquageCount(key);
+    const used = await db.getBraquageCount(guildId, key);
     const dispo = Math.max(0, cfg.braquageWeeklyLimit! - used);
     const icon = dispo > 0 ? '🟢' : '🔴';
     return `${icon} ${activityDisplayLabel(cfg)} : **${dispo}/${cfg.braquageWeeklyLimit}**`;
@@ -197,10 +197,10 @@ async function buildMainEmbed(): Promise<EmbedBuilder> {
  * défini n'apparaît nulle part dans les affichages de quota (voir docstring
  * de fichier).
  */
-async function buildQuotaEmbed(userId: string, member: GuildMember | null): Promise<EmbedBuilder> {
-  const { byQuotaType, map } = await getUserQuotaSummary(userId);
-  const activityTypes = configStore.get().ACTIVITY_TYPES;
-  const targets = configStore.get().QUOTA_TARGETS;
+async function buildQuotaEmbed(guildId: string, userId: string, member: GuildMember | null): Promise<EmbedBuilder> {
+  const { byQuotaType, map } = await getUserQuotaSummary(guildId, userId);
+  const activityTypes = configStore.get(guildId).ACTIVITY_TYPES;
+  const targets = configStore.get(guildId).QUOTA_TARGETS;
 
   const quotaFields = Object.keys(targets).sort().map(qt => ({
     name: `📌 ${capitalize(qt)}`,
@@ -238,9 +238,9 @@ function computeSalaire(byQuotaType: Record<string, number>, rates: Record<strin
  * uniquement ceux dont le salaire est > 0 (aucun taux configuré ou aucune
  * activité payante déclarée → absent du classement, pas juste à 0$).
  */
-async function getSalaryRanking(): Promise<Array<{ userId: string; salaire: number; byQuotaType: Record<string, number> }>> {
-  const rates = configStore.get().SALARY_RATES;
-  const summaries = await getAllUserQuotaSummaries();
+async function getSalaryRanking(guildId: string): Promise<Array<{ userId: string; salaire: number; byQuotaType: Record<string, number> }>> {
+  const rates = configStore.get(guildId).SALARY_RATES;
+  const summaries = await getAllUserQuotaSummaries(guildId);
   const results: Array<{ userId: string; salaire: number; byQuotaType: Record<string, number> }> = [];
   for (const [userId, { byQuotaType }] of summaries) {
     const salaire = computeSalaire(byQuotaType, rates);
@@ -269,57 +269,57 @@ async function getSalaryRanking(): Promise<Array<{ userId: string; salaire: numb
 // semaine passée, pas ceux réellement en vigueur à l'époque si l'admin les a
 // changés depuis.
 
-function quantityActionKeys(): string[] {
-  return Object.entries(configStore.get().ACTIVITY_TYPES).filter(([, c]) => c.quantity).map(([k]) => k);
+function quantityActionKeys(guildId: string): string[] {
+  return Object.entries(configStore.get(guildId).ACTIVITY_TYPES).filter(([, c]) => c.quantity).map(([k]) => k);
 }
 
-function summaryFromActionTotals(rows: Array<{ action: string; total: number }>): QuotaSummary {
+function summaryFromActionTotals(guildId: string, rows: Array<{ action: string; total: number }>): QuotaSummary {
   const map: Record<string, { count: number; points: number }> = {};
   for (const r of rows) map[r.action] = { count: r.total, points: 0 };
-  return { byQuotaType: summarizeByQuotaType(map), map };
+  return { byQuotaType: summarizeByQuotaType(guildId, map), map };
 }
 
 /** Comme `getUserQuotaSummary`, mais reconstruit depuis `Transaction` sur une plage arbitraire — voir note ci-dessus. */
-export async function getUserQuotaSummaryForRange(userId: string, range: QuotaRange): Promise<QuotaSummary> {
-  const rows = await db.getUserActionTotals(range.since, range.until, quantityActionKeys(), userId);
-  return summaryFromActionTotals(rows);
+export async function getUserQuotaSummaryForRange(guildId: string, userId: string, range: QuotaRange): Promise<QuotaSummary> {
+  const rows = await db.getUserActionTotals(guildId, range.since, range.until, quantityActionKeys(guildId), userId);
+  return summaryFromActionTotals(guildId, rows);
 }
 
 /** Comme `getAllUserQuotaSummaries`, mais reconstruit depuis `Transaction` sur une plage arbitraire — voir note ci-dessus. */
-export async function getAllUserQuotaSummariesForRange(range: QuotaRange): Promise<Array<{ userId: string } & QuotaSummary>> {
-  const rows = await db.getUserActionTotals(range.since, range.until, quantityActionKeys());
+export async function getAllUserQuotaSummariesForRange(guildId: string, range: QuotaRange): Promise<Array<{ userId: string } & QuotaSummary>> {
+  const rows = await db.getUserActionTotals(guildId, range.since, range.until, quantityActionKeys(guildId));
   const byUser = new Map<string, Array<{ action: string; total: number }>>();
   for (const r of rows) {
     const arr = byUser.get(r.userId) ?? [];
     arr.push({ action: r.action, total: r.total });
     byUser.set(r.userId, arr);
   }
-  return [...byUser.entries()].map(([userId, actionRows]) => ({ userId, ...summaryFromActionTotals(actionRows) }));
+  return [...byUser.entries()].map(([userId, actionRows]) => ({ userId, ...summaryFromActionTotals(guildId, actionRows) }));
 }
 
 /** Paie d'un joueur (taux actuels appliqués à l'activité de la plage) — voir note ci-dessus sur les taux non historisés. */
-export async function getUserPayForRange(userId: string, range: QuotaRange): Promise<{ salaire: number; byQuotaType: Record<string, number> }> {
-  const { byQuotaType } = await getUserQuotaSummaryForRange(userId, range);
-  return { salaire: computeSalaire(byQuotaType, configStore.get().SALARY_RATES), byQuotaType };
+export async function getUserPayForRange(guildId: string, userId: string, range: QuotaRange): Promise<{ salaire: number; byQuotaType: Record<string, number> }> {
+  const { byQuotaType } = await getUserQuotaSummaryForRange(guildId, userId, range);
+  return { salaire: computeSalaire(byQuotaType, configStore.get(guildId).SALARY_RATES), byQuotaType };
 }
 
 /** Paie de tous les joueurs suivis sur la plage, y compris à 0$ (contrairement à `getSalaryRankingForRange`) — pas triée. */
-export async function getAllUserPayForRange(range: QuotaRange): Promise<Array<{ userId: string; salaire: number; byQuotaType: Record<string, number> }>> {
-  const rates = configStore.get().SALARY_RATES;
-  const summaries = await getAllUserQuotaSummariesForRange(range);
+export async function getAllUserPayForRange(guildId: string, range: QuotaRange): Promise<Array<{ userId: string; salaire: number; byQuotaType: Record<string, number> }>> {
+  const rates = configStore.get(guildId).SALARY_RATES;
+  const summaries = await getAllUserQuotaSummariesForRange(guildId, range);
   return summaries.map(({ userId, byQuotaType }) => ({ userId, salaire: computeSalaire(byQuotaType, rates), byQuotaType }));
 }
 
 /** Comme `getSalaryRanking`, mais sur une plage arbitraire — mêmes règles (triée décroissant, uniquement salaire > 0). */
-export async function getSalaryRankingForRange(range: QuotaRange): Promise<Array<{ userId: string; salaire: number; byQuotaType: Record<string, number> }>> {
-  const all = await getAllUserPayForRange(range);
+export async function getSalaryRankingForRange(guildId: string, range: QuotaRange): Promise<Array<{ userId: string; salaire: number; byQuotaType: Record<string, number> }>> {
+  const all = await getAllUserPayForRange(guildId, range);
   return all.filter(r => r.salaire > 0).sort((a, b) => b.salaire - a.salaire);
 }
 
 /** Comme `buildBilanEmbed`, mais les données brutes (pas un embed), sur une plage arbitraire — inclut toute action ayant un total, sans filtrer sur `enabled` (le tier actuel ne reflète pas forcément celui d'une semaine passée). */
-export async function getGroupSummaryForRange(range: QuotaRange): Promise<Array<{ action: string; label: string; total: number }>> {
-  const activityTypes = configStore.get().ACTIVITY_TYPES;
-  const totals = await db.getGroupActionTotals(range.since, quantityActionKeys(), range.until);
+export async function getGroupSummaryForRange(guildId: string, range: QuotaRange): Promise<Array<{ action: string; label: string; total: number }>> {
+  const activityTypes = configStore.get(guildId).ACTIVITY_TYPES;
+  const totals = await db.getGroupActionTotals(guildId, range.since, quantityActionKeys(guildId), range.until);
   return totals.map(({ action, total }) => ({
     action,
     label: activityTypes[action] ? activityDisplayLabel(activityTypes[action]) : action,
@@ -328,9 +328,9 @@ export async function getGroupSummaryForRange(range: QuotaRange): Promise<Array<
 }
 
 /** Embed de paie personnelle : détail par catégorie payante + salaire total + classement. */
-async function buildPayEmbed(userId: string, member: GuildMember | null): Promise<EmbedBuilder> {
-  const rates = configStore.get().SALARY_RATES;
-  const { byQuotaType } = await getUserQuotaSummary(userId);
+async function buildPayEmbed(guildId: string, userId: string, member: GuildMember | null): Promise<EmbedBuilder> {
+  const rates = configStore.get(guildId).SALARY_RATES;
+  const { byQuotaType } = await getUserQuotaSummary(guildId, userId);
   const salaire = computeSalaire(byQuotaType, rates);
 
   const embed = new EmbedBuilder().setTitle(`💰 Ma Paie — ${member?.displayName || userId}`).setColor(0xFEE75C);
@@ -345,7 +345,7 @@ async function buildPayEmbed(userId: string, member: GuildMember | null): Promis
     .map(qt => `• ${capitalize(qt)} : ${byQuotaType[qt] ?? 0} × ${rates[qt]}$ = **${Math.round((byQuotaType[qt] ?? 0) * rates[qt]).toLocaleString('fr-FR')}$**`)
     .join('\n');
 
-  const ranking = await getSalaryRanking();
+  const ranking = await getSalaryRanking(guildId);
   const rank = ranking.findIndex(r => r.userId === userId) + 1;
 
   embed.addFields(
@@ -357,14 +357,15 @@ async function buildPayEmbed(userId: string, member: GuildMember | null): Promis
 }
 
 /** Embed du classement de groupe trié par salaire total décroissant. */
-async function buildClassementEmbed(client: Client): Promise<EmbedBuilder> {
-  const ranking = await getSalaryRanking();
+async function buildClassementEmbed(client: Client, guildId: string): Promise<EmbedBuilder> {
+  const ranking = await getSalaryRanking(guildId);
   const lines: string[] = [];
+  const guild = client.guilds.cache.get(guildId);
 
   for (let i = 0; i < ranking.length; i++) {
     const r = ranking[i];
     const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i + 1}.`;
-    const member = await client.guilds.cache.first()?.members.fetch(r.userId).catch(() => null);
+    const member = await guild?.members.fetch(r.userId).catch(() => null);
     const name = member?.displayName || `<@${r.userId}>`;
     lines.push(`${medal} ${name} — **${Math.round(r.salaire).toLocaleString('fr-FR')}** $`);
   }
@@ -383,11 +384,11 @@ async function buildClassementEmbed(client: Client): Promise<EmbedBuilder> {
  * même si elle a un total historique (elle a pu être active plus tôt dans la
  * semaine, avant un changement de tier).
  */
-async function buildBilanEmbed(sinceTs?: number): Promise<EmbedBuilder> {
-  const since = sinceTs ?? Number((await db.getSetting(LAST_RESET_KEY)) || 0);
-  const activityTypes = configStore.get().ACTIVITY_TYPES;
+async function buildBilanEmbed(guildId: string, sinceTs?: number): Promise<EmbedBuilder> {
+  const since = sinceTs ?? Number((await db.getSetting(guildId, LAST_RESET_KEY)) || 0);
+  const activityTypes = configStore.get(guildId).ACTIVITY_TYPES;
   const quantityKeys = Object.entries(activityTypes).filter(([, c]) => c.quantity).map(([k]) => k);
-  const totals = await db.getGroupActionTotals(since, quantityKeys);
+  const totals = await db.getGroupActionTotals(guildId, since, quantityKeys);
   const map: Record<string, number> = {};
   for (const row of totals) map[row.action] = row.total;
 
@@ -408,8 +409,8 @@ async function buildBilanEmbed(sinceTs?: number): Promise<EmbedBuilder> {
 }
 
 /** Embed de log posté dans `logs_activites` pour une déclaration d'activité — `details` ajoute des champs additionnels (type, quantité, partenaires...). */
-function buildTransactionEmbed(txId: number, userId: string, userTag: string, action: string, details: Record<string, string | number | undefined | null>): EmbedBuilder {
-  const cfg = configStore.get().ACTIVITY_TYPES[action];
+function buildTransactionEmbed(guildId: string, txId: number, userId: string, userTag: string, action: string, details: Record<string, string | number | undefined | null>): EmbedBuilder {
+  const cfg = configStore.get(guildId).ACTIVITY_TYPES[action];
   const embed = new EmbedBuilder()
     .setTitle(`📝 Transaction #${txId}`)
     .setColor(0x57F287)
@@ -461,8 +462,8 @@ function bucketOf(cfg: ActivityTypeConfig): 0 | 1 | 2 {
  * tiers (au plus 5 activités de braquage, au plus 3 labos + récolte) — cette
  * fonction reste néanmoins générale si le registre grossit un jour.
  */
-function buildButtonRows() {
-  const activityTypes = configStore.get().ACTIVITY_TYPES;
+function buildButtonRows(guildId: string) {
+  const activityTypes = configStore.get(guildId).ACTIVITY_TYPES;
   const declarable = Object.entries(activityTypes)
     .filter(([, cfg]) => cfg.panelButton && cfg.enabled)
     .sort((a, b) => a[1].displayOrder - b[1].displayOrder);
@@ -525,17 +526,17 @@ function buildButtonRows() {
 // ─── MESSAGE PERMANENT ────────────────────────────────────────────────────────
 
 /** Édite le panneau d'activités permanent (ou le crée s'il n'existe pas encore/plus). */
-export async function initPermanentMessage(client: Client): Promise<void> {
-  const c = configStore.get();
+export async function initPermanentMessage(client: Client, guildId: string): Promise<void> {
+  const c = configStore.get(guildId);
   if (!c.CHANNELS.quotas) return;
   try {
     const channel = await client.channels.fetch(c.CHANNELS.quotas).catch(() => null);
     if (!channel || !channel.isSendable()) return;
 
-    const embed = await buildMainEmbed();
-    const rows = buildButtonRows();
+    const embed = await buildMainEmbed(guildId);
+    const rows = buildButtonRows(guildId);
 
-    const storedId = await db.getSetting('quota_message_id');
+    const storedId = await db.getSetting(guildId, 'quota_message_id');
     if (storedId) {
       const msg = await channel.messages.fetch(storedId).catch(() => null);
       if (msg) {
@@ -545,22 +546,22 @@ export async function initPermanentMessage(client: Client): Promise<void> {
     }
 
     const newMsg = await channel.send({ embeds: [embed], components: rows });
-    await db.setSetting('quota_message_id', newMsg.id);
+    await db.setSetting(guildId, 'quota_message_id', newMsg.id);
   } catch (err) {
-    console.error('[quotas] initPermanentMessage:', (err as Error).message);
+    console.error(`[quotas] initPermanentMessage(${guildId}):`, (err as Error).message);
   }
 }
 
 /** Rafraîchit le panneau d'activités permanent après tout changement de données (déclaration, suppression, reset, changement de tier...). */
-export async function updatePermanentMessage(client: Client): Promise<void> {
-  await initPermanentMessage(client);
+export async function updatePermanentMessage(client: Client, guildId: string): Promise<void> {
+  await initPermanentMessage(client, guildId);
 }
 
 // ─── VÉRIFICATIONS ────────────────────────────────────────────────────────────
 
 /** Temps restant (ms) du cooldown d'un joueur/action, ou `null` si expiré/absent. */
-async function checkCooldown(userId: string, action: string): Promise<number | null> {
-  const expires = await db.getCooldown(userId, action);
+async function checkCooldown(guildId: string, userId: string, action: string): Promise<number | null> {
+  const expires = await db.getCooldown(guildId, userId, action);
   if (expires <= Date.now()) return null;
   return expires - Date.now();
 }
@@ -571,16 +572,16 @@ async function checkCooldown(userId: string, action: string): Promise<number | n
  * tout, ex. ATM) qui autorise toujours. D'où le test explicite sur `null`
  * plutôt qu'un simple `if (!limit)`, qui traiterait 0 comme "illimité".
  */
-async function checkBraquageLimit(action: string): Promise<boolean> {
-  const limit = configStore.get().ACTIVITY_TYPES[action]?.braquageWeeklyLimit;
+async function checkBraquageLimit(guildId: string, action: string): Promise<boolean> {
+  const limit = configStore.get(guildId).ACTIVITY_TYPES[action]?.braquageWeeklyLimit;
   if (limit == null) return true;
-  const used = await db.getBraquageCount(action);
+  const used = await db.getBraquageCount(guildId, action);
   return used < limit;
 }
 
 /** Poste un embed de log dans le salon `logs_activites`, s'il est configuré. */
-async function logActivite(client: Client, embed: EmbedBuilder): Promise<void> {
-  const channelId = configStore.get().CHANNELS.logs_activites;
+async function logActivite(client: Client, guildId: string, embed: EmbedBuilder): Promise<void> {
+  const channelId = configStore.get(guildId).CHANNELS.logs_activites;
   if (!channelId) return;
   try {
     const channel = await client.channels.fetch(channelId).catch(() => null);
@@ -597,8 +598,8 @@ async function logActivite(client: Client, embed: EmbedBuilder): Promise<void> {
  * temps restant ; braquage → vérif limite puis sélection de participants ;
  * quantité → modal type+quantité ; sinon → modal de confirmation simple).
  */
-async function triggerActivity(interaction: ButtonInteraction | StringSelectMenuInteraction, key: string): Promise<void> {
-  const cfg = configStore.get().ACTIVITY_TYPES[key];
+async function triggerActivity(interaction: ButtonInteraction | StringSelectMenuInteraction, guildId: string, key: string): Promise<void> {
+  const cfg = configStore.get(guildId).ACTIVITY_TYPES[key];
   if (!cfg) {
     return replyAutoDelete(interaction, '❌ Cette activité n\'existe plus (retirée de la configuration).');
   }
@@ -621,8 +622,8 @@ async function triggerActivity(interaction: ButtonInteraction | StringSelectMenu
   }
 
   if (cfg.braquageWeeklyLimit) {
-    if (!(await checkBraquageLimit(key))) {
-      const used = await db.getBraquageCount(key);
+    if (!(await checkBraquageLimit(guildId, key))) {
+      const used = await db.getBraquageCount(guildId, key);
       return replyAutoDelete(interaction, `🚫 La limite hebdomadaire de **${activityDisplayLabel(cfg)}** est atteinte (${used}/${cfg.braquageWeeklyLimit} sur 7 jours).`);
     }
     const select = new UserSelectMenuBuilder()
@@ -636,7 +637,7 @@ async function triggerActivity(interaction: ButtonInteraction | StringSelectMenu
   }
 
   if (cfg.quantity) {
-    const c = configStore.get();
+    const c = configStore.get(guildId);
     const itemHint = c.VENTE_ITEMS.length ? c.VENTE_ITEMS.join(', ') : (c.ALLOWED_ITEMS.length ? c.ALLOWED_ITEMS.join(', ') : 'ex: Cannabis, Cocaïne…');
     const modal = new ModalBuilder()
       .setCustomId(`modal_act_${key}`)
@@ -657,7 +658,7 @@ async function triggerActivity(interaction: ButtonInteraction | StringSelectMenu
   }
 
   if (cfg.cooldownMs) {
-    const remaining = await checkCooldown(interaction.user.id, key);
+    const remaining = await checkCooldown(guildId, interaction.user.id, key);
     if (remaining !== null) {
       return replyAutoDelete(interaction, `⏳ Tu es en cooldown pour **${activityDisplayLabel(cfg)}** encore **${formatTime(remaining)}**.`);
     }
@@ -680,39 +681,40 @@ async function triggerActivity(interaction: ButtonInteraction | StringSelectMenu
 /** Route les clics de bouton du panneau : vues (quota/paie/classement/bilan/minuterie) et déclenchement d'activité (`act_*`). */
 export async function handleButton(interaction: ButtonInteraction): Promise<void> {
   const id = interaction.customId;
+  const guildId = interaction.guildId!;
 
   if (id === 'view_quota') {
     const member = interaction.guild ? await interaction.guild.members.fetch(interaction.user.id).catch(() => null) : null;
-    return replyAutoDelete(interaction, { embeds: [await buildQuotaEmbed(interaction.user.id, member)] });
+    return replyAutoDelete(interaction, { embeds: [await buildQuotaEmbed(guildId, interaction.user.id, member)] });
   }
   if (id === 'view_paie') {
     const member = interaction.guild ? await interaction.guild.members.fetch(interaction.user.id).catch(() => null) : null;
-    return replyAutoDelete(interaction, { embeds: [await buildPayEmbed(interaction.user.id, member)] });
+    return replyAutoDelete(interaction, { embeds: [await buildPayEmbed(guildId, interaction.user.id, member)] });
   }
   if (id === 'view_classement') {
-    return replyAutoDelete(interaction, { embeds: [await buildClassementEmbed(interaction.client)] });
+    return replyAutoDelete(interaction, { embeds: [await buildClassementEmbed(interaction.client, guildId)] });
   }
   if (id === 'view_bilan') {
-    return replyAutoDelete(interaction, { embeds: [await buildBilanEmbed()] });
+    return replyAutoDelete(interaction, { embeds: [await buildBilanEmbed(guildId)] });
   }
   if (id === 'view_minuterie') {
-    return handleMinuterie(interaction);
+    return handleMinuterie(interaction, guildId);
   }
 
   if (id.startsWith('act_') && !id.startsWith('act_select_')) {
-    return triggerActivity(interaction, id.slice('act_'.length));
+    return triggerActivity(interaction, guildId, id.slice('act_'.length));
   }
 }
 
 /** Embed "⏱️ Minuterie" : cooldowns personnels, slots de braquage restants, statut des labos — pour les activités `enabled` du tier courant. */
-async function handleMinuterie(interaction: ButtonInteraction): Promise<void> {
+async function handleMinuterie(interaction: ButtonInteraction, guildId: string): Promise<void> {
   const userId = interaction.user.id;
-  const activityTypes = configStore.get().ACTIVITY_TYPES;
+  const activityTypes = configStore.get(guildId).ACTIVITY_TYPES;
   const entries = Object.entries(activityTypes).sort((a, b) => a[1].displayOrder - b[1].displayOrder);
 
   const cooldownLines = await Promise.all(
     entries.filter(([, cfg]) => cfg.cooldownMs && !cfg.labo && !cfg.braquageWeeklyLimit).map(async ([key, cfg]) => {
-      const remaining = await checkCooldown(userId, key);
+      const remaining = await checkCooldown(guildId, userId, key);
       const status = remaining ? `⏳ ${formatTime(remaining)}` : '✅ Dispo';
       return `**${activityDisplayLabel(cfg)}** : ${status}`;
     }),
@@ -721,10 +723,10 @@ async function handleMinuterie(interaction: ButtonInteraction): Promise<void> {
   const braquageLines = await Promise.all(
     entries.filter(([, cfg]) => cfg.enabled && cfg.braquageWeeklyLimit != null).map(async ([key, cfg]) => {
       const limit = cfg.braquageWeeklyLimit!;
-      const dispo = Math.max(0, limit - (await db.getBraquageCount(key)));
+      const dispo = Math.max(0, limit - (await db.getBraquageCount(guildId, key)));
       let line = `${dispo > 0 ? '🟢' : '🔴'} **${activityDisplayLabel(cfg)}** : ${dispo}/${limit}`;
       if (dispo === 0) {
-        const oldest = await db.getOldestBraquage(key);
+        const oldest = await db.getOldestBraquage(guildId, key);
         if (oldest) {
           const ms = (oldest + 7 * 24 * 60 * 60 * 1000) - Date.now();
           if (ms > 0) line += ` *(prochain dans ${formatTime(ms)})*`;
@@ -741,7 +743,7 @@ async function handleMinuterie(interaction: ButtonInteraction): Promise<void> {
   // vert normalement à l'heure prévue, voir `initLaboTimers`).
   const laboLines = (await Promise.all(
     entries.filter(([, cfg]) => cfg.labo).map(async ([key, cfg]) => {
-      const endsAt = parseInt((await db.getSetting(`labo_end_${key}`)) || '0', 10);
+      const endsAt = parseInt((await db.getSetting(guildId, `labo_end_${key}`)) || '0', 10);
       const remaining = endsAt > 0 ? endsAt - Date.now() : 0;
       if (!cfg.enabled && remaining <= 0) return null;
       return remaining > 0 ? `🔴 **${activityDisplayLabel(cfg)}** : ${formatTime(remaining)}` : `🟢 **${activityDisplayLabel(cfg)}** : Disponible`;
@@ -763,7 +765,7 @@ async function handleMinuterie(interaction: ButtonInteraction): Promise<void> {
 export async function handleStringSelect(interaction: StringSelectMenuInteraction): Promise<void> {
   if (interaction.customId !== 'act_more_select') return;
   const key = interaction.values[0];
-  if (key) await triggerActivity(interaction, key);
+  if (key) await triggerActivity(interaction, interaction.guildId!, key);
 }
 
 // ─── HANDLER MODALS ───────────────────────────────────────────────────────────
@@ -771,10 +773,11 @@ export async function handleStringSelect(interaction: StringSelectMenuInteractio
 /** Route les soumissions de modal (`modal_act_*`, `modal_actlabo_*`) : enregistre la transaction et met à jour stats/cooldown/panneau. */
 export async function handleModal(interaction: ModalSubmitInteraction): Promise<void> {
   const id = interaction.customId;
+  const guildId = interaction.guildId!;
 
   if (id.startsWith('modal_act_') && !id.startsWith('modal_actlabo_')) {
     const key = id.slice('modal_act_'.length);
-    const cfg = configStore.get().ACTIVITY_TYPES[key];
+    const cfg = configStore.get(guildId).ACTIVITY_TYPES[key];
     if (!cfg) return;
 
     if (cfg.quantity) {
@@ -783,32 +786,32 @@ export async function handleModal(interaction: ModalSubmitInteraction): Promise<
       const quantite = parseInt(rawQty, 10);
       if (isNaN(quantite) || quantite <= 0) return replyAutoDelete(interaction, '❌ Quantité invalide.');
 
-      const txId = await db.addTransaction({ user_id: interaction.user.id, username: interaction.user.tag, action: key, quantite, type, timestamp: Date.now() });
-      await db.incrementStat(interaction.user.id, key, quantite, 0);
+      const txId = await db.addTransaction(guildId, { user_id: interaction.user.id, username: interaction.user.tag, action: key, quantite, type, timestamp: Date.now() });
+      await db.incrementStat(guildId, interaction.user.id, key, quantite, 0);
 
-      const embed = buildTransactionEmbed(txId, interaction.user.id, interaction.user.tag, key, { Type: type, Quantité: quantite.toLocaleString('fr-FR') });
-      await logActivite(interaction.client, embed);
-      await updatePermanentMessage(interaction.client);
+      const embed = buildTransactionEmbed(guildId, txId, interaction.user.id, interaction.user.tag, key, { Type: type, Quantité: quantite.toLocaleString('fr-FR') });
+      await logActivite(interaction.client, guildId, embed);
+      await updatePermanentMessage(interaction.client, guildId);
       return replyAutoDelete(interaction, `✅ **${activityDisplayLabel(cfg)}** — ${quantite.toLocaleString('fr-FR')} × ${type} enregistrés (ID #${txId}).`);
     }
 
     const confirm = interaction.fields.getTextInputValue('confirm').trim().toLowerCase();
     if (confirm !== 'oui') return replyAutoDelete(interaction, '❌ Action annulée.');
 
-    const txId = await db.addTransaction({ user_id: interaction.user.id, username: interaction.user.tag, action: key, timestamp: Date.now() });
-    await db.incrementStat(interaction.user.id, key, 1, 0);
-    if (cfg.cooldownMs) await db.setCooldown(interaction.user.id, key, Date.now() + cfg.cooldownMs);
+    const txId = await db.addTransaction(guildId, { user_id: interaction.user.id, username: interaction.user.tag, action: key, timestamp: Date.now() });
+    await db.incrementStat(guildId, interaction.user.id, key, 1, 0);
+    if (cfg.cooldownMs) await db.setCooldown(guildId, interaction.user.id, key, Date.now() + cfg.cooldownMs);
 
-    const embed = buildTransactionEmbed(txId, interaction.user.id, interaction.user.tag, key, {});
-    await logActivite(interaction.client, embed);
-    await updatePermanentMessage(interaction.client);
+    const embed = buildTransactionEmbed(guildId, txId, interaction.user.id, interaction.user.tag, key, {});
+    await logActivite(interaction.client, guildId, embed);
+    await updatePermanentMessage(interaction.client, guildId);
     return replyAutoDelete(interaction, `✅ **${activityDisplayLabel(cfg)}** enregistré (ID #${txId}).`);
   }
 
   if (id.startsWith('modal_actlabo_')) {
     const withoutPrefix = id.slice('modal_actlabo_'.length);
     const [key, token = ''] = withoutPrefix.split('|');
-    const cfg = configStore.get().ACTIVITY_TYPES[key];
+    const cfg = configStore.get(guildId).ACTIVITY_TYPES[key];
     if (!cfg) return;
 
     const tempsRaw = interaction.fields.getTextInputValue('temps_restant').trim();
@@ -828,19 +831,19 @@ export async function handleModal(interaction: ModalSubmitInteraction): Promise<
 
     void (async () => {
       try {
-        const txId = await db.addTransaction({
+        const txId = await db.addTransaction(guildId, {
           user_id: interaction.user.id, username: interaction.user.tag, action: key,
           partenaires: partnerIds, temps_restant: String(tempsMinutes), timestamp: Date.now(),
         });
-        for (const uid of allIds) await db.incrementStat(uid, key, 1, 0);
-        await alertes.setLaboStatut(interaction.client, key, false, tempsMinutes);
+        for (const uid of allIds) await db.incrementStat(guildId, uid, key, 1, 0);
+        await alertes.setLaboStatut(interaction.client, guildId, key, false, tempsMinutes);
 
         const partnerMentions = partnerIds.length ? partnerIds.map(pid => `<@${pid}>`).join(', ') : '*Aucun*';
-        const embed = buildTransactionEmbed(txId, interaction.user.id, interaction.user.tag, key, {
+        const embed = buildTransactionEmbed(guildId, txId, interaction.user.id, interaction.user.tag, key, {
           'Temps restant': `${tempsMinutes} min`, Participants: `${allIds.length}`, Partenaires: partnerMentions,
         });
-        await logActivite(interaction.client, embed);
-        await updatePermanentMessage(interaction.client);
+        await logActivite(interaction.client, guildId, embed);
+        await updatePermanentMessage(interaction.client, guildId);
       } catch (err) {
         console.error('[quotas] erreur traitement labo:', (err as Error).message);
       }
@@ -854,8 +857,9 @@ export async function handleModal(interaction: ModalSubmitInteraction): Promise<
 export async function handleSelect(interaction: UserSelectMenuInteraction): Promise<void> {
   const id = interaction.customId;
   if (!id.startsWith('act_select_')) return;
+  const guildId = interaction.guildId!;
   const key = id.slice('act_select_'.length);
-  const cfg = configStore.get().ACTIVITY_TYPES[key];
+  const cfg = configStore.get(guildId).ACTIVITY_TYPES[key];
   if (!cfg) return;
 
   if (cfg.labo) {
@@ -877,16 +881,16 @@ export async function handleSelect(interaction: UserSelectMenuInteraction): Prom
   const selectedIds = interaction.values.filter(uid => uid !== interaction.user.id);
   const allIds = [interaction.user.id, ...selectedIds];
 
-  await db.addBraquage(interaction.user.id, key);
-  const txId = await db.addTransaction({ user_id: interaction.user.id, username: interaction.user.tag, action: key, partenaires: selectedIds, timestamp: Date.now() });
-  for (const uid of allIds) await db.incrementStat(uid, key, 1, 0);
+  await db.addBraquage(guildId, interaction.user.id, key);
+  const txId = await db.addTransaction(guildId, { user_id: interaction.user.id, username: interaction.user.tag, action: key, partenaires: selectedIds, timestamp: Date.now() });
+  for (const uid of allIds) await db.incrementStat(guildId, uid, key, 1, 0);
 
-  const embed = buildTransactionEmbed(txId, interaction.user.id, interaction.user.tag, key, {
+  const embed = buildTransactionEmbed(guildId, txId, interaction.user.id, interaction.user.tag, key, {
     Partenaires: selectedIds.length ? selectedIds.map(p => `<@${p}>`).join(', ') : '*Aucun*',
   });
-  await logActivite(interaction.client, embed);
-  await alertes.postBraquageAlert(interaction.client, key);
-  await updatePermanentMessage(interaction.client);
+  await logActivite(interaction.client, guildId, embed);
+  await alertes.postBraquageAlert(interaction.client, guildId, key);
+  await updatePermanentMessage(interaction.client, guildId);
 
   return updateAutoDelete(interaction, {
     content: `✅ **${activityDisplayLabel(cfg)}** enregistré (ID #${txId}). Participants : ${allIds.map(p => `<@${p}>`).join(', ')}.`,
@@ -898,36 +902,37 @@ export async function handleSelect(interaction: UserSelectMenuInteraction): Prom
 
 /** `/supp` (admin) : annule une transaction — décrémente stats/braquage selon le type d'activité, puis rafraîchit le panneau. */
 export async function handleSuppCommand(interaction: ChatInputCommandInteraction): Promise<void> {
-  if (!isAdmin(interaction.member)) {
+  const guildId = interaction.guildId!;
+  if (!isAdmin(guildId, interaction.member)) {
     await interaction.reply({ content: '❌ Commande réservée aux administrateurs.', flags: MessageFlags.Ephemeral });
     return;
   }
 
   const txId = interaction.options.getInteger('id', true);
-  const tx = await db.getTransaction(txId);
+  const tx = await db.getTransaction(guildId, txId);
   if (!tx) {
     await interaction.reply({ content: `❌ Transaction #${txId} introuvable ou déjà supprimée.`, flags: MessageFlags.Ephemeral });
     return;
   }
 
-  const cfg = configStore.get().ACTIVITY_TYPES[tx.action];
+  const cfg = configStore.get(guildId).ACTIVITY_TYPES[tx.action];
   const allIds = [tx.userId, ...tx.partenaires];
 
   if (cfg) {
     if (cfg.quantity) {
-      await db.decrementStat(tx.userId, tx.action, tx.quantite, 0);
+      await db.decrementStat(guildId, tx.userId, tx.action, tx.quantite, 0);
     } else if (cfg.labo || cfg.braquageWeeklyLimit) {
-      for (const uid of allIds) await db.decrementStat(uid, tx.action, 1, 0);
+      for (const uid of allIds) await db.decrementStat(guildId, uid, tx.action, 1, 0);
       // Le braquage consommait un slot hebdomadaire partagé : le libérer aussi,
       // sinon le groupe reste bloqué à un slot de moins jusqu'à ce que l'entrée
       // sorte de la fenêtre glissante de 7 jours (voir db.removeMostRecentBraquage).
-      if (cfg.braquageWeeklyLimit) await db.removeMostRecentBraquage(tx.userId, tx.action);
+      if (cfg.braquageWeeklyLimit) await db.removeMostRecentBraquage(guildId, tx.userId, tx.action);
     } else {
-      await db.decrementStat(tx.userId, tx.action, 1, 0);
+      await db.decrementStat(guildId, tx.userId, tx.action, 1, 0);
     }
   }
 
-  await db.deleteTransaction(txId, interaction.user.tag);
+  await db.deleteTransaction(guildId, txId, interaction.user.tag);
 
   const embed = new EmbedBuilder()
     .setTitle(`🗑️ Transaction #${txId} supprimée`)
@@ -939,8 +944,8 @@ export async function handleSuppCommand(interaction: ChatInputCommandInteraction
     )
     .setTimestamp();
 
-  await logActivite(interaction.client, embed);
-  await updatePermanentMessage(interaction.client);
+  await logActivite(interaction.client, guildId, embed);
+  await updatePermanentMessage(interaction.client, guildId);
 
   await interaction.reply({ content: `✅ La saisie #${txId} a été supprimée par <@${interaction.user.id}>.` });
 }
@@ -969,25 +974,25 @@ function parisWallClock(date: Date): Date {
 }
 
 /** Vrai si le dernier reset hebdomadaire enregistré est antérieur au dimanche 19h Europe/Paris le plus récent. */
-async function isWeeklyResetDue(): Promise<boolean> {
+async function isWeeklyResetDue(guildId: string): Promise<boolean> {
   const wallNow = parisWallClock(new Date());
   const boundary = new Date(wallNow);
   boundary.setHours(19, 0, 0, 0);
   boundary.setDate(boundary.getDate() - boundary.getDay());
   if (boundary.getTime() > wallNow.getTime()) boundary.setDate(boundary.getDate() - 7);
 
-  const lastMs = Number((await db.getSetting(LAST_RESET_KEY)) || 0);
+  const lastMs = Number((await db.getSetting(guildId, LAST_RESET_KEY)) || 0);
   const wallLast = parisWallClock(new Date(lastMs));
   return wallLast.getTime() < boundary.getTime();
 }
 
 /** Cron (toutes les 15 min) : déclenche le reset hebdomadaire s'il est en retard (voir `isWeeklyResetDue`) — auto-réparant si le bot était down au moment prévu. */
-export async function checkWeeklyReset(client: Client): Promise<void> {
-  if (!(await isWeeklyResetDue())) return;
-  const previousReset = Number((await db.getSetting(LAST_RESET_KEY)) || 0);
-  await db.setSetting(LAST_RESET_KEY, Date.now());
-  console.log('[quotas] Reset hebdomadaire en retard détecté — déclenchement automatique.');
-  await weeklyReset(client, previousReset);
+export async function checkWeeklyReset(client: Client, guildId: string): Promise<void> {
+  if (!(await isWeeklyResetDue(guildId))) return;
+  const previousReset = Number((await db.getSetting(guildId, LAST_RESET_KEY)) || 0);
+  await db.setSetting(guildId, LAST_RESET_KEY, Date.now());
+  console.log(`[quotas] Reset hebdomadaire en retard détecté (${guildId}) — déclenchement automatique.`);
+  await weeklyReset(client, guildId, previousReset);
 }
 
 // ─── RAPPEL DE QUOTA DU DIMANCHE (00h → 19h) — spécifique à la catégorie "vente" ──
@@ -1011,13 +1016,13 @@ function isDansFenetreRappelQuota(): boolean {
  * configuré (catégorie `vente`). Une seule requête de stats pour tous les
  * membres (`db.getAllStats()`), pas une par membre mappé.
  */
-async function getMembresSousQuotaVente(): Promise<Array<{ discord_id: string; vente: number }>> {
-  const quota = configStore.get().QUOTA_TARGETS['vente'];
+async function getMembresSousQuotaVente(guildId: string): Promise<Array<{ discord_id: string; vente: number }>> {
+  const quota = configStore.get(guildId).QUOTA_TARGETS['vente'];
   if (quota == null) return [];
-  const mappings = await db.getAllUserMappings();
+  const mappings = await db.getAllUserMappings(guildId);
   const discordIds = [...new Set(mappings.map(m => m.discordId))];
   const venteByUser = new Map<string, number>();
-  for (const s of await db.getAllStats()) {
+  for (const s of await db.getAllStats(guildId)) {
     if (s.action === 'vente') venteByUser.set(s.userId, s.count);
   }
   const results: Array<{ discord_id: string; vente: number }> = [];
@@ -1044,67 +1049,67 @@ function buildQuotaReminderPayload(sousQuota: Array<{ discord_id: string; vente:
 }
 
 /** Récupère le message de rappel de quota existant, ou le crée s'il est absent/a été supprimé manuellement. `null` si non applicable (salon/objectif non configuré). */
-async function ensureQuotaReminderMessage(client: Client): Promise<Message | null> {
-  const c = configStore.get();
+async function ensureQuotaReminderMessage(client: Client, guildId: string): Promise<Message | null> {
+  const c = configStore.get(guildId);
   if (!c.CHANNELS.quotas) return null;
   const quota = c.QUOTA_TARGETS['vente'];
   if (quota == null) return null;
   const channel = await client.channels.fetch(c.CHANNELS.quotas).catch(() => null);
   if (!channel || !channel.isSendable()) return null;
 
-  const messageId = await db.getSetting(QUOTA_REMINDER_KEY);
+  const messageId = await db.getSetting(guildId, QUOTA_REMINDER_KEY);
   if (messageId) {
     const existing = await channel.messages.fetch(messageId).catch(() => null);
     if (existing) return existing;
-    console.log('[quotas] Rappel de quota introuvable (supprimé manuellement) — recréation.');
+    console.log(`[quotas] Rappel de quota introuvable (${guildId}, supprimé manuellement) — recréation.`);
   }
 
-  const msg = await channel.send(buildQuotaReminderPayload(await getMembresSousQuotaVente(), quota));
-  await db.setSetting(QUOTA_REMINDER_KEY, msg.id);
-  console.log('[quotas] Rappel de quota du dimanche posté.');
+  const msg = await channel.send(buildQuotaReminderPayload(await getMembresSousQuotaVente(guildId), quota));
+  await db.setSetting(guildId, QUOTA_REMINDER_KEY, msg.id);
+  console.log(`[quotas] Rappel de quota du dimanche posté (${guildId}).`);
   return msg;
 }
 
 /** Cron (toutes les 15 min) : s'assure que le rappel de quota du dimanche existe pendant sa fenêtre d'affichage. */
-export async function checkQuotaReminder(client: Client): Promise<void> {
+export async function checkQuotaReminder(client: Client, guildId: string): Promise<void> {
   if (!isDansFenetreRappelQuota()) return;
-  try { await ensureQuotaReminderMessage(client); } catch (err) { console.error('[quotas] checkQuotaReminder:', (err as Error).message); }
+  try { await ensureQuotaReminderMessage(client, guildId); } catch (err) { console.error(`[quotas] checkQuotaReminder(${guildId}):`, (err as Error).message); }
 }
 
 /** Rafraîchit immédiatement le rappel de quota (appelé après confirmation d'une vente, plutôt que d'attendre le prochain cron). */
-export async function syncQuotaReminder(client: Client): Promise<void> {
+export async function syncQuotaReminder(client: Client, guildId: string): Promise<void> {
   if (!isDansFenetreRappelQuota()) return;
   try {
-    const quota = configStore.get().QUOTA_TARGETS['vente'];
+    const quota = configStore.get(guildId).QUOTA_TARGETS['vente'];
     if (quota == null) return;
-    const msg = await ensureQuotaReminderMessage(client);
-    if (msg) await msg.edit(buildQuotaReminderPayload(await getMembresSousQuotaVente(), quota));
+    const msg = await ensureQuotaReminderMessage(client, guildId);
+    if (msg) await msg.edit(buildQuotaReminderPayload(await getMembresSousQuotaVente(guildId), quota));
   } catch (err) {
-    console.error('[quotas] syncQuotaReminder:', (err as Error).message);
+    console.error(`[quotas] syncQuotaReminder(${guildId}):`, (err as Error).message);
   }
 }
 
 /** Supprime le message de rappel de quota (appelé au reset hebdomadaire, les compteurs repartant à zéro). */
-async function deleteQuotaReminder(client: Client): Promise<void> {
-  const messageId = await db.getSetting(QUOTA_REMINDER_KEY);
+async function deleteQuotaReminder(client: Client, guildId: string): Promise<void> {
+  const messageId = await db.getSetting(guildId, QUOTA_REMINDER_KEY);
   if (!messageId) return;
-  await db.setSetting(QUOTA_REMINDER_KEY, '');
-  const channelId = configStore.get().CHANNELS.quotas;
+  await db.setSetting(guildId, QUOTA_REMINDER_KEY, '');
+  const channelId = configStore.get(guildId).CHANNELS.quotas;
   if (!channelId) return;
   try {
     const channel = await client.channels.fetch(channelId).catch(() => null);
     const msg = channel?.isTextBased() ? await channel.messages.fetch(messageId).catch(() => null) : null;
     if (msg) await msg.delete().catch(() => null);
   } catch (err) {
-    console.error('[quotas] deleteQuotaReminder:', (err as Error).message);
+    console.error(`[quotas] deleteQuotaReminder(${guildId}):`, (err as Error).message);
   }
 }
 
 /** Reset hebdomadaire : publie bilan + paie, remet les stats à zéro. */
-export async function weeklyReset(client: Client, sinceTs?: number): Promise<void> {
+export async function weeklyReset(client: Client, guildId: string, sinceTs?: number): Promise<void> {
   try {
-    const c = configStore.get();
-    const since = sinceTs ?? Number((await db.getSetting(LAST_RESET_KEY)) || 0);
+    const c = configStore.get(guildId);
+    const since = sinceTs ?? Number((await db.getSetting(guildId, LAST_RESET_KEY)) || 0);
     const now = new Date();
     const endDate = formatDate(now.getTime());
     const startTs = now.getTime() - 7 * 24 * 60 * 60 * 1000;
@@ -1112,16 +1117,16 @@ export async function weeklyReset(client: Client, sinceTs?: number): Promise<voi
     const entete = `${startDate} — ${endDate}`;
 
     if (c.CHANNELS.bilan) {
-      const bilanEmbed = await buildBilanEmbed(since);
+      const bilanEmbed = await buildBilanEmbed(guildId, since);
       bilanEmbed.setTitle(`📊 Bilan hebdomadaire — ${entete}`);
       const bilanChannel = await client.channels.fetch(c.CHANNELS.bilan).catch(() => null);
       if (bilanChannel?.isSendable()) await bilanChannel.send({ embeds: [bilanEmbed] }).catch(() => null);
     }
 
     if (c.CHANNELS.paie) {
-      const ranking = await getSalaryRanking();
+      const ranking = await getSalaryRanking(guildId);
       const paieChannel = await client.channels.fetch(c.CHANNELS.paie).catch(() => null);
-      const guild = client.guilds.cache.first();
+      const guild = client.guilds.cache.get(guildId);
 
       if (paieChannel?.isSendable() && ranking.length) {
         const targets = c.QUOTA_TARGETS;
@@ -1150,12 +1155,12 @@ export async function weeklyReset(client: Client, sinceTs?: number): Promise<voi
       }
     }
 
-    await db.resetAllStats();
-    await deleteQuotaReminder(client);
-    await garages.resetFourrieresHebdo(client, entete);
-    console.log(`[quotas] Reset hebdomadaire effectué — ${entete}`);
+    await db.resetAllStats(guildId);
+    await deleteQuotaReminder(client, guildId);
+    await garages.resetFourrieresHebdo(client, guildId, entete);
+    console.log(`[quotas] Reset hebdomadaire effectué (${guildId}) — ${entete}`);
   } catch (err) {
-    console.error('[quotas] weeklyReset:', (err as Error).message);
+    console.error(`[quotas] weeklyReset(${guildId}):`, (err as Error).message);
   }
 }
 
@@ -1163,18 +1168,19 @@ export async function weeklyReset(client: Client, sinceTs?: number): Promise<voi
 
 /** `/listquota` (admin) : liste tous les membres suivis avec leur progression par catégorie de quota, complets en premier. */
 export async function handleListQuotaCommand(interaction: ChatInputCommandInteraction): Promise<void> {
-  if (!isAdmin(interaction.member)) {
+  const guildId = interaction.guildId!;
+  if (!isAdmin(guildId, interaction.member)) {
     await interaction.reply({ content: '❌ Commande réservée aux administrateurs.', flags: MessageFlags.Ephemeral });
     return;
   }
 
-  const summaries = await getAllUserQuotaSummaries();
+  const summaries = await getAllUserQuotaSummaries(guildId);
   if (!summaries.size) {
     await interaction.reply({ content: '❌ Aucune activité enregistrée.', flags: MessageFlags.Ephemeral });
     return;
   }
 
-  const targets = configStore.get().QUOTA_TARGETS;
+  const targets = configStore.get(guildId).QUOTA_TARGETS;
   const guild = interaction.guild;
 
   const rows: Array<{ userId: string; byQuotaType: Record<string, number>; complete: boolean; name: string; venteCount: number }> = [];

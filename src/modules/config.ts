@@ -50,8 +50,8 @@ const ROLE_TARGETS = [
   { name: 'Rôle accès taxes (back-office web)', value: 'taxes' },
 ];
 
-/** Déclare la commande `/config` et tous ses sous-groupes (channel, role, item, quota, salaire, type-groupe). */
-export function getCommands() {
+/** Déclare la commande `/config` et tous ses sous-groupes (channel, role, item, quota, salaire, type-groupe). `guildId` : les choix de `labo_lie` viennent du registre d'activités de CETTE guilde (déjà chargé en cache à ce stade — voir `bootstrapGuild` dans index.ts, qui appelle `configStore.reload()` avant `deployCommandsForGuild`). */
+export function getCommands(guildId: string) {
   const cmd = new SlashCommandBuilder()
     .setName('config')
     .setDescription('Configuration du bot (admin)')
@@ -101,7 +101,7 @@ export function getCommands() {
       .addStringOption(o => o.setName('groupe').setDescription('Libellé de regroupement dans le message de stock (optionnel)').setRequired(false))
       .addBooleanOption(o => o.setName('stock_general').setDescription('Afficher dans le message Stock Général (défaut : oui — le stock reste suivi même à non)').setRequired(false))
       .addStringOption(o => o.setName('labo_lie').setDescription("Ce labo produit cet item ? Exclut alors la vente PNJ pour les tiers ayant ce labo actif (optionnel)").setRequired(false)
-        .addChoices(...Object.entries(configStore.get().ACTIVITY_TYPES).filter(([, cfg]) => cfg.labo).map(([key, cfg]) => ({ name: cfg.label, value: key })))))
+        .addChoices(...Object.entries(configStore.get(guildId).ACTIVITY_TYPES).filter(([, cfg]) => cfg.labo).map(([key, cfg]) => ({ name: cfg.label, value: key })))))
     .addSubcommand(s => s
       .setName('remove')
       .setDescription('Retire un item suivi')
@@ -174,6 +174,7 @@ function isNativeAdmin(interaction: ChatInputCommandInteraction): boolean {
 
 /** Point d'entrée de `/config` : vérifie la permission `Administrator`, puis route vers le handler du sous-groupe concerné. */
 export async function handleCommand(interaction: ChatInputCommandInteraction): Promise<void> {
+  const guildId = interaction.guildId!;
   if (!isNativeAdmin(interaction)) {
     await interaction.reply({ content: '❌ Commande réservée aux administrateurs Discord.', flags: MessageFlags.Ephemeral });
     return;
@@ -183,26 +184,26 @@ export async function handleCommand(interaction: ChatInputCommandInteraction): P
   // quelqu'un touche /config, quel que soit le moment (y compris un bot déjà
   // en cours d'exécution depuis un moment) — no-op si déjà fait, voir
   // seedDefaultItems.
-  await seedDefaultItems();
+  await seedDefaultItems(guildId);
 
   const group = interaction.options.getSubcommandGroup();
   const sub = interaction.options.getSubcommand();
 
-  if (group === 'channel') return handleChannel(interaction, sub);
-  if (group === 'role') return handleRole(interaction, sub);
-  if (group === 'item') return handleItem(interaction, sub);
-  if (group === 'quota') return handleQuota(interaction, sub);
-  if (group === 'salaire') return handleSalaire(interaction, sub);
-  if (group === 'type-groupe') return handleTypeGroupe(interaction, sub);
-  if (group === 'category') return handleCategory(interaction, sub);
+  if (group === 'channel') return handleChannel(interaction, guildId, sub);
+  if (group === 'role') return handleRole(interaction, guildId, sub);
+  if (group === 'item') return handleItem(interaction, guildId, sub);
+  if (group === 'quota') return handleQuota(interaction, guildId, sub);
+  if (group === 'salaire') return handleSalaire(interaction, guildId, sub);
+  if (group === 'type-groupe') return handleTypeGroupe(interaction, guildId, sub);
+  if (group === 'category') return handleCategory(interaction, guildId, sub);
 }
 
 /** `/config channel set|add-log-coffre|remove-log-coffre|list`. */
-async function handleChannel(interaction: ChatInputCommandInteraction, sub: string): Promise<void> {
+async function handleChannel(interaction: ChatInputCommandInteraction, guildId: string, sub: string): Promise<void> {
   if (sub === 'set') {
     const role = interaction.options.getString('role', true);
     const salon = interaction.options.getChannel('salon', true);
-    await configStore.mutate(() => db.setChannelRole(role, salon.id));
+    await configStore.mutate(guildId, () => db.setChannelRole(guildId, role, salon.id));
     // Sans ça, un salon de panneau permanent (quotas/armurerie/taxes/stock)
     // configuré après le démarrage du bot resterait vide jusqu'au prochain
     // événement qui rafraîchit ce panneau (un mouvement de coffre, une
@@ -210,28 +211,28 @@ async function handleChannel(interaction: ChatInputCommandInteraction, sub: stri
     // qui n'a aucun déclencheur de rafraîchissement indirect. Le bot n'étant
     // pas censé redémarrer une fois lancé, on crée/rafraîchit le panneau
     // immédiatement ici plutôt que de compter sur un événement indirect.
-    if (role === 'stock_general') await stocks.updateStockMessage(interaction.client);
-    if (role === 'armurerie') await armurerie.updatePermanentMessage(interaction.client);
-    if (role === 'quotas') await quotas.updatePermanentMessage(interaction.client);
-    if (role === 'taxes') await taxes.initPermanentMessage(interaction.client);
+    if (role === 'stock_general') await stocks.updateStockMessage(interaction.client, guildId);
+    if (role === 'armurerie') await armurerie.updatePermanentMessage(interaction.client, guildId);
+    if (role === 'quotas') await quotas.updatePermanentMessage(interaction.client, guildId);
+    if (role === 'taxes') await taxes.initPermanentMessage(interaction.client, guildId);
     // Idem pour le préfixe 🟢 d'un salon de labo : sans ça, il resterait sans
     // préfixe (ni rouge ni vert) jusqu'à la première déclaration de ce labo.
     // No-op silencieux si ce labo n'est pas actif pour le tier courant.
-    if (role.startsWith('labo_')) await alertes.setLaboStatut(interaction.client, role, true);
+    if (role.startsWith('labo_')) await alertes.setLaboStatut(interaction.client, guildId, role, true);
     await interaction.reply({ content: `✅ Salon **${role}** → <#${salon.id}>`, flags: MessageFlags.Ephemeral });
     return;
   }
   if (sub === 'add-log-coffre' || sub === 'remove-log-coffre') {
     const salon = interaction.options.getChannel('salon', true);
-    await configStore.mutate(() => sub === 'add-log-coffre'
-      ? db.addChannelToRole('logs_coffres', salon.id)
-      : db.removeChannelFromRole('logs_coffres', salon.id));
-    const total = configStore.get().CHANNELS.logs_coffres.length;
+    await configStore.mutate(guildId, () => sub === 'add-log-coffre'
+      ? db.addChannelToRole(guildId, 'logs_coffres', salon.id)
+      : db.removeChannelFromRole(guildId, 'logs_coffres', salon.id));
+    const total = configStore.get(guildId).CHANNELS.logs_coffres.length;
     await interaction.reply({ content: `✅ Logs de coffre : ${total} salon(s) surveillé(s).`, flags: MessageFlags.Ephemeral });
     return;
   }
   if (sub === 'list') {
-    const c = configStore.get().CHANNELS;
+    const c = configStore.get(guildId).CHANNELS;
     const lines = configStore.CHANNEL_ROLES.map(role => `**${role}** : ${c[role] ? `<#${c[role]}>` : '_non configuré_'}`);
     lines.push(`**logs_coffres** : ${c.logs_coffres.length ? c.logs_coffres.map(id => `<#${id}>`).join(', ') : '_aucun_'}`);
     const embed = new EmbedBuilder().setTitle('⚙️ Salons configurés').setDescription(lines.join('\n')).setColor(0x5865f2);
@@ -240,16 +241,16 @@ async function handleChannel(interaction: ChatInputCommandInteraction, sub: stri
 }
 
 /** `/config role set|list`. */
-async function handleRole(interaction: ChatInputCommandInteraction, sub: string): Promise<void> {
+async function handleRole(interaction: ChatInputCommandInteraction, guildId: string, sub: string): Promise<void> {
   if (sub === 'set') {
     const cible = interaction.options.getString('cible', true);
     const role = interaction.options.getRole('role', true);
-    await configStore.mutate(() => db.setDiscordRole(cible, role.id));
+    await configStore.mutate(guildId, () => db.setDiscordRole(guildId, cible, role.id));
     await interaction.reply({ content: `✅ Rôle **${cible}** → <@&${role.id}>`, flags: MessageFlags.Ephemeral });
     return;
   }
   if (sub === 'list') {
-    const c = configStore.get();
+    const c = configStore.get(guildId);
     const lines = [
       `**admin** : ${c.ADMIN_ROLE_ID ? `<@&${c.ADMIN_ROLE_ID}>` : '_non configuré (permissions Discord natives utilisées)_'}`,
       `**taxes** : ${c.TAXES_ROLE_ID ? `<@&${c.TAXES_ROLE_ID}>` : '_non configuré_'}`,
@@ -260,38 +261,38 @@ async function handleRole(interaction: ChatInputCommandInteraction, sub: string)
 }
 
 /** `/config item add|remove|list`. */
-async function handleItem(interaction: ChatInputCommandInteraction, sub: string): Promise<void> {
+async function handleItem(interaction: ChatInputCommandInteraction, guildId: string, sub: string): Promise<void> {
   if (sub === 'add') {
     const nom = interaction.options.getString('nom', true);
     const ventePnj = interaction.options.getBoolean('vente_pnj') ?? false;
     const groupe = interaction.options.getString('groupe');
     const stockGeneral = interaction.options.getBoolean('stock_general') ?? true;
     const laboLie = interaction.options.getString('labo_lie');
-    await configStore.mutate(() => db.upsertItem({ name: nom, stock_group: groupe, vente: ventePnj, visible_stock: stockGeneral, labo_lie: laboLie }));
+    await configStore.mutate(guildId, () => db.upsertItem(guildId, { name: nom, stock_group: groupe, vente: ventePnj, visible_stock: stockGeneral, labo_lie: laboLie }));
     // Sans ça, un item tout juste ajouté/masqué/regroupé n'apparaîtrait
     // correctement dans le Stock Général (et l'armurerie, si lié aux
     // munitions) qu'au prochain mouvement de coffre — pas immédiat.
-    await stocks.updateStockMessage(interaction.client);
-    const laboLabel = laboLie ? configStore.get().ACTIVITY_TYPES[laboLie]?.label : null;
+    await stocks.updateStockMessage(interaction.client, guildId);
+    const laboLabel = laboLie ? configStore.get(guildId).ACTIVITY_TYPES[laboLie]?.label : null;
     await interaction.reply({ content: `✅ Item **${nom}** enregistré${groupe ? ` (groupe : ${groupe})` : ''}${ventePnj ? ' — vente PNJ' : ''}${!stockGeneral ? ' — masqué du Stock Général (stock toujours suivi)' : ''}${laboLabel ? ` — lié à ${laboLabel}` : ''}.`, flags: MessageFlags.Ephemeral });
     return;
   }
   if (sub === 'remove') {
     const nom = interaction.options.getString('nom', true);
-    await configStore.mutate(() => db.deleteItem(nom));
-    await stocks.updateStockMessage(interaction.client);
+    await configStore.mutate(guildId, () => db.deleteItem(guildId, nom));
+    await stocks.updateStockMessage(interaction.client, guildId);
     await interaction.reply({ content: `✅ Item **${nom}** retiré.`, flags: MessageFlags.Ephemeral });
     return;
   }
   if (sub === 'list') {
     const filtre = interaction.options.getString('filtre')?.toLowerCase();
-    let items = await db.getAllItems();
+    let items = await db.getAllItems(guildId);
     if (filtre) items = items.filter(i => i.name.toLowerCase().includes(filtre));
     if (items.length === 0) {
       await interaction.reply({ content: 'Aucun item trouvé.', flags: MessageFlags.Ephemeral });
       return;
     }
-    const activityTypes = configStore.get().ACTIVITY_TYPES;
+    const activityTypes = configStore.get(guildId).ACTIVITY_TYPES;
     const lines = items.slice(0, 60).map(i => {
       const laboLabel = i.laboLie ? activityTypes[i.laboLie]?.label ?? i.laboLie : null;
       const confirmeVente = i.name.toLowerCase() === CONFIRME_VENTE_ITEM.toLowerCase();
@@ -307,22 +308,22 @@ async function handleItem(interaction: ChatInputCommandInteraction, sub: string)
 }
 
 /** `/config quota set|remove|list`. */
-async function handleQuota(interaction: ChatInputCommandInteraction, sub: string): Promise<void> {
+async function handleQuota(interaction: ChatInputCommandInteraction, guildId: string, sub: string): Promise<void> {
   if (sub === 'set') {
     const quotaType = interaction.options.getString('quota_type', true);
     const valeur = interaction.options.getInteger('valeur', true);
-    await configStore.mutate(() => db.setQuotaTarget(quotaType, valeur));
+    await configStore.mutate(guildId, () => db.setQuotaTarget(guildId, quotaType, valeur));
     await interaction.reply({ content: `✅ Objectif **${quotaType}** → ${valeur}/semaine.`, flags: MessageFlags.Ephemeral });
     return;
   }
   if (sub === 'remove') {
     const quotaType = interaction.options.getString('quota_type', true);
-    await configStore.mutate(() => db.deleteQuotaTarget(quotaType));
+    await configStore.mutate(guildId, () => db.deleteQuotaTarget(guildId, quotaType));
     await interaction.reply({ content: `✅ Objectif **${quotaType}** retiré.`, flags: MessageFlags.Ephemeral });
     return;
   }
   if (sub === 'list') {
-    const targets = await db.getAllQuotaTargets();
+    const targets = await db.getAllQuotaTargets(guildId);
     if (targets.length === 0) {
       await interaction.reply({ content: 'Aucun objectif configuré.', flags: MessageFlags.Ephemeral });
       return;
@@ -334,22 +335,22 @@ async function handleQuota(interaction: ChatInputCommandInteraction, sub: string
 }
 
 /** `/config salaire set|remove|list`. */
-async function handleSalaire(interaction: ChatInputCommandInteraction, sub: string): Promise<void> {
+async function handleSalaire(interaction: ChatInputCommandInteraction, guildId: string, sub: string): Promise<void> {
   if (sub === 'set') {
     const quotaType = interaction.options.getString('quota_type', true);
     const valeur = interaction.options.getNumber('valeur', true);
-    await configStore.mutate(() => db.setSalaryRate(quotaType, valeur));
+    await configStore.mutate(guildId, () => db.setSalaryRate(guildId, quotaType, valeur));
     await interaction.reply({ content: `✅ Taux de paie **${quotaType}** → ${valeur}$/unité.`, flags: MessageFlags.Ephemeral });
     return;
   }
   if (sub === 'remove') {
     const quotaType = interaction.options.getString('quota_type', true);
-    await configStore.mutate(() => db.deleteSalaryRate(quotaType));
+    await configStore.mutate(guildId, () => db.deleteSalaryRate(guildId, quotaType));
     await interaction.reply({ content: `✅ Taux de paie **${quotaType}** retiré.`, flags: MessageFlags.Ephemeral });
     return;
   }
   if (sub === 'list') {
-    const rates = await db.getAllSalaryRates();
+    const rates = await db.getAllSalaryRates(guildId);
     if (rates.length === 0) {
       await interaction.reply({ content: 'Aucun taux de paie configuré.', flags: MessageFlags.Ephemeral });
       return;
@@ -361,26 +362,26 @@ async function handleSalaire(interaction: ChatInputCommandInteraction, sub: stri
 }
 
 /** `/config type-groupe set|list`. */
-async function handleTypeGroupe(interaction: ChatInputCommandInteraction, sub: string): Promise<void> {
+async function handleTypeGroupe(interaction: ChatInputCommandInteraction, guildId: string, sub: string): Promise<void> {
   if (sub === 'set') {
     const tier = interaction.options.getString('tier', true) as configStore.GroupTier;
-    await configStore.mutate(() => db.setSetting(configStore.TYPE_GROUPE_SETTING_KEY, tier));
-    await quotas.updatePermanentMessage(interaction.client);
+    await configStore.mutate(guildId, () => db.setSetting(guildId, configStore.TYPE_GROUPE_SETTING_KEY, tier));
+    await quotas.updatePermanentMessage(interaction.client, guildId);
     // Le tier change VENTE_ITEMS/LABO_ITEMS (voir config-store.ts), qui pilotent
     // les champs "Drogue à vendre"/"Drogue de production" du Stock Général —
     // sans ce refresh, ce message resterait faux jusqu'au prochain mouvement.
-    await stocks.updateStockMessage(interaction.client);
+    await stocks.updateStockMessage(interaction.client, guildId);
     // Le tier change aussi les zones/taxes fixes proposées à la création (voir
     // taxes.ts) — sans ce refresh, le panneau taxes resterait figé sur les
     // boutons de l'ancien tier jusqu'au prochain redémarrage du bot.
-    await taxes.initPermanentMessage(interaction.client);
+    await taxes.initPermanentMessage(interaction.client, guildId);
     const label = configStore.GROUP_TIERS.find(t => t.key === tier)?.label ?? tier;
     await interaction.reply({ content: `✅ Type d'organisation → **${label}**. Panneau d'activités, Stock Général et panneau Taxes mis à jour.`, flags: MessageFlags.Ephemeral });
     return;
   }
   if (sub === 'list') {
-    const current = configStore.get().TYPE_GROUPE;
-    const activityTypes = configStore.get().ACTIVITY_TYPES;
+    const current = configStore.get(guildId).TYPE_GROUPE;
+    const activityTypes = configStore.get(guildId).ACTIVITY_TYPES;
     const lines = configStore.GROUP_TIERS.map(t => {
       const braquage = Object.entries(configStore.BRAQUAGE_LIMITS_BY_TIER[t.key])
         .map(([key, val]) => `${activityTypes[key]?.label ?? key} ${val}`)
@@ -445,7 +446,7 @@ const CHANNEL_NAME_BY_ROLE: Partial<Record<configStore.ChannelRole, string>> = {
  * coup. Un rôle déjà configuré n'est jamais recréé ni touché (ré-exécutable
  * sans risque de doublons).
  */
-async function handleCategory(interaction: ChatInputCommandInteraction, sub: string): Promise<void> {
+async function handleCategory(interaction: ChatInputCommandInteraction, guildId: string, sub: string): Promise<void> {
   if (sub !== 'set') return;
 
   const categorie = interaction.options.getChannel('categorie', true);
@@ -456,7 +457,7 @@ async function handleCategory(interaction: ChatInputCommandInteraction, sub: str
 
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-  const existing = configStore.get().CHANNELS;
+  const existing = configStore.get(guildId).CHANNELS;
   const toCreate = (Object.entries(CHANNEL_NAME_BY_ROLE) as Array<[configStore.ChannelRole, string]>)
     .filter(([role]) => !CATEGORY_EXCLUDED_ROLES.includes(role) && !existing[role]);
 
@@ -466,7 +467,7 @@ async function handleCategory(interaction: ChatInputCommandInteraction, sub: str
   for (const [role, name] of toCreate) {
     try {
       const channel = await interaction.guild.channels.create({ name, type: ChannelType.GuildText, parent: categorie.id });
-      await configStore.mutate(() => db.setChannelRole(role, channel.id));
+      await configStore.mutate(guildId, () => db.setChannelRole(guildId, role, channel.id));
       created.push(`**${role}** → <#${channel.id}>`);
     } catch (err) {
       console.error(`[config] category set — création du salon ${role} :`, (err as Error).message);
@@ -479,12 +480,12 @@ async function handleCategory(interaction: ChatInputCommandInteraction, sub: str
     // ça, ces panneaux resteraient vides jusqu'au prochain événement
     // indirect (mouvement de coffre, déclaration…), voire jusqu'à un
     // redémarrage pour taxes, qui n'a aucun rattrapage indirect.
-    if (!existing.stock_general) await stocks.updateStockMessage(interaction.client);
-    if (!existing.armurerie) await armurerie.updatePermanentMessage(interaction.client);
-    if (!existing.quotas) await quotas.updatePermanentMessage(interaction.client);
-    if (!existing.taxes) await taxes.initPermanentMessage(interaction.client);
+    if (!existing.stock_general) await stocks.updateStockMessage(interaction.client, guildId);
+    if (!existing.armurerie) await armurerie.updatePermanentMessage(interaction.client, guildId);
+    if (!existing.quotas) await quotas.updatePermanentMessage(interaction.client, guildId);
+    if (!existing.taxes) await taxes.initPermanentMessage(interaction.client, guildId);
     for (const [role] of toCreate) {
-      if (role.startsWith('labo_')) await alertes.setLaboStatut(interaction.client, role, true);
+      if (role.startsWith('labo_')) await alertes.setLaboStatut(interaction.client, guildId, role, true);
     }
   }
 
@@ -507,7 +508,7 @@ export async function handleAutocomplete(interaction: AutocompleteInteraction): 
   const query = focused.value.toLowerCase();
 
   let source: string[] = [];
-  if (group === 'item') source = (await db.getAllItems()).map(i => i.name);
+  if (group === 'item') source = (await db.getAllItems(interaction.guildId!)).map(i => i.name);
 
   const results = source.filter(v => v.toLowerCase().includes(query)).slice(0, 25);
   await interaction.respond(results.map(v => ({ name: v, value: v }))).catch(() => null);
