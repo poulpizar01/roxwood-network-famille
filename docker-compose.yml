@@ -3,9 +3,9 @@ services:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-bot_famille}
+      POSTGRES_USER: ${POSTGRES_USER:-roxwood_network_famille}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Definir POSTGRES_PASSWORD dans .env}
-      POSTGRES_DB: ${POSTGRES_DB:-bot_famille}
+      POSTGRES_DB: ${POSTGRES_DB:-roxwood_network_famille}
     volumes:
       - db_data:/var/lib/postgresql/data
     # Expose sur l'hote pour un acces direct (prisma studio, psql...) — a
@@ -14,7 +14,7 @@ services:
     ports:
       - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-bot_famille} -d ${POSTGRES_DB:-bot_famille}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-roxwood_network_famille} -d ${POSTGRES_DB:-roxwood_network_famille}"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -38,7 +38,7 @@ services:
       # Ecrase le DATABASE_URL de .env (pense pour un Postgres hors conteneur,
       # via localhost) : a l'interieur du reseau docker-compose, la base est
       # joignable via le nom de service `db`, pas `localhost`.
-      DATABASE_URL: postgresql://${POSTGRES_USER:-bot_famille}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-bot_famille}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-roxwood_network_famille}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-roxwood_network_famille}
     # API REST optionnelle (voir README, section Interoperabilite) : n'ecoute
     # que si API_PORT est defini dans .env, mais le port est toujours publie
     # ici (inoffensif si l'API est desactivee — rien n'ecoute dessus alors).

@@ -1,0 +1,28 @@
+# Modèle de service systemd — voir README.md, section "Installation > Via
+# systemd" pour la mise en place complète (copie, activation, etc.).
+#
+# À adapter avant installation :
+#   - User               : utilisateur système qui fait tourner le bot (pas root)
+#   - WorkingDirectory    : chemin absolu vers le repo cloné sur le VPS
+#   - ExecStart           : chemin absolu vers node (voir `which node`) — un
+#                           PATH utilisateur (ex. nvm) n'est pas résolu par systemd
+[Unit]
+Description=Bot Famille — roxwood-network-famille (bot Discord RP FiveM)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=REMPLACER_utilisateur_systeme
+WorkingDirectory=/REMPLACER/chemin/vers/roxwood-network-famille
+EnvironmentFile=/REMPLACER/chemin/vers/roxwood-network-famille/.env
+ExecStart=/REMPLACER/chemin/vers/node dist/index.js
+Restart=on-failure
+RestartSec=5
+# Redémarre aussi si le process crash en boucle très vite (ex. mauvaise
+# config au déploiement) plutôt que de s'arrêter silencieusement après trop
+# d'échecs rapprochés — enlève la limite par défaut de systemd (5 en 10s).
+StartLimitIntervalSec=0
+
+[Install]
+WantedBy=multi-user.target

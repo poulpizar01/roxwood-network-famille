@@ -1,10 +1,22 @@
 # Bot Famille — Bot Discord RP FiveM (illégal), 100% configurable
 
-Bot Discord (TypeScript / discord.js v14 / PostgreSQL via Prisma) pour la gestion d'une organisation RP FiveM illégale : stocks de coffre, quotas hebdomadaires, braquages, cooldowns, taxes & racket, armurerie (armes + munitions), fourrière véhicules, cycle de vente de drogue.
+Bot Discord (TypeScript / discord.js v14 / PostgreSQL via Prisma) pour la gestion d'une organisation RP FiveM illégale : stocks de coffre, quotas hebdomadaires, braquages, cooldowns, taxes & racket, armurerie (armes + munitions), fourrière véhicules, cycle de vente de drogue — plus une API REST optionnelle pour exposer ces données à un outil externe (site web, dashboard…).
 
-Contrairement à un bot figé pour un serveur précis, **toute la structure métier est configurable depuis Discord** via la commande `/config` : items suivis, activités déclarables (quotas, cooldowns, limites de braquage, labos), objectifs de quota, taux de paie, salons, rôles, et le **type d'organisation** (Indépendant/Petite Frappe/Gang/Organisation, `/config type-groupe`) qui fait varier les limites de braquage et les labos accessibles sans toucher au code. Aucune de ces valeurs n'est codée en dur — un changement prend effet immédiatement, sans redémarrage. À l'inverse, certaines valeurs restent volontairement fixes dans le code car elles ne bougent jamais une fois le bot déployé pour une organisation donnée : types d'armes, types de taxe, plafonds de munitions, amende de fourrière (voir "Modules" plus bas).
+Contrairement à un bot figé pour un serveur précis, **toute la structure métier est configurable depuis Discord** via la commande `/config` : items suivis, activités déclarables (quotas, cooldowns, limites de braquage, labos), objectifs de quota, taux de paie, salons, rôles, et le **type d'organisation** (Indépendant/Petite Frappe/Gang/Organisation, `/config type-groupe`) qui fait varier les limites de braquage, les labos accessibles et les taxes/zones de vente sans toucher au code. Aucune de ces valeurs n'est codée en dur — un changement prend effet immédiatement, sans redémarrage (jamais besoin de relancer le bot après une écriture `/config`, voir "Robustesse & fiabilité" plus bas). À l'inverse, certaines valeurs restent volontairement fixes dans le code car elles ne bougent jamais une fois le bot déployé pour une organisation donnée : types d'armes, types de taxe, plafonds de munitions, amende de fourrière (voir "Modules" plus bas).
 
 Le bot reste **mono-serveur** (un déploiement = un serveur Discord), mais devient réutilisable pour n'importe quelle organisation RP illégale sans toucher au code : après avoir invité le bot, tout se configure via `/config`.
+
+## Sommaire
+
+- [Prérequis](#prérequis) ([Créer l'application Discord](#créer-lapplication-discord))
+- [Installation](#installation) ([Via systemd](#via-systemd-production-sans-docker), [Via Docker](#via-docker))
+- [Configuration — `/config`](#configuration--tout-se-fait-depuis-discord-via-config)
+- [Interopérabilité — API REST](#interopérabilité--api-rest-optionnelle)
+- [Modules](#modules)
+- [Robustesse & fiabilité](#robustesse--fiabilité)
+- [Base de données](#base-de-données)
+- [Structure des fichiers](#structure-des-fichiers)
+- [Dépannage](#dépannage)
 
 ---
 
@@ -12,10 +24,25 @@ Le bot reste **mono-serveur** (un déploiement = un serveur Discord), mais devie
 
 - **Node.js** ≥ 18
 - **PostgreSQL** ≥ 14 (local, hébergé — Supabase, Neon, Railway, RDS… — ou via Docker, voir plus bas)
-- Un bot Discord avec les permissions :
-  - `Send Messages`, `Embed Links`, `Read Message History`
-  - `Manage Channels` (renommage des salons "labo" selon disponibilité)
-  - `View Channel` sur tous les salons surveillés
+- Une application Discord avec un bot configuré (voir juste en dessous) — token, permissions et intents privilégiés.
+
+### Créer l'application Discord
+
+Étape à faire une seule fois, avant toute installation :
+
+1. [discord.com/developers/applications](https://discord.com/developers/applications) → **New Application** → lui donner un nom.
+2. Onglet **Bot** (menu de gauche) :
+   - **Reset Token** → copier la valeur, ce sera `TOKEN` dans `.env`. Discord ne la réaffiche plus jamais après — la garder de côté (jamais commitée, voir "Sécurité" dans `CLAUDE.md`).
+   - Section **Privileged Gateway Intents**, activer **Server Members Intent** et **Message Content Intent**. **Obligatoire** : le bot lit le contenu des messages de logs coffre et résout les membres du serveur pour l'API — sans ces deux cases cochées, il plante au démarrage avec une erreur `DisallowedIntents`.
+   - Décocher **Public Bot** si le bot ne doit être invitable que par toi (recommandé pour un bot mono-serveur).
+3. Onglet **General Information** : copier l'**Application ID**, ce sera `CLIENT_ID` dans `.env`.
+4. Onglet **OAuth2 → URL Generator** :
+   - Scopes : cocher `bot` et `applications.commands` (indispensable pour que les commandes `/` apparaissent).
+   - Bot Permissions : `Send Messages`, `Embed Links`, `Read Message History`, `View Channels`, `Manage Channels` (renommage des salons "labo" 🔴/🟢).
+   - Copier l'URL générée en bas de page, l'ouvrir dans un navigateur, choisir le serveur Discord de l'organisation, valider.
+5. Récupérer l'ID du serveur (`GUILD_ID`) : dans Discord, **Paramètres utilisateur → Avancés → Mode développeur** (à activer une fois), puis clic droit sur l'icône du serveur → **Copier l'ID du serveur**.
+
+À la fin de cette étape, on a les trois valeurs `TOKEN`, `CLIENT_ID`, `GUILD_ID` nécessaires à `.env`.
 
 ---
 
@@ -28,7 +55,7 @@ cd roxwood-network-famille
 npm install
 
 cp .env.example .env
-# Éditer .env : TOKEN, CLIENT_ID, GUILD_ID, DATABASE_URL
+# Éditer .env : TOKEN, CLIENT_ID, GUILD_ID (voir "Créer l'application Discord" ci-dessus), DATABASE_URL
 
 # Applique les migrations existantes à la base PostgreSQL
 npx prisma migrate deploy
@@ -37,14 +64,32 @@ npm run build
 npm start
 ```
 
+`DATABASE_URL` pointe vers un PostgreSQL déjà accessible : un service hébergé (Supabase, Neon, Railway, RDS…), ou une instance locale sur le VPS lui-même — sur une base Debian/Ubuntu fraîche, par exemple :
+```bash
+sudo apt install -y postgresql
+sudo -u postgres psql -c "CREATE USER roxwood_network_famille WITH PASSWORD 'change_me';"
+sudo -u postgres psql -c "CREATE DATABASE roxwood_network_famille OWNER roxwood_network_famille;"
+# DATABASE_URL=postgresql://roxwood_network_famille:change_me@localhost:5432/roxwood_network_famille
+```
+
 En développement : `npm run dev` (tsx, rechargement à chaud, pas de build).
 
-En production, le bot peut tourner via un service systemd :
+### Via systemd (production, sans Docker)
+
+Un modèle de service est fourni dans `deploy/roxwood-network-famille.service` — à adapter (chemins, utilisateur système) puis installer :
+```bash
+sudo cp deploy/roxwood-network-famille.service /etc/systemd/system/
+sudo nano /etc/systemd/system/roxwood-network-famille.service   # remplacer les champs REMPLACER_...
+sudo systemctl daemon-reload
+sudo systemctl enable --now roxwood-network-famille.service
+```
+
+Ensuite, pour piloter le service :
 ```bash
 sudo systemctl restart roxwood-network-famille.service
 sudo journalctl -u roxwood-network-famille.service -n 50 --no-pager
 ```
-Après toute mise à jour du code : `git pull && npm install && npx prisma migrate deploy && npm run build` puis redémarrage du service.
+Après toute mise à jour du code : `git pull && npm install && npx prisma migrate deploy && npm run build` (toujours vérifier `npx tsc --noEmit` avant, pour attraper une erreur sans faire planter le service en cours) puis `sudo systemctl restart roxwood-network-famille.service`.
 
 ### Via Docker
 
@@ -60,7 +105,7 @@ docker compose logs -f roxwood-network-famille
 ```
 Mise à jour après un `git pull` : `docker compose up -d --build`. Le port `5432` du service `db` est publié sur l'hôte par défaut (pratique pour `prisma studio`/`psql` en local) — à retirer ou restreindre par pare-feu sur un déploiement exposé publiquement.
 
-Les deux services ont une rotation de logs (`max-size: 10m`, `max-file: 3` — sinon le driver `json-file` par défaut grossit indéfiniment sur le disque de l'hôte) ; le service `bot` a en plus une limite mémoire (`mem_limit: 512m`, large pour un bot Discord + petite API — à ajuster si `docker stats` montre un dépassement).
+Les deux services ont une rotation de logs (`max-size: 10m`, `max-file: 3` — sinon le driver `json-file` par défaut grossit indéfiniment sur le disque de l'hôte) ; le service `roxwood-network-famille` a en plus une limite mémoire (`mem_limit: 512m`, large pour un bot Discord + petite API — à ajuster si `docker stats` montre un dépassement). Nommé ainsi (pas juste `bot`) pour rester identifiable sans ambiguïté si un second bot tourne sur le même hôte.
 
 Si `docker compose build` échoue avec `invalid file request` (observé sur Windows + OneDrive avec BuildKit sur ce projet), désactiver BuildKit pour ce build : `set DOCKER_BUILDKIT=0 && docker compose build` (PowerShell : `$env:DOCKER_BUILDKIT=0`).
 
@@ -113,33 +158,6 @@ Taux de paie ($ par unité) par catégorie de quota — mêmes catégories que `
 - `/config salaire set <quota_type> <valeur>` / `remove` / `list`
 
 Exemple : `/config salaire set vente 30` → chaque unité vendue rapporte 30$. On peut faire pareil pour `labos`, `recolte`, etc. — indépendamment des objectifs fixés par `/config quota` (une catégorie peut avoir un objectif sans taux de paie, un taux sans objectif, ou les deux).
-
----
-
-## Modules
-
-### `src/modules/stocks.ts` — Stocks de coffre
-Parse les logs des salons de coffre suivis, met à jour la table `stocks` (total global, celui du panneau Discord) et le message permanent du salon `stock_general`. Met aussi à jour `coffre_stocks`, le détail par coffre (par salon `logs_coffres`) — pas affiché en Discord, exposé uniquement via l'API (voir section Interopérabilité) ; les deux sont toujours mis à jour ensemble, jamais l'un sans l'autre. Gère le rattrapage au démarrage et un resync complet à la demande (`/sync-stock`). `/config item add`/`remove` rafraîchit ce panneau immédiatement, sans attendre le prochain mouvement de coffre. `/set-stock` et `/historique-stock` utilisent l'autocomplete (la liste d'items peut dépasser la limite de 25 choix Discord). Le Stock Général affiche en plus deux sections dynamiques (dépendantes du tier, voir `/config type-groupe`) : **💊 Drogue à vendre** (total seul, détail via `/drogues-a-vendre`) et **🧪 Drogue de production** (détail par item). Dès qu'un mouvement de coffre (retrait ou dépôt, n'importe quel item) concerne un joueur sans compte Discord mappé, une alerte est postée dans `admin` (voir `/adduser`).
-
-### `src/modules/quotas.ts` — Activités & quotas hebdomadaires
-Panneau de boutons **généré dynamiquement** à partir du registre fixe `ACTIVITY_TYPES` (`src/config-store.ts`) : jusqu'à 3 rangées de boutons directs, un menu déroulant de repli au-delà, puis la rangée fixe des vues (mon quota, ma paie, classement, bilan, minuterie). Reset automatique chaque dimanche 19h (bilan + paie envoyés, stats remises à zéro), auto-réparant si le bot était arrêté au moment du cron.
-
-### `src/modules/alertes.ts` — Cooldowns, braquages, statut labo
-Notifie l'expiration des cooldowns personnels, publie la disponibilité des slots de braquage, renomme les salons "labo" (🔴/🟢) selon disponibilité — pour toute activité configurée avec `labo_salon`, pas seulement les labos d'origine.
-
-### `src/modules/garages.ts` — Fourrière véhicules
-Déduit les mises en fourrière à partir des logs du salon garages (aucune mise en fourrière n'est loggée explicitement) : si un véhicule ressort de la fourrière, le dernier joueur à l'avoir sorti sans l'avoir rangé est enregistré comme responsable — un montant fixe (350$, dans le code) est affiché à titre indicatif, sans aucune facturation automatique. Le classement cumulé se consulte à la demande via `/fourrieres` (admin) et reste posté en archive hebdomadaire dans `bilan`.
-
-### `src/modules/taxes.ts` — Taxes & racket
-Types fixes avec leur propre bouton, **dépendants du type d'organisation** (`/config type-groupe`, même principe que les labos) : Petite Frappe a `sporex`, `heroine`, `fertilisant` ; Gang a `cannabis` ; Organisation a `mexicana` et `cocaine` — indépendamment de qui produit quoi via les labos (Mexicana est produite par Gang **et** Organisation, mais sa taxe reste réservée à Organisation, décision métier). `vente` est universelle (tous tiers, y compris Indépendant). Plus un bouton **Taxe Zone** qui demande d'abord de choisir une zone avant d'afficher le même formulaire — le nom de la zone est directement stocké comme `type` de la taxe. Petite Frappe a 6 zones (Roxwood Village, Grapeseed Valley, Richman, Cinéma, Hawick, Carson) ; Gang et Organisation partagent les 18 mêmes zones de vente (New Cayo Perico, Paleto, Sandy Shores, Grapeseed, Vinewood, Aéroport, Wardog, Mirror Park, Fête Foraine, Barillo Plage, Del Perro, Roxwood Est, Eclypse Tower, Vespucci, Roxwood Ouest, Terrain de cross, Champ d'éolienne, Cayo Perico) — pas de découpage entre les deux, contrairement aux labos. Indépendant n'a ni taxe fixe ni zone. Une seule taxe active à la fois par type (zones incluses) — une taxe expirée mais pas supprimée ne bloque pas une nouvelle création. Ces types restent codés en dur (contrairement à items/activités/quotas) car chacun a des champs de modal hétérogènes — les rendre dynamiques demanderait un moteur de formulaire générique, hors du périmètre de généralisation de ce projet. Seuls le salon, le rôle d'accès et les échéances sont configurables.
-
-### `src/modules/armurerie.ts` — Armurerie & munitions
-Inventaire d'armes individuelles (nom, référence unique, statut `en_stock`/`pretee`/`perdue`). Types d'armes fixes dans le code (constante `ARME_TYPES` en tête de fichier — pas de `/config` dédié, cette liste ne bouge jamais une fois posée), regroupés en 4 catégories (armes de poing, fusils à pompe, armes automatiques, armes lourdes) avec plus de 25 modèles : l'ajout d'une arme passe donc par un modal de recherche avant le select (limite Discord de 25 options). Munitions : ligne de stock + deux déclarations indicatives (Fabrication / Vente) avec compteur hebdomadaire — Fabrication a un plafond fixe (5000) dans le code, Vente n'a volontairement aucun plafond (juste le total suivi).
-
-Le stock réel de munitions affiché en tête du panneau vient d'un item suivi comme les autres, associé via son `groupe` à la constante `MUNITIONS_STOCK_GROUP` (`"Munitions de pistolet"`, câblée dans `armurerie.ts`) — item pré-rempli automatiquement (voir `/config item` ci-dessus), donc plus besoin d'y penser. Le panneau armurerie n'est rafraîchi à chaque mouvement de coffre que si l'item déplacé appartient à ce groupe (voir `stocks.updateStockMessage`) — pas à chaque mouvement, quel qu'il soit, pour éviter des requêtes et des éditions Discord inutiles.
-
-### `src/modules/ventes.ts` — Cycle de vie des ventes de drogue
-Un retrait de coffre sur un item marqué `vente_pnj: true` crée une vente en attente et alerte dans le salon `ventes_drogue`. Confirmation automatique dès le dépôt de l'item `CONFIRME_VENTE_ITEM` (fixé en dur dans `ventes.ts`, "Argent Sale" par défaut — fenêtre de 3h), log dans `log_ventes`, mise à jour des stats/quota. `/adduser`, `/removeuser` et `/listusers` gèrent les associations nom en jeu ↔ compte Discord, utilisées ici comme par l'alerte "joueur non mappé" de `stocks.ts`.
 
 ---
 
@@ -196,7 +214,45 @@ Les 6 endpoints `/api/quotas*` et les 2 endpoints `/api/ventes*` acceptent un pa
 
 ### Types de taxe (`?type=`)
 
-Valeurs acceptées : les types fixes (`sporex`, `heroine`, `vente`, `fertilisant`, `cannabis`, `mexicana`, `cocaine`), le type fictif `zone` qui regroupe **toutes** les zones (Petite Frappe en a 6, Gang/Organisation en partagent 18 — voir chapitre Taxes plus haut) sous une seule valeur filtrable, ou la clé d'**une** zone précise (ex. `roxwood_village`) pour ne remonter que celle-là. `type` est requis sur `/search`, optionnel sur la liste (omis = tous types confondus).
+Valeurs acceptées : les types fixes (`sporex`, `heroine`, `vente`, `fertilisant`, `cannabis`, `mexicana`, `cocaine`), le type fictif `zone` qui regroupe **toutes** les zones (Petite Frappe en a 6, Gang/Organisation en partagent 18 — voir chapitre Taxes plus bas) sous une seule valeur filtrable, ou la clé d'**une** zone précise (ex. `roxwood_village`) pour ne remonter que celle-là. `type` est requis sur `/search`, optionnel sur la liste (omis = tous types confondus).
+
+---
+
+## Modules
+
+### `src/modules/stocks.ts` — Stocks de coffre
+Parse les logs des salons de coffre suivis, met à jour la table `stocks` (total global, celui du panneau Discord) et le message permanent du salon `stock_general`. Met aussi à jour `coffre_stocks`, le détail par coffre (par salon `logs_coffres`) — pas affiché en Discord, exposé uniquement via l'API (voir section Interopérabilité plus haut) ; les deux sont toujours mis à jour ensemble, jamais l'un sans l'autre. Gère le rattrapage au démarrage et un resync complet à la demande (`/sync-stock`). `/config item add`/`remove` rafraîchit ce panneau immédiatement, sans attendre le prochain mouvement de coffre. `/set-stock` et `/historique-stock` utilisent l'autocomplete (la liste d'items peut dépasser la limite de 25 choix Discord). Le Stock Général affiche en plus deux sections dynamiques (dépendantes du tier, voir `/config type-groupe`) : **💊 Drogue à vendre** (total seul, détail via `/drogues-a-vendre`) et **🧪 Drogue de production** (détail par item). Dès qu'un mouvement de coffre (retrait ou dépôt, n'importe quel item) concerne un joueur sans compte Discord mappé, une alerte est postée dans `admin` (voir `/adduser`).
+
+### `src/modules/quotas.ts` — Activités & quotas hebdomadaires
+Panneau de boutons **généré dynamiquement** à partir du registre fixe `ACTIVITY_TYPES` (`src/config-store.ts`) : jusqu'à 3 rangées de boutons directs, un menu déroulant de repli au-delà, puis la rangée fixe des vues (mon quota, ma paie, classement, bilan, minuterie). Reset automatique chaque dimanche 19h (bilan + paie envoyés, stats remises à zéro), auto-réparant si le bot était arrêté au moment du cron.
+
+### `src/modules/alertes.ts` — Cooldowns, braquages, statut labo
+Notifie l'expiration des cooldowns personnels, publie la disponibilité des slots de braquage, renomme les salons "labo" (🔴/🟢) selon disponibilité — pour toute activité marquée `labo: true` dans le registre `ACTIVITY_TYPES_FIXED` (`config-store.ts`), pas seulement les labos d'origine. Un labo restauré au démarrage (timer en mémoire perdu, date de fin persistée en base) ne touche pas au salon d'un labo devenu indisponible pour le tier courant entre-temps.
+
+### `src/modules/garages.ts` — Fourrière véhicules
+Déduit les mises en fourrière à partir des logs du salon garages (aucune mise en fourrière n'est loggée explicitement) : si un véhicule ressort de la fourrière, le dernier joueur à l'avoir sorti sans l'avoir rangé est enregistré comme responsable — un montant fixe (350$, dans le code) est affiché à titre indicatif, sans aucune facturation automatique. Le classement cumulé se consulte à la demande via `/fourrieres` (admin) et reste posté en archive hebdomadaire dans `bilan`.
+
+### `src/modules/taxes.ts` — Taxes & racket
+Types fixes avec leur propre bouton, **dépendants du type d'organisation** (`/config type-groupe`, même principe que les labos) : Petite Frappe a `sporex`, `heroine`, `fertilisant` ; Gang a `cannabis` ; Organisation a `mexicana` et `cocaine` — indépendamment de qui produit quoi via les labos (Mexicana est produite par Gang **et** Organisation, mais sa taxe reste réservée à Organisation, décision métier). `vente` est universelle (tous tiers, y compris Indépendant). Plus un bouton **Taxe Zone** qui demande d'abord de choisir une zone avant d'afficher le même formulaire — le nom de la zone est directement stocké comme `type` de la taxe. Petite Frappe a 6 zones (Roxwood Village, Grapeseed Valley, Richman, Cinéma, Hawick, Carson) ; Gang et Organisation partagent les 18 mêmes zones de vente (New Cayo Perico, Paleto, Sandy Shores, Grapeseed, Vinewood, Aéroport, Wardog, Mirror Park, Fête Foraine, Barillo Plage, Del Perro, Roxwood Est, Eclypse Tower, Vespucci, Roxwood Ouest, Terrain de cross, Champ d'éolienne, Cayo Perico) — pas de découpage entre les deux, contrairement aux labos. Indépendant n'a ni taxe fixe ni zone. Une seule taxe active à la fois par type (zones incluses) — une taxe expirée mais pas supprimée ne bloque pas une nouvelle création. Ces types restent codés en dur (contrairement à items/activités/quotas) car chacun a des champs de modal hétérogènes — les rendre dynamiques demanderait un moteur de formulaire générique, hors du périmètre de généralisation de ce projet. Seuls le salon, le rôle d'accès et les échéances sont configurables.
+
+### `src/modules/armurerie.ts` — Armurerie & munitions
+Inventaire d'armes individuelles (nom, référence unique, statut `en_stock`/`pretee`/`perdue`). Types d'armes fixes dans le code (constante `ARME_TYPES` en tête de fichier — pas de `/config` dédié, cette liste ne bouge jamais une fois posée), regroupés en 4 catégories (armes de poing, fusils à pompe, armes automatiques, armes lourdes) avec plus de 25 modèles : l'ajout d'une arme passe donc par un modal de recherche avant le select (limite Discord de 25 options). Munitions : ligne de stock + deux déclarations indicatives (Fabrication / Vente) avec compteur hebdomadaire — Fabrication a un plafond fixe (5000) dans le code, Vente n'a volontairement aucun plafond (juste le total suivi).
+
+Le stock réel de munitions affiché en tête du panneau vient d'un item suivi comme les autres, associé via son `groupe` à la constante `MUNITIONS_STOCK_GROUP` (`"Munitions de pistolet"`, câblée dans `armurerie.ts`) — item pré-rempli automatiquement (voir `/config item` ci-dessus), donc plus besoin d'y penser. Le panneau armurerie n'est rafraîchi à chaque mouvement de coffre que si l'item déplacé appartient à ce groupe (voir `stocks.updateStockMessage`) — pas à chaque mouvement, quel qu'il soit, pour éviter des requêtes et des éditions Discord inutiles.
+
+### `src/modules/ventes.ts` — Cycle de vie des ventes de drogue
+Un retrait de coffre sur un item marqué `vente_pnj: true` crée une vente en attente et alerte dans le salon `ventes_drogue`. Confirmation automatique dès le dépôt de l'item `CONFIRME_VENTE_ITEM` (fixé en dur dans `ventes.ts`, "Argent Sale" par défaut — fenêtre de 3h), log dans `log_ventes`, mise à jour des stats/quota. `/adduser`, `/removeuser` et `/listusers` gèrent les associations nom en jeu ↔ compte Discord, utilisées ici comme par l'alerte "joueur non mappé" de `stocks.ts`.
+
+---
+
+## Robustesse & fiabilité
+
+- **Aucun redémarrage requis après une écriture `/config`** : chaque sous-commande qui touche un panneau permanent (salon, item, type d'organisation…) rafraîchit explicitement le message concerné dans son propre handler, plutôt que de compter sur le prochain mouvement de coffre ou une déclaration d'activité pour le déclencher indirectement.
+- **Reset hebdomadaire auto-réparant** : plutôt que de compter sur un cron qui tombe pile à l'heure, le bot vérifie à chaque démarrage *et* toutes les 15 minutes si le reset attendu (dimanche 19h Europe/Paris) est en retard, et le déclenche si besoin — un redémarrage pendant la fenêtre de reset ne fait pas perdre le cycle.
+- **Crash-restart** : le process peut s'arrêter sur un événement `error` non catché du WebSocket Discord (rare, pas un bug applicatif) — un service systemd avec `Restart=` (déjà dans le déploiement documenté plus haut) le relance automatiquement en quelques secondes. En Docker, `restart: unless-stopped` fait pareil.
+- **Purge automatique des données opérationnelles obsolètes** : un cron quotidien (4h Europe/Paris) supprime les ventes en attente **terminées** (confirmée/reposée/ignorée/expirée — jamais une vente encore en cours) et les ventes de munitions de plus de 30 jours — pur historique de workflow sans valeur une fois le cycle clos. **`transactions`** (le journal de toute activité déclarée, y compris les ventes confirmées) n'est en revanche **jamais purgée** : c'est ce qui permet à `/api/quotas`/`/api/ventes` de remonter une semaine passée via `?week=` (voir Interopérabilité) — une purge casserait cette navigation.
+- **Cron sans chevauchement** : `node-cron` ne protège pas nativement contre une exécution qui démarre alors que la précédente tourne encore. Le cron le plus fréquent (vérification des cooldowns expirés, toutes les minutes) a un verrou en mémoire pour éviter qu'un batch particulièrement long fasse partir un second passage sur les mêmes lignes (ex. double notification).
+- **Mémoire** : le cache de messages de discord.js est vidé au bout d'une heure (`sweepers`, sans impact sur les panneaux permanents — toujours re-récupérés par ID, jamais lus depuis ce cache) ; en Docker, `mem_limit: 512m` sur le bot évite qu'une fuite mémoire fasse tomber tout l'hôte plutôt que le seul conteneur (voir "Via Docker").
 
 ---
 
@@ -237,6 +293,8 @@ roxwood-network-famille/
 ├── prisma/
 │   ├── schema.prisma
 │   └── migrations/
+├── deploy/
+│   └── roxwood-network-famille.service  # Modèle de service systemd (voir "Via systemd")
 ├── Dockerfile
 ├── docker-compose.yml
 ├── docker-entrypoint.sh        # Applique les migrations puis démarre le bot (voir "Via Docker")
@@ -251,6 +309,7 @@ roxwood-network-famille/
 
 | Problème | Solution |
 |----------|----------|
+| Erreur `Used disallowed intents` / le bot ne se connecte pas du tout | Les intents privilégiés **Server Members** et **Message Content** ne sont pas activés dans le Developer Portal (onglet Bot) — voir "Créer l'application Discord" |
 | Le message permanent n'apparaît pas | Vérifier `/config channel list` et la permission `Send Messages` |
 | Les commandes slash ne s'affichent pas | Attendre ~1 min après le démarrage, ou vérifier `CLIENT_ID`/`GUILD_ID` |
 | Un mouvement de coffre est ignoré | L'item n'est probablement pas dans `/config item list`, ou son orthographe (accents/casse) diffère du log FiveM |
