@@ -40,10 +40,10 @@ export function parseIsoWeek(weekStr: string): WeekRange | null {
  * hebdo) si absent. Répond directement 400 et renvoie `null` si `week` est
  * présent mais mal formé — à tester par l'appelant avant de continuer.
  */
-export async function resolveWeekRange(req: Request, res: Response): Promise<WeekRange | null> {
+export async function resolveWeekRange(req: Request, res: Response, guildId: string): Promise<WeekRange | null> {
   const weekParam = req.query.week;
   if (weekParam === undefined) {
-    const since = Number((await db.getSetting('last_weekly_reset')) || 0);
+    const since = Number((await db.getSetting(guildId, 'last_weekly_reset')) || 0);
     return { since, until: Date.now() };
   }
   const range = parseIsoWeek(String(weekParam));

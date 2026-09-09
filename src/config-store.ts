@@ -15,13 +15,20 @@
  * configurables via `/config channel` comme n'importe quel autre salon —
  * chaque serveur Discord a ses propres IDs.
  *
- * `reload()` (async, Prisma oblige) reconstruit un cache en mémoire ; `get()`
- * (sync) le retourne tel quel. Un changement de config prend effet dès que
- * `/config` appelle `reload()` — jamais besoin de redémarrer le process.
+ * `reload(guildId)` (async, Prisma oblige) reconstruit le cache d'UNE
+ * guilde ; `get(guildId)` (sync) le retourne tel quel. Un changement de
+ * config prend effet dès que `/config` appelle `reload(guildId)` — jamais
+ * besoin de redémarrer le process.
+ *
+ * **Multi-tenant** : le cache est un `Map<guildId, BotConfig>`, pas une
+ * config globale unique — chaque guilde a la sienne, complètement
+ * indépendante. `guildId` est donc obligatoire sur `get`/`reload`/`mutate`,
+ * jamais optionnel.
  *
  * Usage dans les modules : `import * as configStore from '../config-store';`
- * puis `configStore.get().CHANNELS.stock_general` (ne jamais mettre en cache
- * le résultat de `get()` dans une variable de module chargée une seule fois).
+ * puis `configStore.get(guildId).CHANNELS.stock_general` (ne jamais mettre
+ * en cache le résultat de `get()` dans une variable de module chargée une
+ * seule fois).
  */
 import * as db from './db';
 
@@ -173,15 +180,17 @@ export interface BotConfig {
   TYPE_GROUPE: GroupTier;
 }
 
-let cache: BotConfig | null = null;
+/** Un cache `BotConfig` par guilde — jamais de config globale unique (voir docstring de fichier). */
+const cache = new Map<string, BotConfig>();
 
 /**
- * Recharge le cache de configuration depuis PostgreSQL. À appeler (et
- * `await`) après toute écriture faite par `/config`, et une fois au démarrage
- * avant `client.login()`.
+ * Recharge le cache de configuration d'UNE guilde depuis PostgreSQL. À
+ * appeler (et `await`) après toute écriture faite par `/config` pour cette
+ * guilde, à `guildCreate` (nouvelle guilde), et pour chaque guilde connue au
+ * démarrage (voir `reloadAll` et src/index.ts).
  */
-export async function reload(): Promise<BotConfig> {
-  const channelRows = await db.getAllChannels();
+export async function reload(guildId: string): Promise<BotConfig> {
+  const channelRows = await db.getAllChannels(guildId);
   const CHANNELS = { logs_coffres: [] as string[] } as BotConfig['CHANNELS'];
   for (const role of CHANNEL_ROLES) CHANNELS[role] = null;
   for (const { role, channelId } of channelRows) {
@@ -192,12 +201,12 @@ export async function reload(): Promise<BotConfig> {
     }
   }
 
-  const tierSetting = await db.getSetting(TYPE_GROUPE_SETTING_KEY);
+  const tierSetting = await db.getSetting(guildId, TYPE_GROUPE_SETTING_KEY);
   const TYPE_GROUPE: GroupTier = (tierSetting && GROUP_TIERS.some(t => t.key === tierSetting))
     ? (tierSetting as GroupTier)
     : DEFAULT_GROUP_TIER;
 
-  const items = await db.getAllItems();
+  const items = await db.getAllItems(guildId);
   const ITEMS_BY_NAME: Record<string, ItemConfig> = {};
   const STOCK_GROUPS: Record<string, string[]> = {};
   const ALLOWED_ITEMS: string[] = [];
@@ -239,15 +248,15 @@ export async function reload(): Promise<BotConfig> {
   }
 
   const QUOTA_TARGETS: Record<string, number> = {};
-  for (const row of await db.getAllQuotaTargets()) QUOTA_TARGETS[row.quotaType] = row.weeklyTarget;
+  for (const row of await db.getAllQuotaTargets(guildId)) QUOTA_TARGETS[row.quotaType] = row.weeklyTarget;
 
   const SALARY_RATES: Record<string, number> = {};
-  for (const row of await db.getAllSalaryRates()) SALARY_RATES[row.quotaType] = row.amount;
+  for (const row of await db.getAllSalaryRates(guildId)) SALARY_RATES[row.quotaType] = row.amount;
 
   const rolesByTarget: Record<string, string> = {};
-  for (const r of await db.getAllDiscordRoles()) rolesByTarget[r.target] = r.roleId;
+  for (const r of await db.getAllDiscordRoles(guildId)) rolesByTarget[r.target] = r.roleId;
 
-  cache = {
+  const config: BotConfig = {
     CHANNELS,
     ALLOWED_ITEMS,
     ITEMS_BY_NAME,
@@ -261,27 +270,51 @@ export async function reload(): Promise<BotConfig> {
     SALARY_RATES,
     TYPE_GROUPE,
   };
-  return cache;
+  cache.set(guildId, config);
+  return config;
+}
+
+/**
+ * Recharge le cache de TOUTES les guildes listées, séquentiellement — une
+ * guilde en échec (config corrompue, etc.) n'empêche pas les suivantes.
+ * Appelé une fois au démarrage (voir src/index.ts, `clientReady`) pour
+ * chaque guilde active connue du registre (`guild-registry.ts`).
+ */
+export async function reloadAll(guildIds: string[]): Promise<void> {
+  for (const guildId of guildIds) {
+    try {
+      await reload(guildId);
+    } catch (err) {
+      console.error(`[config-store] reload(${guildId}):`, (err as Error).message);
+    }
+  }
 }
 
 /**
  * Exécute une écriture de configuration puis recharge systématiquement le
- * cache — structurellement impossible d'oublier `reload()` après une
- * mutation, contrairement à `db.xxx(); configStore.reload();` répété à la
- * main dans chaque handler de `/config`.
+ * cache de CETTE guilde — structurellement impossible d'oublier `reload()`
+ * après une mutation, contrairement à `db.xxx(); configStore.reload();`
+ * répété à la main dans chaque handler de `/config`.
  */
-export async function mutate<T>(fn: () => Promise<T>): Promise<T> {
+export async function mutate<T>(guildId: string, fn: () => Promise<T>): Promise<T> {
   const result = await fn();
-  await reload();
+  await reload(guildId);
   return result;
 }
 
 /**
- * Retourne la configuration actuelle (celle du dernier `reload()`). Lève une
- * erreur si `reload()` n'a jamais été appelé — le bot doit toujours charger
- * la config au démarrage avant tout usage (voir src/index.ts).
+ * Retourne la configuration actuelle d'une guilde (celle de son dernier
+ * `reload()`). Lève une erreur si cette guilde n'a jamais été chargée — le
+ * bot doit toujours charger la config de chaque guilde connue au démarrage
+ * (voir src/index.ts) et à `guildCreate` avant tout autre usage.
  */
-export function get(): BotConfig {
-  if (!cache) throw new Error('config-store: reload() doit être appelé avant get() (voir src/index.ts au démarrage)');
-  return cache;
+export function get(guildId: string): BotConfig {
+  const config = cache.get(guildId);
+  if (!config) throw new Error(`config-store: reload(${guildId}) doit être appelé avant get() (voir src/index.ts au démarrage / guildCreate)`);
+  return config;
+}
+
+/** Retire une guilde du cache (voir `guildDelete` dans src/index.ts) — ses données restent en base, seul le cache en mémoire est vidé. */
+export function remove(guildId: string): void {
+  cache.delete(guildId);
 }

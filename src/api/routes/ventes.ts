@@ -11,6 +11,9 @@
  * Route statique... il n'y en a qu'une ici (`/`), donc `/:userId` peut être
  * déclarée juste après sans risque d'ambiguïté — gardé en dernier quand
  * même, par cohérence avec les autres groupes de l'API.
+ *
+ * Chaque route filtre par `req.apiUser.guildId` (posé par `requireAuth`,
+ * voir src/api/auth.ts) — jamais les données d'une autre guilde.
  */
 import { Router } from 'express';
 import * as db from '../../db';
@@ -23,20 +26,22 @@ const router = Router();
  * décroissant, plus le total du groupe (somme de tous les joueurs).
  */
 router.get('/', async (req, res) => {
-  const range = await resolveWeekRange(req, res);
+  const guildId = req.apiUser!.guildId;
+  const range = await resolveWeekRange(req, res, guildId);
   if (!range) return;
 
-  const players = (await db.getVenteTotalsForRange(range.since, range.until)).sort((a, b) => b.total - a.total);
+  const players = (await db.getVenteTotalsForRange(guildId, range.since, range.until)).sort((a, b) => b.total - a.total);
   const groupTotal = players.reduce((sum, p) => sum + p.total, 0);
   res.json({ players, groupTotal });
 });
 
 /** GET /api/ventes/:userId?week= — ventes d'un joueur précis : total + détail par drogue vendue. */
 router.get('/:userId', async (req, res) => {
-  const range = await resolveWeekRange(req, res);
+  const guildId = req.apiUser!.guildId;
+  const range = await resolveWeekRange(req, res, guildId);
   if (!range) return;
 
-  const detail = await db.getVenteDetailForUser(req.params.userId, range.since, range.until);
+  const detail = await db.getVenteDetailForUser(guildId, req.params.userId, range.since, range.until);
   const total = detail.reduce((sum, d) => sum + d.quantite, 0);
   res.json({ userId: req.params.userId, total, detail });
 });

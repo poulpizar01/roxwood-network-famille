@@ -41,16 +41,16 @@ const DEFAULT_ITEMS: db.ItemInput[] = [
  * déjà configuré, même si ses options diffèrent de la valeur par défaut ici.
  * Idempotent — safe à appeler à répétition (voir docstring de fichier).
  */
-export async function seedDefaultItems(): Promise<void> {
-  const existing = configStore.get().ITEMS_BY_NAME;
+export async function seedDefaultItems(guildId: string): Promise<void> {
+  const existing = configStore.get(guildId).ITEMS_BY_NAME;
   let inserted = false;
 
   for (const item of DEFAULT_ITEMS) {
     if (existing[item.name]) continue;
-    await db.upsertItem(item);
+    await db.upsertItem(guildId, item);
     inserted = true;
-    console.log(`[default-items] Item pré-rempli : ${item.name}`);
+    console.log(`[default-items] Item pré-rempli (${guildId}) : ${item.name}`);
   }
 
-  if (inserted) await configStore.reload();
+  if (inserted) await configStore.reload(guildId);
 }

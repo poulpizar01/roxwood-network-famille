@@ -42,8 +42,8 @@ export interface StockEntry {
  * démarrage et la resync ne l'appellent pas, pour ne pas flooder `admin` avec
  * des mouvements passés (même principe que `ventes.onStockEntry`).
  */
-async function alertJoueurNonMappe(client: Client, entry: StockEntry): Promise<void> {
-  const channelId = configStore.get().CHANNELS.admin;
+async function alertJoueurNonMappe(client: Client, guildId: string, entry: StockEntry): Promise<void> {
+  const channelId = configStore.get(guildId).CHANNELS.admin;
   if (!channelId) return;
   const channel = await client.channels.fetch(channelId).catch(() => null);
   if (!channel?.isSendable()) return;
@@ -61,25 +61,26 @@ async function alertJoueurNonMappe(client: Client, entry: StockEntry): Promise<v
 
 /** Point d'entrée temps réel : traite un nouveau message posté dans un salon `logs_coffres` suivi. */
 export async function handleMessage(message: Message): Promise<void> {
-  if (!configStore.get().CHANNELS.logs_coffres.includes(message.channelId)) return;
+  const guildId = message.guildId;
+  if (!guildId || !configStore.get(guildId).CHANNELS.logs_coffres.includes(message.channelId)) return;
 
-  await db.setSetting(`last_stock_msg_${message.channelId}`, message.id);
+  await db.setSetting(guildId, `last_stock_msg_${message.channelId}`, message.id);
 
-  const entries = await parseAndApplyAll(extractText(message), message.channelId, true);
+  const entries = await parseAndApplyAll(guildId, extractText(message), message.channelId, true);
   if (entries.length > 0) {
     // `entry.item` est déjà en minuscules (voir parseAndApply) — comparé tel
     // quel au groupe munitions pour éviter de rafraîchir l'armurerie sur un
     // mouvement qui n'a rien à voir (voir docstring de updateStockMessage).
-    const munitionsItems = new Set((configStore.get().STOCK_GROUPS[armurerie.MUNITIONS_STOCK_GROUP] ?? []).map(i => i.toLowerCase()));
+    const munitionsItems = new Set((configStore.get(guildId).STOCK_GROUPS[armurerie.MUNITIONS_STOCK_GROUP] ?? []).map(i => i.toLowerCase()));
     const toucheMunitions = entries.some(e => munitionsItems.has(e.item));
-    await updateStockMessage(message.client, { skipArmurerie: !toucheMunitions });
-    if (toucheMunitions) await armurerie.updatePermanentMessage(message.client);
+    await updateStockMessage(message.client, guildId, { skipArmurerie: !toucheMunitions });
+    if (toucheMunitions) await armurerie.updatePermanentMessage(message.client, guildId);
     for (const entry of entries) {
-      await logStockToChannel(message.client, entry, message.channelId);
-      if (!(await db.getUserMappings(entry.joueur)).length) {
-        await alertJoueurNonMappe(message.client, entry);
+      await logStockToChannel(message.client, guildId, entry, message.channelId);
+      if (!(await db.getUserMappings(guildId, entry.joueur)).length) {
+        await alertJoueurNonMappe(message.client, guildId, entry);
       }
-      await ventes.onStockEntry(message.client, entry);
+      await ventes.onStockEntry(message.client, guildId, entry);
     }
   }
 }
@@ -90,11 +91,11 @@ export async function handleMessage(message: Message): Promise<void> {
  * Rejoue les messages de stock publiés pendant le downtime. Ne déclenche PAS
  * le module ventes (évite de flooder les alertes sur des mouvements passés).
  */
-export async function catchUpMissedMessages(client: Client): Promise<number> {
+export async function catchUpMissedMessages(client: Client, guildId: string): Promise<number> {
   let total = 0;
 
-  for (const channelId of configStore.get().CHANNELS.logs_coffres) {
-    const lastId = await db.getSetting(`last_stock_msg_${channelId}`);
+  for (const channelId of configStore.get(guildId).CHANNELS.logs_coffres) {
+    const lastId = await db.getSetting(guildId, `last_stock_msg_${channelId}`);
     if (!lastId) continue;
 
     const channel = await client.channels.fetch(channelId).catch(() => null);
@@ -102,14 +103,14 @@ export async function catchUpMissedMessages(client: Client): Promise<number> {
 
     const messages = await fetchMessagesAfter(channel, lastId);
     for (const msg of messages) {
-      await db.setSetting(`last_stock_msg_${channelId}`, msg.id);
-      total += (await parseAndApplyAll(extractText(msg), channelId, true)).length;
+      await db.setSetting(guildId, `last_stock_msg_${channelId}`, msg.id);
+      total += (await parseAndApplyAll(guildId, extractText(msg), channelId, true)).length;
     }
   }
 
   if (total > 0) {
-    console.log(`[stocks] Rattrapage : ${total} message(s) manqué(s) traité(s)`);
-    await updateStockMessage(client);
+    console.log(`[stocks] Rattrapage (${guildId}) : ${total} message(s) manqué(s) traité(s)`);
+    await updateStockMessage(client, guildId);
   }
   return total;
 }
@@ -139,8 +140,8 @@ async function fetchMessagesAfter(channel: Extract<TextBasedChannel, { messages:
 }
 
 /** Poste une ligne de log dans `historique_stock` pour un mouvement donné. */
-async function logStockToChannel(client: Client, entry: StockEntry, sourceChannelId?: string): Promise<void> {
-  const c = configStore.get();
+async function logStockToChannel(client: Client, guildId: string, entry: StockEntry, sourceChannelId?: string): Promise<void> {
+  const c = configStore.get(guildId);
   if (!c.CHANNELS.historique_stock) return;
   try {
     const channel = await client.channels.fetch(c.CHANNELS.historique_stock).catch(() => null);
@@ -175,7 +176,7 @@ function extractText(msg: Message): string {
  * (`CoffreStock`, voir README section Interopérabilité), jamais l'un sans
  * l'autre.
  */
-async function parseAndApply(line: string, channelId: string, log = false): Promise<StockEntry | false> {
+async function parseAndApply(guildId: string, line: string, channelId: string, log = false): Promise<StockEntry | false> {
   const retireMatch = line.match(RE_RETIRE);
   const deposeMatch = line.match(RE_DEPOSE);
   if (!retireMatch && !deposeMatch) return false;
@@ -185,26 +186,26 @@ async function parseAndApply(line: string, channelId: string, log = false): Prom
   const quantite = parseInt(match[2], 10);
   const item = match[3].trim().toLowerCase().replace(/\s*\([^)]*\)$/, '');
 
-  const allowedLower = configStore.get().ALLOWED_ITEMS.map(i => i.toLowerCase());
+  const allowedLower = configStore.get(guildId).ALLOWED_ITEMS.map(i => i.toLowerCase());
   if (!allowedLower.includes(item)) return false;
 
   const action: 'retire' | 'depose' = retireMatch ? 'retire' : 'depose';
   const delta = retireMatch ? -quantite : quantite;
-  const { avant: stockAvant, apres: stockApres } = await db.applyStockDelta(item, delta);
-  await db.applyCoffreStockDelta(channelId, item, delta);
+  const { avant: stockAvant, apres: stockApres } = await db.applyStockDelta(guildId, item, delta);
+  await db.applyCoffreStockDelta(guildId, channelId, item, delta);
 
   const entry: StockEntry = { joueur, action, item, quantite, stock_avant: stockAvant, stock_apres: stockApres };
 
-  if (log) await db.addStockHistory({ timestamp: Date.now(), ...entry, channel_id: channelId });
+  if (log) await db.addStockHistory(guildId, { timestamp: Date.now(), ...entry, channel_id: channelId });
 
   return entry;
 }
 
 /** Applique `parseAndApply` à chaque ligne d'un contenu de message et retourne les mouvements de stock effectivement appliqués. */
-async function parseAndApplyAll(content: string, channelId: string, log = false): Promise<StockEntry[]> {
+async function parseAndApplyAll(guildId: string, content: string, channelId: string, log = false): Promise<StockEntry[]> {
   const entries: StockEntry[] = [];
   for (const line of content.split('\n')) {
-    const entry = await parseAndApply(line, channelId, log);
+    const entry = await parseAndApply(guildId, line, channelId, log);
     if (entry) entries.push(entry);
   }
   return entries;
@@ -213,25 +214,25 @@ async function parseAndApplyAll(content: string, channelId: string, log = false)
 // ─── RESYNC COMPLÈTE DEPUIS LE DÉBUT ─────────────────────────────────────────
 
 /** Repart de zéro : supprime tout le stock/historique et rejoue l'intégralité de chaque salon suivi. */
-export async function fullResync(client: Client): Promise<number> {
-  await db.resetAllStocks();
-  await db.clearStockHistory();
+export async function fullResync(client: Client, guildId: string): Promise<number> {
+  await db.resetAllStocks(guildId);
+  await db.clearStockHistory(guildId);
 
   let total = 0;
 
-  for (const channelId of configStore.get().CHANNELS.logs_coffres) {
+  for (const channelId of configStore.get(guildId).CHANNELS.logs_coffres) {
     const channel = await client.channels.fetch(channelId).catch(() => null);
     if (!channel || !channel.isTextBased() || channel.isDMBased()) continue;
 
     const messages = await fetchMessagesAfter(channel, '0');
     for (const msg of messages) {
-      await db.setSetting(`last_stock_msg_${channelId}`, msg.id);
-      total += (await parseAndApplyAll(extractText(msg), channelId, true)).length;
+      await db.setSetting(guildId, `last_stock_msg_${channelId}`, msg.id);
+      total += (await parseAndApplyAll(guildId, extractText(msg), channelId, true)).length;
     }
   }
 
-  console.log(`[stocks] Resync complet : ${total} mouvement(s) traité(s)`);
-  await updateStockMessage(client);
+  console.log(`[stocks] Resync complet (${guildId}) : ${total} mouvement(s) traité(s)`);
+  await updateStockMessage(client, guildId);
   return total;
 }
 
@@ -250,16 +251,16 @@ export async function fullResync(client: Client): Promise<number> {
  * manuelle, changement de salon/tier…) sont rares et gagnent à rester
  * simples : ils laissent le défaut rafraîchir armurerie systématiquement.
  */
-export async function updateStockMessage(client: Client, opts: { skipArmurerie?: boolean } = {}): Promise<void> {
-  const c = configStore.get();
+export async function updateStockMessage(client: Client, guildId: string, opts: { skipArmurerie?: boolean } = {}): Promise<void> {
+  const c = configStore.get(guildId);
   if (c.CHANNELS.stock_general) {
     try {
       const channel = await client.channels.fetch(c.CHANNELS.stock_general).catch(() => null);
       if (channel?.isSendable()) {
-        const stocks = await db.getAllStocks();
-        const embed = buildStockEmbed(stocks);
+        const stocks = await db.getAllStocks(guildId);
+        const embed = buildStockEmbed(guildId, stocks);
 
-        const storedId = await db.getSetting('stock_message_id');
+        const storedId = await db.getSetting(guildId, 'stock_message_id');
         let edited = false;
         if (storedId) {
           const msg = await channel.messages.fetch(storedId).catch(() => null);
@@ -267,20 +268,20 @@ export async function updateStockMessage(client: Client, opts: { skipArmurerie?:
         }
         if (!edited) {
           const newMsg = await channel.send({ embeds: [embed] });
-          await db.setSetting('stock_message_id', newMsg.id);
+          await db.setSetting(guildId, 'stock_message_id', newMsg.id);
         }
       }
     } catch (err) {
-      console.error('[stocks] updateStockMessage:', (err as Error).message);
+      console.error(`[stocks] updateStockMessage(${guildId}):`, (err as Error).message);
     }
   }
 
-  if (!opts.skipArmurerie) await armurerie.updatePermanentMessage(client);
+  if (!opts.skipArmurerie) await armurerie.updatePermanentMessage(client, guildId);
 }
 
 /** Construit l'embed affichant l'état actuel des stocks, avec regroupements STOCK_GROUPS. */
-function buildStockEmbed(stocks: Array<{ item: string; quantite: number }>): EmbedBuilder {
-  const c = configStore.get();
+function buildStockEmbed(guildId: string, stocks: Array<{ item: string; quantite: number }>): EmbedBuilder {
+  const c = configStore.get(guildId);
   const embed = new EmbedBuilder().setTitle('📦 Stock Général').setColor(0x2b2d31).setTimestamp().setFooter({ text: 'Dernière mise à jour' });
 
   const stockMap: Record<string, number> = {};
@@ -385,7 +386,7 @@ export function getCommands() {
 /** Autocomplete des options `item` (`/set-stock`, `/historique-stock`) sur `ALLOWED_ITEMS`. */
 export async function handleAutocomplete(interaction: AutocompleteInteraction): Promise<void> {
   const focused = interaction.options.getFocused().toLowerCase();
-  const matches = configStore.get().ALLOWED_ITEMS
+  const matches = configStore.get(interaction.guildId!).ALLOWED_ITEMS
     .filter(i => i.toLowerCase().includes(focused))
     .slice(0, 25)
     .map(i => ({ name: i, value: i.toLowerCase() }));
@@ -394,19 +395,20 @@ export async function handleAutocomplete(interaction: AutocompleteInteraction): 
 
 /** `/set-stock` (admin) : force la valeur du stock d'un item (correction manuelle). */
 export async function handleSetStockCommand(interaction: ChatInputCommandInteraction): Promise<void> {
-  if (!isAdmin(interaction.member)) {
+  const guildId = interaction.guildId!;
+  if (!isAdmin(guildId, interaction.member)) {
     await interaction.reply({ content: '❌ Commande réservée aux administrateurs.', flags: MessageFlags.Ephemeral });
     return;
   }
 
   const item = interaction.options.getString('item', true);
   const quantite = interaction.options.getInteger('quantite', true);
-  const avant = await db.getStock(item);
+  const avant = await db.getStock(guildId, item);
 
-  await db.setStock(item, quantite);
-  await updateStockMessage(interaction.client);
+  await db.setStock(guildId, item, quantite);
+  await updateStockMessage(interaction.client, guildId);
 
-  const itemLabel = configStore.get().ALLOWED_ITEMS.find(i => i.toLowerCase() === item) || item;
+  const itemLabel = configStore.get(guildId).ALLOWED_ITEMS.find(i => i.toLowerCase() === item) || item;
   await interaction.reply({
     content: `✅ Stock de **${itemLabel}** corrigé : \`${avant.toLocaleString('fr-FR')}\` → \`${quantite.toLocaleString('fr-FR')}\``,
     flags: MessageFlags.Ephemeral,
@@ -415,10 +417,11 @@ export async function handleSetStockCommand(interaction: ChatInputCommandInterac
 
 /** `/historique-stock` : affiche les derniers mouvements de stock, filtrés par item si fourni. */
 export async function handleHistoriqueCommand(interaction: ChatInputCommandInteraction): Promise<void> {
+  const guildId = interaction.guildId!;
   const item = interaction.options.getString('item') || null;
   const lignes = interaction.options.getInteger('lignes') || 20;
 
-  const rows = await db.getRecentStockHistory(item, lignes);
+  const rows = await db.getRecentStockHistory(guildId, item, lignes);
   if (!rows.length) {
     await interaction.reply({ content: '❌ Aucun mouvement enregistré.', flags: MessageFlags.Ephemeral });
     return;
@@ -454,28 +457,30 @@ export async function handleHistoriqueCommand(interaction: ChatInputCommandInter
 
 /** `/sync-stock` (admin) : resynchronise entièrement les stocks depuis le début de chaque salon `logs_coffres` suivi. */
 export async function handleSyncStockCommand(interaction: ChatInputCommandInteraction): Promise<void> {
-  if (!isAdmin(interaction.member)) {
+  const guildId = interaction.guildId!;
+  if (!isAdmin(guildId, interaction.member)) {
     await interaction.reply({ content: '❌ Commande réservée aux administrateurs.', flags: MessageFlags.Ephemeral });
     return;
   }
 
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-  const total = await fullResync(interaction.client);
+  const total = await fullResync(interaction.client, guildId);
   await interaction.editReply({ content: `✅ Resync terminé — **${total}** mouvement(s) traité(s).` });
 }
 
 /** `/drogues-a-vendre` (admin) : détail par item + total du stock des items actuellement vendables en PNJ (`VENTE_ITEMS`, dépend du tier — voir docstring de config-store.ts). */
 export async function handleDroguesAVendreCommand(interaction: ChatInputCommandInteraction): Promise<void> {
-  if (!isAdmin(interaction.member)) {
+  const guildId = interaction.guildId!;
+  if (!isAdmin(guildId, interaction.member)) {
     await interaction.reply({ content: '❌ Commande réservée aux administrateurs.', flags: MessageFlags.Ephemeral });
     return;
   }
 
-  const venteItems = configStore.get().VENTE_ITEMS;
+  const venteItems = configStore.get(guildId).VENTE_ITEMS;
   const lines: string[] = [];
   let total = 0;
   for (const item of venteItems) {
-    const qty = await db.getStock(item);
+    const qty = await db.getStock(guildId, item);
     total += qty;
     lines.push(`**${item}** : \`${qty.toLocaleString('fr-FR')}\``);
   }

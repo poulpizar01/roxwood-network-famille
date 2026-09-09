@@ -54,29 +54,29 @@ type PendingSale = Awaited<ReturnType<typeof db.getPendingSale>>;
 // ─── POINT D'ENTRÉE DEPUIS STOCKS ────────────────────────────────────────────
 
 /** Point d'entrée appelé par `stocks.handleMessage` pour chaque mouvement détecté : route vers création de vente en attente ou tentative de confirmation selon l'item et le sens du mouvement. */
-export async function onStockEntry(client: Client, entry: StockEntry): Promise<void> {
-  const c = configStore.get();
+export async function onStockEntry(client: Client, guildId: string, entry: StockEntry): Promise<void> {
+  const c = configStore.get(guildId);
   const itemLower = entry.item.toLowerCase();
   const venteItems = c.VENTE_ITEMS.map(i => i.toLowerCase());
 
   if (entry.action === 'retire' && venteItems.includes(itemLower)) {
-    await createPendingSale(client, entry);
+    await createPendingSale(client, guildId, entry);
     return;
   }
   if (entry.action === 'depose' && itemLower === CONFIRME_VENTE_ITEM.toLowerCase()) {
-    await tryConfirmMoneyDeposit(client, entry);
+    await tryConfirmMoneyDeposit(client, guildId, entry);
     return;
   }
   if (entry.action === 'depose' && venteItems.includes(itemLower)) {
-    await tryConfirmRedeposit(client, entry);
+    await tryConfirmRedeposit(client, guildId, entry);
   }
 }
 
 // ─── ALERTE JOUEUR NON MAPPÉ ──────────────────────────────────────────────────
 
 /** Alerte dans `admin` qu'un joueur sans compte Discord mappé est impliqué dans une vente (stats/quota non attribuables). */
-async function alertMissingMapping(client: Client, joueur: string, contexte: string): Promise<void> {
-  const channelId = configStore.get().CHANNELS.admin;
+async function alertMissingMapping(client: Client, guildId: string, joueur: string, contexte: string): Promise<void> {
+  const channelId = configStore.get(guildId).CHANNELS.admin;
   if (!channelId) return;
   const channel = await client.channels.fetch(channelId).catch(() => null);
   if (!channel?.isSendable()) return;
@@ -94,14 +94,14 @@ async function alertMissingMapping(client: Client, joueur: string, contexte: str
 // ─── CRÉER LA VENTE EN ATTENTE ET ENVOYER L'ALERTE ───────────────────────────
 
 /** Crée une vente en attente et poste l'alerte dans `ventes_drogue` — ou cumule sur une alerte déjà postée si un retrait du même item par le même joueur date de moins de {@link ACCUMULATION_WINDOW_MS}. */
-async function createPendingSale(client: Client, entry: StockEntry): Promise<void> {
-  const channelId = configStore.get().CHANNELS.ventes_drogue;
+async function createPendingSale(client: Client, guildId: string, entry: StockEntry): Promise<void> {
+  const channelId = configStore.get(guildId).CHANNELS.ventes_drogue;
   if (!channelId) return;
 
-  const existing = await db.getPendingSaleForAccumulation(entry.joueur, entry.item, Date.now() - ACCUMULATION_WINDOW_MS);
+  const existing = await db.getPendingSaleForAccumulation(guildId, entry.joueur, entry.item, Date.now() - ACCUMULATION_WINDOW_MS);
   if (existing) {
     const newQuantite = existing.quantite + entry.quantite;
-    await db.accumulatePendingSale(existing.id, newQuantite, Date.now());
+    await db.accumulatePendingSale(guildId, existing.id, newQuantite, Date.now());
     await editAccumulatedAlert(client, existing, newQuantite);
     return;
   }
@@ -112,17 +112,17 @@ async function createPendingSale(client: Client, entry: StockEntry): Promise<voi
   // Pas d'alerte "joueur non mappé" ici si `discordIds` est vide : c'est déjà
   // fait en amont par `stocks.handleMessage` pour tout mouvement de coffre,
   // avant même que ce module ne soit appelé.
-  const discordIds = await db.getUserMappings(entry.joueur);
+  const discordIds = await db.getUserMappings(guildId, entry.joueur);
   const discordId = discordIds.length === 1 ? discordIds[0] : null;
 
-  const saleId = await db.createPendingSale({ joueur: entry.joueur, discord_id: discordId, item: entry.item, quantite: entry.quantite, timestamp: Date.now() });
+  const saleId = await db.createPendingSale(guildId, { joueur: entry.joueur, discord_id: discordId, item: entry.item, quantite: entry.quantite, timestamp: Date.now() });
 
   const embed = buildAlertEmbed(entry, saleId, '🚨 Retrait de drogue détecté', 0xE67E22, discordId);
   const row = buildAlertButtons(saleId);
   const ping = discordIds.length > 0 ? discordIds.map(id => `<@${id}>`).join(' ') : `**${entry.joueur}**`;
 
   const sentMsg = await channel.send({ content: ping, embeds: [embed], components: [row] });
-  await db.updatePendingSaleMessage(saleId, sentMsg.id, sentMsg.channelId);
+  await db.updatePendingSaleMessage(guildId, saleId, sentMsg.id, sentMsg.channelId);
 }
 
 /** Embed d'alerte de vente : joueur, item, quantité — le footer `Vente #<id>` identifie la vente (voir `handleTrashReaction`). */
@@ -165,37 +165,37 @@ async function editAccumulatedAlert(client: Client, sale: NonNullable<PendingSal
 // ─── CONFIRMATION PAR DÉPÔT D'ARGENT ─────────────────────────────────────────
 
 /** Un dépôt d'un item de paiement confirme toutes les ventes déclarées en attente d'un joueur dans la fenêtre {@link WINDOW_MS}. */
-async function tryConfirmMoneyDeposit(client: Client, entry: StockEntry): Promise<void> {
-  const sales = await db.getPendingSalesForConfirmation(entry.joueur, Date.now() - WINDOW_MS);
+async function tryConfirmMoneyDeposit(client: Client, guildId: string, entry: StockEntry): Promise<void> {
+  const sales = await db.getPendingSalesForConfirmation(guildId, entry.joueur, Date.now() - WINDOW_MS);
   if (!sales.length) return;
 
   for (const sale of sales) {
-    await db.confirmPendingSale(sale.id);
+    await db.confirmPendingSale(guildId, sale.id);
     await editAlertMessage(client, sale, '✅ Vente confirmée — argent déposé', 0x57F287);
   }
-  await sendLogVente(client, sales, entry.quantite);
+  await sendLogVente(client, guildId, sales, entry.quantite);
 }
 
 // ─── CONFIRMATION PAR RETOUR DE DROGUE ───────────────────────────────────────
 
 /** Un dépôt de l'item de vente lui-même confirme un reposage déclaré, ou décrémente/annule une vente en attente pas encore déclarée (redépôt partiel ou total). */
-async function tryConfirmRedeposit(client: Client, entry: StockEntry): Promise<void> {
-  const saleRepose = await db.getPendingSaleRepose(entry.joueur, entry.item, Date.now() - WINDOW_MS);
+async function tryConfirmRedeposit(client: Client, guildId: string, entry: StockEntry): Promise<void> {
+  const saleRepose = await db.getPendingSaleRepose(guildId, entry.joueur, entry.item, Date.now() - WINDOW_MS);
   if (saleRepose) {
-    await db.confirmPendingSale(saleRepose.id);
+    await db.confirmPendingSale(guildId, saleRepose.id);
     await editAlertMessage(client, saleRepose, '✅ Drogue reposée et vérifiée', 0x57F287);
     return;
   }
 
-  const saleEnAttente = await db.getPendingSaleForAccumulation(entry.joueur, entry.item, Date.now() - WINDOW_MS);
+  const saleEnAttente = await db.getPendingSaleForAccumulation(guildId, entry.joueur, entry.item, Date.now() - WINDOW_MS);
   if (!saleEnAttente) return;
 
   const nouvelleQuantite = saleEnAttente.quantite - entry.quantite;
   if (nouvelleQuantite <= 0) {
-    await db.updatePendingSaleStatut(saleEnAttente.id, 'ignore');
+    await db.updatePendingSaleStatut(guildId, saleEnAttente.id, 'ignore');
     await editAlertMessage(client, saleEnAttente, '📦 Drogue intégralement reposée — vente annulée', 0x95A5A6);
   } else {
-    await db.accumulatePendingSale(saleEnAttente.id, nouvelleQuantite, Date.now());
+    await db.accumulatePendingSale(guildId, saleEnAttente.id, nouvelleQuantite, Date.now());
     await editAccumulatedAlert(client, saleEnAttente, nouvelleQuantite);
   }
 }
@@ -203,8 +203,8 @@ async function tryConfirmRedeposit(client: Client, entry: StockEntry): Promise<v
 // ─── LOG FINAL DANS log_ventes ────────────────────────────────────────────────
 
 /** Poste le log final dans `log_ventes` pour une ou plusieurs ventes confirmées ensemble, puis met à jour stats/quota (ou alerte si le joueur n'est pas mappé). */
-async function sendLogVente(client: Client, sales: Array<NonNullable<PendingSale>>, montantDepose: number): Promise<void> {
-  const channelId = configStore.get().CHANNELS.log_ventes;
+async function sendLogVente(client: Client, guildId: string, sales: Array<NonNullable<PendingSale>>, montantDepose: number): Promise<void> {
+  const channelId = configStore.get(guildId).CHANNELS.log_ventes;
   if (!channelId) return;
   const channel = await client.channels.fetch(channelId).catch(() => null);
   if (!channel?.isSendable()) return;
@@ -227,14 +227,14 @@ async function sendLogVente(client: Client, sales: Array<NonNullable<PendingSale
 
   for (const sale of sales) {
     if (sale.discordId) {
-      await db.addTransaction({ user_id: sale.discordId, username: sale.joueur, action: 'vente', quantite: sale.quantite, type: sale.item, timestamp: Date.now() });
-      await db.incrementStat(sale.discordId, 'vente', sale.quantite, 0);
+      await db.addTransaction(guildId, { user_id: sale.discordId, username: sale.joueur, action: 'vente', quantite: sale.quantite, type: sale.item, timestamp: Date.now() });
+      await db.incrementStat(guildId, sale.discordId, 'vente', sale.quantite, 0);
     } else {
-      await alertMissingMapping(client, sale.joueur, `Vente confirmée — quota de ${sale.quantite.toLocaleString('fr-FR')} × ${sale.item} non attribué`);
+      await alertMissingMapping(client, guildId, sale.joueur, `Vente confirmée — quota de ${sale.quantite.toLocaleString('fr-FR')} × ${sale.item} non attribué`);
     }
   }
-  await quotas.initPermanentMessage(client);
-  await quotas.syncQuotaReminder(client);
+  await quotas.initPermanentMessage(client, guildId);
+  await quotas.syncQuotaReminder(client, guildId);
 }
 
 // ─── RÉACTION 🗑️ → IGNORER LA VENTE ──────────────────────────────────────────
@@ -242,17 +242,20 @@ async function sendLogVente(client: Client, sales: Array<NonNullable<PendingSale
 /** Réaction 🗑️ sur une alerte de vente (identifiée par le footer `Vente #<id>`) : marque la vente ignorée si l'auteur est admin ou le joueur concerné. @returns `true` si la réaction concernait bien une alerte de vente (gérée ou rejetée), `false` sinon (laisse `index.ts` traiter la réaction normalement). */
 export async function handleTrashReaction(reaction: MessageReaction | PartialMessageReaction, user: User | PartialUser): Promise<boolean> {
   const msg = reaction.message;
+  const guildId = msg.guildId;
+  if (!guildId) return false;
+
   const footer = msg.embeds?.[0]?.footer?.text;
   if (!footer?.startsWith('Vente #')) return false;
 
   const saleId = parseInt(footer.replace('Vente #', ''), 10);
   if (isNaN(saleId)) return false;
 
-  const sale = await db.getPendingSale(saleId);
+  const sale = await db.getPendingSale(guildId, saleId);
   if (!sale || sale.statut !== 'en_attente') return false;
 
   const member = await msg.guild?.members.fetch(user.id).catch(() => null);
-  const admin = isAdmin(member ?? null);
+  const admin = isAdmin(guildId, member ?? null);
   const isOwner = !!(sale.discordId && sale.discordId === user.id);
 
   if (!admin && !isOwner) {
@@ -260,7 +263,7 @@ export async function handleTrashReaction(reaction: MessageReaction | PartialMes
     return true;
   }
 
-  await db.updatePendingSaleStatut(saleId, 'ignore');
+  await db.updatePendingSaleStatut(guildId, saleId, 'ignore');
   const embed = EmbedBuilder.from(msg.embeds[0]).setTitle('🗑️ Vente ignorée').setColor(0x95A5A6);
   await msg.edit({ embeds: [embed], components: [] }).catch(() => null);
   return true;
@@ -284,19 +287,19 @@ async function editAlertMessage(client: Client, sale: NonNullable<PendingSale>, 
 // ─── AUTORISATION D'INTERACTION ───────────────────────────────────────────────
 
 /** Vrai si l'auteur de l'interaction est mappé au joueur de la vente (et backfill `discordId` si absent), ou admin ; répond sinon avec un refus. */
-async function authorizeSaleInteraction(interaction: ButtonInteraction, sale: NonNullable<PendingSale>): Promise<boolean> {
-  const mappedIds = await db.getUserMappings(sale.joueur);
+async function authorizeSaleInteraction(interaction: ButtonInteraction, guildId: string, sale: NonNullable<PendingSale>): Promise<boolean> {
+  const mappedIds = await db.getUserMappings(guildId, sale.joueur);
 
   if (mappedIds.includes(interaction.user.id)) {
     if (sale.discordId !== interaction.user.id) {
-      await db.updatePendingSaleDiscordId(sale.id, interaction.user.id);
+      await db.updatePendingSaleDiscordId(guildId, sale.id, interaction.user.id);
       sale.discordId = interaction.user.id;
     }
     return true;
   }
 
   const member = await interaction.guild?.members.fetch(interaction.user.id).catch(() => null);
-  if (isAdmin(member ?? null)) return true;
+  if (isAdmin(guildId, member ?? null)) return true;
 
   await interaction.reply({
     content: `❌ Vous n'êtes pas identifié comme **${sale.joueur}**, vous ne pouvez pas interagir avec cette vente.`,
@@ -310,16 +313,17 @@ async function authorizeSaleInteraction(interaction: ButtonInteraction, sale: No
 /** Route les clics de bouton d'une alerte de vente (`vente_*`) : déclarer, reposer, modifier la quantité. */
 export async function handleButton(interaction: ButtonInteraction): Promise<void> {
   const id = interaction.customId;
+  const guildId = interaction.guildId!;
 
   if (id.startsWith('vente_declarer_')) {
     const saleId = parseInt(id.replace('vente_declarer_', ''), 10);
-    const sale = await db.getPendingSale(saleId);
+    const sale = await db.getPendingSale(guildId, saleId);
     if (!sale || sale.statut !== 'en_attente') {
       await interaction.reply({ content: "❌ Cette vente n'est plus en attente.", flags: MessageFlags.Ephemeral });
       return;
     }
-    if (!(await authorizeSaleInteraction(interaction, sale))) return;
-    await db.updatePendingSaleStatut(saleId, 'declare');
+    if (!(await authorizeSaleInteraction(interaction, guildId, sale))) return;
+    await db.updatePendingSaleStatut(guildId, saleId, 'declare');
     const embed = EmbedBuilder.from(interaction.message.embeds[0]).setTitle("💰 Vente déclarée — en attente du dépôt d'argent").setColor(0xFEE75C);
     await interaction.update({ embeds: [embed], components: [] });
     return;
@@ -327,13 +331,13 @@ export async function handleButton(interaction: ButtonInteraction): Promise<void
 
   if (id.startsWith('vente_reposer_')) {
     const saleId = parseInt(id.replace('vente_reposer_', ''), 10);
-    const sale = await db.getPendingSale(saleId);
+    const sale = await db.getPendingSale(guildId, saleId);
     if (!sale || sale.statut !== 'en_attente') {
       await interaction.reply({ content: "❌ Cette vente n'est plus en attente.", flags: MessageFlags.Ephemeral });
       return;
     }
-    if (!(await authorizeSaleInteraction(interaction, sale))) return;
-    await db.updatePendingSaleStatut(saleId, 'repose');
+    if (!(await authorizeSaleInteraction(interaction, guildId, sale))) return;
+    await db.updatePendingSaleStatut(guildId, saleId, 'repose');
     const embed = EmbedBuilder.from(interaction.message.embeds[0]).setTitle('📦 Drogue reposée — en attente de vérification').setColor(0x5865F2);
     await interaction.update({ embeds: [embed], components: [] });
     return;
@@ -341,12 +345,12 @@ export async function handleButton(interaction: ButtonInteraction): Promise<void
 
   if (id.startsWith('vente_modifier_')) {
     const saleId = parseInt(id.replace('vente_modifier_', ''), 10);
-    const sale = await db.getPendingSale(saleId);
+    const sale = await db.getPendingSale(guildId, saleId);
     if (!sale || sale.statut !== 'en_attente') {
       await interaction.reply({ content: "❌ Cette vente n'est plus en attente.", flags: MessageFlags.Ephemeral });
       return;
     }
-    if (!(await authorizeSaleInteraction(interaction, sale))) return;
+    if (!(await authorizeSaleInteraction(interaction, guildId, sale))) return;
     await interaction.showModal(
       new ModalBuilder()
         .setCustomId(`modal_vente_modifier_${saleId}`)
@@ -364,10 +368,11 @@ export async function handleButton(interaction: ButtonInteraction): Promise<void
 /** Traite la soumission du modal de correction de quantité (`modal_vente_modifier_<id>`). */
 export async function handleModal(interaction: ModalSubmitInteraction): Promise<void> {
   const id = interaction.customId;
+  const guildId = interaction.guildId!;
 
   if (id.startsWith('modal_vente_modifier_')) {
     const saleId = parseInt(id.replace('modal_vente_modifier_', ''), 10);
-    const sale = await db.getPendingSale(saleId);
+    const sale = await db.getPendingSale(guildId, saleId);
     const raw = interaction.fields.getTextInputValue('quantite').replace(/[\s ]/g, '');
     const quantite = parseInt(raw, 10);
 
@@ -375,7 +380,7 @@ export async function handleModal(interaction: ModalSubmitInteraction): Promise<
     if (isNaN(quantite) || quantite <= 0) { await interaction.reply({ content: '❌ Quantité invalide.', flags: MessageFlags.Ephemeral }); return; }
 
     const ancienneQuantite = sale.quantite;
-    await db.updatePendingSaleQuantite(saleId, quantite);
+    await db.updatePendingSaleQuantite(guildId, saleId, quantite);
 
     try {
       const channel = sale.channelId ? await interaction.client.channels.fetch(sale.channelId).catch(() => null) : null;
@@ -396,10 +401,10 @@ export async function handleModal(interaction: ModalSubmitInteraction): Promise<
 // ─── NETTOYAGE DES VENTES EXPIRÉES (cron) ────────────────────────────────────
 
 /** Cron (toutes les 10 min) : marque expirées les ventes sans action depuis plus de {@link WINDOW_MS}. */
-export async function cleanupExpiredSales(client: Client): Promise<void> {
-  const expired = await db.getExpiredPendingSales(Date.now() - WINDOW_MS);
+export async function cleanupExpiredSales(client: Client, guildId: string): Promise<void> {
+  const expired = await db.getExpiredPendingSales(guildId, Date.now() - WINDOW_MS);
   for (const sale of expired) {
-    await db.updatePendingSaleStatut(sale.id, 'expire');
+    await db.updatePendingSaleStatut(guildId, sale.id, 'expire');
     await editAlertMessage(client, sale, '⏰ Vente expirée — aucune action', 0x95A5A6);
   }
 }
@@ -407,13 +412,13 @@ export async function cleanupExpiredSales(client: Client): Promise<void> {
 /** Fenêtre de rétention des ventes terminées avant purge — pur debris opérationnel passé ce délai, voir `deleteOldPendingSales` dans db.ts. */
 const PENDING_SALE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
-/** Cron quotidien : purge les ventes terminées (confirmée/reposée/ignorée/expirée) de plus de 30 jours. */
-export async function purgeOldPendingSales(): Promise<void> {
+/** Cron quotidien : purge les ventes terminées (confirmée/reposée/ignorée/expirée) de plus de 30 jours, pour une guilde. */
+export async function purgeOldPendingSales(guildId: string): Promise<void> {
   try {
-    const count = await db.deleteOldPendingSales(Date.now() - PENDING_SALE_RETENTION_MS);
-    if (count > 0) console.log(`[ventes] Purge : ${count} vente(s) en attente terminée(s) de plus de 30 jours supprimée(s).`);
+    const count = await db.deleteOldPendingSales(guildId, Date.now() - PENDING_SALE_RETENTION_MS);
+    if (count > 0) console.log(`[ventes] Purge (${guildId}) : ${count} vente(s) en attente terminée(s) de plus de 30 jours supprimée(s).`);
   } catch (err) {
-    console.error('[ventes] purgeOldPendingSales:', (err as Error).message);
+    console.error(`[ventes] purgeOldPendingSales(${guildId}):`, (err as Error).message);
   }
 }
 
@@ -444,24 +449,26 @@ export function getCommands() {
 
 /** `/adduser` (admin) : associe un nom en jeu à un membre Discord. */
 export async function handleAddUserCommand(interaction: ChatInputCommandInteraction): Promise<void> {
-  if (!isAdmin(interaction.member)) { await interaction.reply({ content: '❌ Commande réservée aux administrateurs.', flags: MessageFlags.Ephemeral }); return; }
+  const guildId = interaction.guildId!;
+  if (!isAdmin(guildId, interaction.member)) { await interaction.reply({ content: '❌ Commande réservée aux administrateurs.', flags: MessageFlags.Ephemeral }); return; }
   const nomJeu = interaction.options.getString('nom_jeu', true).trim();
   const membre = interaction.options.getUser('membre', true);
-  const existing = await db.getUserMappings(nomJeu);
+  const existing = await db.getUserMappings(guildId, nomJeu);
   if (existing.includes(membre.id)) {
     await interaction.reply({ content: `⚠️ **${nomJeu}** est déjà associé à <@${membre.id}>.`, flags: MessageFlags.Ephemeral });
     return;
   }
-  await db.setUserMapping(nomJeu, membre.id);
+  await db.setUserMapping(guildId, nomJeu, membre.id);
   await interaction.reply({ content: `✅ **${nomJeu}** associé à <@${membre.id}>.`, flags: MessageFlags.Ephemeral });
 }
 
 /** `/removeuser` (admin) : dissocie un nom en jeu d'un membre Discord (ou de tous les comptes associés si aucun membre n'est précisé et qu'il n'y en a qu'un). */
 export async function handleRemoveUserCommand(interaction: ChatInputCommandInteraction): Promise<void> {
-  if (!isAdmin(interaction.member)) { await interaction.reply({ content: '❌ Commande réservée aux administrateurs.', flags: MessageFlags.Ephemeral }); return; }
+  const guildId = interaction.guildId!;
+  if (!isAdmin(guildId, interaction.member)) { await interaction.reply({ content: '❌ Commande réservée aux administrateurs.', flags: MessageFlags.Ephemeral }); return; }
   const nomJeu = interaction.options.getString('nom_jeu', true).trim();
   const membre = interaction.options.getUser('membre');
-  const existing = await db.getUserMappings(nomJeu);
+  const existing = await db.getUserMappings(guildId, nomJeu);
 
   if (existing.length === 0) {
     await interaction.reply({ content: `❌ Aucune association trouvée pour **${nomJeu}**.`, flags: MessageFlags.Ephemeral });
@@ -473,15 +480,16 @@ export async function handleRemoveUserCommand(interaction: ChatInputCommandInter
     return;
   }
   const targetId = membre ? membre.id : null;
-  await db.deleteUserMapping(nomJeu, targetId);
+  await db.deleteUserMapping(guildId, nomJeu, targetId);
   const who = membre ? `<@${membre.id}>` : 'tous les comptes';
   await interaction.reply({ content: `✅ Association **${nomJeu}** → ${who} supprimée.`, flags: MessageFlags.Ephemeral });
 }
 
 /** `/listusers` (admin) : liste toutes les associations nom en jeu ↔ Discord. */
 export async function handleListUsersCommand(interaction: ChatInputCommandInteraction): Promise<void> {
-  if (!isAdmin(interaction.member)) { await interaction.reply({ content: '❌ Commande réservée aux administrateurs.', flags: MessageFlags.Ephemeral }); return; }
-  const mappings = await db.getAllUserMappings();
+  const guildId = interaction.guildId!;
+  if (!isAdmin(guildId, interaction.member)) { await interaction.reply({ content: '❌ Commande réservée aux administrateurs.', flags: MessageFlags.Ephemeral }); return; }
+  const mappings = await db.getAllUserMappings(guildId);
   if (!mappings.length) {
     await interaction.reply({ content: '❌ Aucune association enregistrée.', flags: MessageFlags.Ephemeral });
     return;
