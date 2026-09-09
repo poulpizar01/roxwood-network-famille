@@ -38,12 +38,11 @@ model Guild {
   @@map("guilds")
 }
 
-// Migration multi-tenant en 2 temps (voir plan) : `guildId` est ajouté ici
-// NULLABLE sur chaque table métier (étape 1 — additif, sans risque, backfillé
-// via scripts/backfill-guild-id.ts) ; une seconde migration le rendra NOT
-// NULL et reconstruira les clés primaires/uniques autour de lui (étape 2,
-// appliquée seulement une fois src/db.ts et les appelants migrés). Ne pas
-// utiliser cette colonne avant la fin de la migration complète.
+// `guildId` scope chaque table métier à une guilde (multi-tenant — un seul
+// déploiement sert plusieurs guildes Discord, données totalement étanches).
+// Fait partie de chaque clé primaire/unique composite ci-dessous : jamais de
+// requête sur ces tables sans le filtrer, voir src/db.ts (chaque fonction
+// exportée prend un `guildId` en premier paramètre).
 
 // ═══ CONFIGURATION (pilotée par /config, lue par src/config-store.ts) ═══
 
@@ -54,10 +53,11 @@ model Guild {
 /// `logs_coffres` peut désigner plusieurs salons à la fois, ce qu'une simple
 /// paire clé/valeur ne représente pas proprement.
 model Setting {
-  guildId String? @map("guild_id")
-  key     String  @id
+  guildId String @map("guild_id")
+  key     String
   value   String
 
+  @@id([guildId, key])
   @@map("settings")
 }
 
@@ -67,21 +67,22 @@ model Setting {
 /// mais `logs_coffres` peut en avoir plusieurs (tous les salons de logs de
 /// coffre surveillés) — même table, pas de cas spécial.
 model Channel {
-  guildId   String? @map("guild_id")
+  guildId   String @map("guild_id")
   role      String
-  channelId String  @map("channel_id")
+  channelId String @map("channel_id")
 
-  @@id([role, channelId])
+  @@id([guildId, role, channelId])
   @@map("channels")
 }
 
 /// Association usage du bot → rôle Discord ('admin' : commandes sensibles ;
 /// 'taxes' : accès back-office taxes), pilotée par `/config role`.
 model DiscordRole {
-  guildId String? @map("guild_id")
-  target  String  @id
-  roleId  String  @map("role_id")
+  guildId String @map("guild_id")
+  target  String
+  roleId  String @map("role_id")
 
+  @@id([guildId, target])
   @@map("discord_roles")
 }
 
@@ -104,24 +105,26 @@ model DiscordRole {
 /// PNJ à ce tier — vente_pnj reste sinon tel que configuré ici. `null` pour
 /// un item sans lien avec un labo (jamais exclu).
 model Item {
-  guildId      String? @map("guild_id")
-  name         String  @id
+  guildId      String  @map("guild_id")
+  name         String
   stockGroup   String? @map("stock_group")
   vente        Boolean @default(false)
   displayOrder Int     @default(0) @map("display_order")
   visibleStock Boolean @default(true) @map("visible_stock")
   laboLie      String? @map("labo_lie")
 
+  @@id([guildId, name])
   @@map("items")
 }
 
 /// Objectif hebdomadaire par catégorie de quota. Une catégorie sans ligne
 /// ici est suivie mais sans objectif affiché/alerté.
 model QuotaTarget {
-  guildId      String? @map("guild_id")
-  quotaType    String  @id @map("quota_type")
-  weeklyTarget Int     @map("weekly_target")
+  guildId      String @map("guild_id")
+  quotaType    String @map("quota_type")
+  weeklyTarget Int    @map("weekly_target")
 
+  @@id([guildId, quotaType])
   @@map("quota_targets")
 }
 
@@ -130,10 +133,11 @@ model QuotaTarget {
 /// src/modules/quotas.ts. Indépendant de QuotaTarget : une catégorie peut
 /// avoir un objectif sans taux de paie, un taux sans objectif, ou les deux.
 model SalaryRate {
-  guildId   String? @map("guild_id")
-  quotaType String  @id @map("quota_type")
+  guildId   String @map("guild_id")
+  quotaType String @map("quota_type")
   amount    Float
 
+  @@id([guildId, quotaType])
   @@map("salary_rates")
 }
 
@@ -144,10 +148,11 @@ model SalaryRate {
 /// CoffreStock} pour le détail par coffre (salon de log), suivi séparément
 /// depuis la mise en place de l'API (voir README, section Interopérabilité).
 model Stock {
-  guildId  String? @map("guild_id")
-  item     String  @id
-  quantite Int     @default(0)
+  guildId  String @map("guild_id")
+  item     String
+  quantite Int    @default(0)
 
+  @@id([guildId, item])
   @@map("stocks")
 }
 
@@ -157,17 +162,17 @@ model Stock {
 /// aux côtés de `applyStockDelta`). Vidé et reconstruit lors d'un `/sync-stock`
 /// complet, comme `Stock`.
 model CoffreStock {
-  guildId   String? @map("guild_id")
-  channelId String  @map("channel_id")
+  guildId   String @map("guild_id")
+  channelId String @map("channel_id")
   item      String
-  quantite  Int     @default(0)
+  quantite  Int    @default(0)
 
-  @@id([channelId, item])
+  @@id([guildId, channelId, item])
   @@map("coffre_stocks")
 }
 
 model StockHistory {
-  guildId    String?  @map("guild_id")
+  guildId    String   @map("guild_id")
   id         Int      @id @default(autoincrement())
   timestamp  DateTime @default(now())
   joueur     String
@@ -180,12 +185,12 @@ model StockHistory {
   /// enregistrées avant l'ajout de ce suivi par coffre (jamais backfillé).
   channelId  String?  @map("channel_id")
 
-  @@index([item])
+  @@index([guildId, item])
   @@map("stock_history")
 }
 
 model Transaction {
-  guildId      String?  @map("guild_id")
+  guildId      String   @map("guild_id")
   id           Int      @id @default(autoincrement())
   userId       String   @map("user_id")
   username     String   @default("")
@@ -198,47 +203,47 @@ model Transaction {
   deleted      Boolean  @default(false)
   deletedBy    String?  @map("deleted_by")
 
-  @@index([action])
-  @@index([timestamp])
+  @@index([guildId, action])
+  @@index([guildId, timestamp])
   @@map("transactions")
 }
 
 model Stat {
-  guildId String? @map("guild_id")
-  userId  String  @map("user_id")
+  guildId String @map("guild_id")
+  userId  String @map("user_id")
   action  String
-  count   Float   @default(0)
-  points  Float   @default(0)
+  count   Float  @default(0)
+  points  Float  @default(0)
 
-  @@id([userId, action])
+  @@id([guildId, userId, action])
   @@map("stats")
 }
 
 model Cooldown {
-  guildId   String?  @map("guild_id")
+  guildId   String   @map("guild_id")
   userId    String   @map("user_id")
   action    String
   expiresAt DateTime @map("expires_at")
   notified  Boolean  @default(false)
 
-  @@id([userId, action])
+  @@id([guildId, userId, action])
   @@map("cooldowns")
 }
 
 /// Fenêtre glissante de 7 jours sur les actions de braquage.
 model Braquage {
-  guildId   String?  @map("guild_id")
+  guildId   String   @map("guild_id")
   id        Int      @id @default(autoincrement())
   userId    String   @map("user_id")
   action    String
   timestamp DateTime @default(now())
 
-  @@index([action, timestamp])
+  @@index([guildId, action, timestamp])
   @@map("braquages")
 }
 
 model Taxe {
-  guildId    String?  @map("guild_id")
+  guildId    String   @map("guild_id")
   id         Int      @id @default(autoincrement())
   nom        String
   /// Type fixe ('sporex', 'heroine', 'vente', 'fertilisant') OU, pour une
@@ -253,32 +258,34 @@ model Taxe {
   alerteSent Boolean  @default(false) @map("alerte_sent")
   paye       Boolean  @default(true)
 
+  @@index([guildId, actif])
   @@map("taxes")
 }
 
 model Arme {
-  guildId   String? @map("guild_id")
+  guildId   String  @map("guild_id")
   id        Int     @id @default(autoincrement())
   nom       String
-  reference String  @unique
+  reference String
   statut    String  @default("en_stock")
   preteeA   String? @map("pretee_a")
   type      String?
 
+  @@unique([guildId, reference])
   @@map("armurerie")
 }
 
 model UserMapping {
-  guildId   String? @map("guild_id")
-  gameName  String  @map("game_name")
-  discordId String  @map("discord_id")
+  guildId   String @map("guild_id")
+  gameName  String @map("game_name")
+  discordId String @map("discord_id")
 
-  @@id([gameName, discordId])
+  @@id([guildId, gameName, discordId])
   @@map("user_mapping")
 }
 
 model PendingSale {
-  guildId    String?  @map("guild_id")
+  guildId    String   @map("guild_id")
   id         Int      @id @default(autoincrement())
   joueur     String
   discordId  String?  @map("discord_id")
@@ -292,6 +299,7 @@ model PendingSale {
   channelId  String?  @map("channel_id")
   confirmed  Boolean  @default(false)
 
+  @@index([guildId, statut])
   @@map("pending_sales")
 }
 
@@ -299,20 +307,21 @@ model PendingSale {
 /// de la fourrière. Un rangement propre efface le responsable (discordId/
 /// joueur = null). Alimenté par modules/garages.ts depuis logs_garages.
 model Vehicule {
-  guildId   String?  @map("guild_id")
-  plaque    String   @id
+  guildId   String   @map("guild_id")
+  plaque    String
   modele    String?
   discordId String?  @map("discord_id")
   joueur    String?
   timestamp DateTime @default(now())
 
+  @@id([guildId, plaque])
   @@map("vehicules")
 }
 
 /// Historique des mises en fourrière facturées, imputées au dernier
 /// responsable connu du véhicule.
 model Fourriere {
-  guildId   String?  @map("guild_id")
+  guildId   String   @map("guild_id")
   id        Int      @id @default(autoincrement())
   discordId String?  @map("discord_id")
   joueur    String
@@ -320,12 +329,13 @@ model Fourriere {
   modele    String?
   timestamp DateTime @default(now())
 
+  @@index([guildId, timestamp])
   @@map("fourrieres")
 }
 
 /// Déclarations de vente de munitions (suivi indicatif — modules/armurerie.ts).
 model MunitionVente {
-  guildId         String?  @map("guild_id")
+  guildId         String   @map("guild_id")
   id              Int      @id @default(autoincrement())
   timestamp       DateTime @default(now())
   vendeurId       String   @map("vendeur_id")
@@ -334,5 +344,6 @@ model MunitionVente {
   quantite        Int
   prix            Float
 
+  @@index([guildId, timestamp])
   @@map("munitions_ventes")
 }
