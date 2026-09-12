@@ -293,7 +293,7 @@ client.on('messageCreate', async (message) => {
     if (!message.components?.length) message.react('🗑️').catch(() => null);
   }
 
-  const channelsBotAutorises = [...c.CHANNELS.logs_coffres, c.CHANNELS.logs_garages].filter((id): id is string => !!id);
+  const channelsBotAutorises = [...c.CHANNELS.logs_coffres, ...c.CHANNELS.logs_coffres_admin, c.CHANNELS.logs_garages].filter((id): id is string => !!id);
   if (message.author.bot && !channelsBotAutorises.includes(message.channelId)) return;
 
   await stocks.handleMessage(message).catch(err => console.error('[stocks] messageCreate :', (err as Error).message));

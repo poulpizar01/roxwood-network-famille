@@ -38,7 +38,7 @@ import * as db from './db';
  * assignable à n'importe quel salon Discord via `/config channel set`).
  */
 export const CHANNEL_ROLES = [
-  'coffre_admin', 'stock_general', 'logs_activites', 'alertes_braquages',
+  'stock_general', 'logs_activites', 'alertes_braquages',
   'alertes_actions', 'bilan', 'paie', 'armurerie', 'quotas', 'taxes',
   'alertes_taxes', 'historique_stock', 'ventes_drogue', 'log_ventes',
   'admin', 'logs_garages', 'labo_heroine', 'labo_sporex',
@@ -163,7 +163,8 @@ export interface ItemConfig {
 }
 
 export interface BotConfig {
-  CHANNELS: Record<ChannelRole, string | null> & { logs_coffres: string[] };
+  /** `logs_coffres`/`logs_coffres_admin` sont des listes (plusieurs salons possibles chacune, voir `/config channel add-log-coffre`/`add-log-coffre-admin`) — les deux sont surveillées de la même façon par `stocks.ts`, `logs_coffres_admin` obtenant en plus le badge 🛡️ dans `historique_stock` (voir `logStockToChannel`). */
+  CHANNELS: Record<ChannelRole, string | null> & { logs_coffres: string[]; logs_coffres_admin: string[] };
   ALLOWED_ITEMS: string[];
   ITEMS_BY_NAME: Record<string, ItemConfig>;
   STOCK_GROUPS: Record<string, string[]>;
@@ -191,11 +192,11 @@ const cache = new Map<string, BotConfig>();
  */
 export async function reload(guildId: string): Promise<BotConfig> {
   const channelRows = await db.getAllChannels(guildId);
-  const CHANNELS = { logs_coffres: [] as string[] } as BotConfig['CHANNELS'];
+  const CHANNELS = { logs_coffres: [] as string[], logs_coffres_admin: [] as string[] } as BotConfig['CHANNELS'];
   for (const role of CHANNEL_ROLES) CHANNELS[role] = null;
   for (const { role, channelId } of channelRows) {
-    if (role === 'logs_coffres') {
-      CHANNELS.logs_coffres.push(channelId);
+    if (role === 'logs_coffres' || role === 'logs_coffres_admin') {
+      CHANNELS[role].push(channelId);
     } else if ((CHANNEL_ROLES as readonly string[]).includes(role)) {
       CHANNELS[role as ChannelRole] = channelId;
     }

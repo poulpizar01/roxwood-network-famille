@@ -63,9 +63,10 @@ model Setting {
 
 /// Association rôle fonctionnel du bot → salon(s) Discord, pilotée par
 /// `/config channel`. Une ligne par salon assigné à un rôle : la plupart des
-/// rôles (stock_general, quotas, armurerie...) n'ont qu'une seule ligne,
-/// mais `logs_coffres` peut en avoir plusieurs (tous les salons de logs de
-/// coffre surveillés) — même table, pas de cas spécial.
+/// rôles (stock_general, quotas, armurerie...) n'ont qu'une seule ligne, mais
+/// `logs_coffres`/`logs_coffres_admin` peuvent chacun en avoir plusieurs
+/// (tous les salons de logs de coffre surveillés) — même table, pas de cas
+/// spécial.
 model Channel {
   guildId   String @map("guild_id")
   role      String

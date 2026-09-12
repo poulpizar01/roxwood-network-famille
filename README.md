@@ -203,13 +203,14 @@ Valeurs acceptées : les types fixes (`sporex`, `heroine`, `vente`, `fertilisant
 Contrairement à un `config.js` à éditer, **toute la configuration métier vit en base et se pilote avec la commande `/config`**, réservée aux administrateurs Discord natifs (permission `Administrator` — volontairement indépendante du rôle admin configurable, pour éviter un problème d'œuf-et-poule sur un serveur tout juste configuré).
 
 ### `/config channel`
-Associe un salon Discord à un rôle fonctionnel du bot (`stock_general`, `quotas`, `armurerie`, `taxes`, `admin`, …) ou gère la liste des salons de logs de coffre surveillés. `set` crée/rafraîchit immédiatement le panneau concerné (stock, armurerie, quotas, taxes) plutôt que d'attendre un événement indirect — pas besoin de redémarrer le bot après coup.
+Associe un salon Discord à un rôle fonctionnel du bot (`stock_general`, `quotas`, `armurerie`, `taxes`, `admin`, …) ou gère les listes de salons de logs de coffre surveillés — `logs_coffres` (coffres normaux) et `logs_coffres_admin` (coffres admin de l'organisation, marqués 🛡️ dans `historique_stock` ; plusieurs salons possibles pour l'un comme pour l'autre). `set` crée/rafraîchit immédiatement le panneau concerné (stock, armurerie, quotas, taxes) plutôt que d'attendre un événement indirect — pas besoin de redémarrer le bot après coup.
 - `/config channel set <role> <#salon>`
 - `/config channel add-log-coffre <#salon>` / `remove-log-coffre`
+- `/config channel add-log-coffre-admin <#salon>` / `remove-log-coffre-admin`
 - `/config channel list`
 
 ### `/config category` — création automatique des salons
-`/config category set <catégorie>` crée en une fois, dans la catégorie Discord donnée, un salon pour chaque rôle fonctionnel pas encore configuré (nom par défaut dérivé du rôle, ex. `stock`, `armurerie`, `alertes-braquages`), les associe automatiquement, puis rafraîchit les panneaux comme `channel set`. Exclut volontairement les salons alimentés par le bot de jeu FiveM (`coffre_admin`, `logs_garages`, et les logs de coffre gérés séparément via `add-log-coffre`) : ceux-là doivent pointer vers un salon de logs déjà existant, jamais un salon vide fraîchement créé. Un rôle déjà configuré n'est jamais recréé — ré-exécutable sans risque de doublons.
+`/config category set <catégorie>` crée en une fois, dans la catégorie Discord donnée, un salon pour chaque rôle fonctionnel pas encore configuré (nom par défaut dérivé du rôle, ex. `stock`, `armurerie`, `alertes-braquages`), les associe automatiquement, puis rafraîchit les panneaux comme `channel set`. Exclut volontairement les salons alimentés par le bot de jeu FiveM (`logs_garages`, et les logs de coffre gérés séparément via `add-log-coffre`/`add-log-coffre-admin`) : ceux-là doivent pointer vers un salon de logs déjà existant, jamais un salon vide fraîchement créé. Un rôle déjà configuré n'est jamais recréé — ré-exécutable sans risque de doublons.
 
 ### `/config role`
 Associe un rôle Discord à un usage (`admin` : commandes sensibles ; `taxes` : accès back-office taxes).

@@ -33,10 +33,10 @@ router.get('/history', async (req, res) => {
 
 /**
  * GET /api/stocks/:channelId — quantité actuelle de chaque item pour UN
- * coffre précis (un salon `logs_coffres` — voir `/config channel list` côté
- * Discord pour les identifiants). Liste vide (pas d'erreur) si ce salon n'a
- * encore aucun mouvement enregistré. Toujours en dernier : route la plus
- * générique du groupe.
+ * coffre précis (un salon `logs_coffres` ou `logs_coffres_admin` — voir
+ * `/config channel list` côté Discord pour les identifiants). Liste vide
+ * (pas d'erreur) si ce salon n'a encore aucun mouvement enregistré. Toujours
+ * en dernier : route la plus générique du groupe.
  */
 router.get('/:channelId', async (req, res) => {
   res.json(await db.getCoffreStocks(req.apiUser!.guildId, req.params.channelId));

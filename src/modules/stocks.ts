@@ -2,9 +2,10 @@
  * @file src/modules/stocks.ts
  * @description Surveillance et gestion des stocks d'items du serveur FiveM.
  *
- * Écoute les salons `logs_coffres` (configurables via `/config channel
- * add-log-coffre`) dans lesquels le bot de jeu FiveM poste automatiquement
- * les opérations de coffre : "Joueur a retiré 50x Cannabis".
+ * Écoute les salons `logs_coffres`/`logs_coffres_admin` (configurables via
+ * `/config channel add-log-coffre`/`add-log-coffre-admin`) dans lesquels le
+ * bot de jeu FiveM poste automatiquement les opérations de coffre : "Joueur
+ * a retiré 50x Cannabis".
  *
  * La liste des items suivis, leurs regroupements d'affichage (STOCK_GROUPS)
  * et leur éligibilité à la vente ne sont plus codés en dur : ils viennent de
@@ -59,10 +60,16 @@ async function alertJoueurNonMappe(client: Client, guildId: string, entry: Stock
   await channel.send({ embeds: [embed] }).catch(() => null);
 }
 
-/** Point d'entrée temps réel : traite un nouveau message posté dans un salon `logs_coffres` suivi. */
+/** Salons `logs_coffres`/`logs_coffres_admin` surveillés — les deux listes sont traitées de façon identique ici, `logs_coffres_admin` obtenant en plus le badge 🛡️ (voir `logStockToChannel`). */
+function coffreLogChannelIds(guildId: string): string[] {
+  const c = configStore.get(guildId).CHANNELS;
+  return [...c.logs_coffres, ...c.logs_coffres_admin];
+}
+
+/** Point d'entrée temps réel : traite un nouveau message posté dans un salon `logs_coffres`/`logs_coffres_admin` suivi. */
 export async function handleMessage(message: Message): Promise<void> {
   const guildId = message.guildId;
-  if (!guildId || !configStore.get(guildId).CHANNELS.logs_coffres.includes(message.channelId)) return;
+  if (!guildId || !coffreLogChannelIds(guildId).includes(message.channelId)) return;
 
   await db.setSetting(guildId, `last_stock_msg_${message.channelId}`, message.id);
 
@@ -94,7 +101,7 @@ export async function handleMessage(message: Message): Promise<void> {
 export async function catchUpMissedMessages(client: Client, guildId: string): Promise<number> {
   let total = 0;
 
-  for (const channelId of configStore.get(guildId).CHANNELS.logs_coffres) {
+  for (const channelId of coffreLogChannelIds(guildId)) {
     const lastId = await db.getSetting(guildId, `last_stock_msg_${channelId}`);
     if (!lastId) continue;
 
@@ -153,7 +160,7 @@ async function logStockToChannel(client: Client, guildId: string, entry: StockEn
     const apres = entry.stock_apres.toLocaleString('fr-FR');
     const qte = entry.quantite.toLocaleString('fr-FR');
     const item = capitalize(entry.item);
-    const badge = sourceChannelId && sourceChannelId === c.CHANNELS.coffre_admin ? '🛡️ ' : '';
+    const badge = sourceChannelId && c.CHANNELS.logs_coffres_admin.includes(sourceChannelId) ? '🛡️ ' : '';
 
     await channel.send(`${badge}${icon} **${entry.joueur}** ${sign}${qte} ${item} | \`${avant}\` ➜ \`${apres}\``).catch(() => null);
   } catch { /* silence */ }
@@ -220,7 +227,7 @@ export async function fullResync(client: Client, guildId: string): Promise<numbe
 
   let total = 0;
 
-  for (const channelId of configStore.get(guildId).CHANNELS.logs_coffres) {
+  for (const channelId of coffreLogChannelIds(guildId)) {
     const channel = await client.channels.fetch(channelId).catch(() => null);
     if (!channel || !channel.isTextBased() || channel.isDMBased()) continue;
 

@@ -78,6 +78,16 @@ export function getCommands(guildId: string) {
       .setDescription('Retire un salon de la liste des logs de coffre surveillés')
       .addChannelOption(o => o.setName('salon').setDescription('Salon Discord').setRequired(true)
         .addChannelTypes(ChannelType.GuildText)))
+    .addSubcommand(s => s
+      .setName('add-log-coffre-admin')
+      .setDescription('Ajoute un salon à la liste des logs de coffre admin surveillés (badge 🛡️)')
+      .addChannelOption(o => o.setName('salon').setDescription('Salon Discord').setRequired(true)
+        .addChannelTypes(ChannelType.GuildText)))
+    .addSubcommand(s => s
+      .setName('remove-log-coffre-admin')
+      .setDescription('Retire un salon de la liste des logs de coffre admin surveillés')
+      .addChannelOption(o => o.setName('salon').setDescription('Salon Discord').setRequired(true)
+        .addChannelTypes(ChannelType.GuildText)))
     .addSubcommand(s => s.setName('list').setDescription('Liste les salons configurés')));
 
   cmd.addSubcommandGroup(g => g
@@ -210,7 +220,7 @@ export async function handleCommand(interaction: ChatInputCommandInteraction): P
   if (group === 'site-externe') return handleSiteExterne(interaction, guildId, sub);
 }
 
-/** `/config channel set|add-log-coffre|remove-log-coffre|list`. */
+/** `/config channel set|add-log-coffre|remove-log-coffre|add-log-coffre-admin|remove-log-coffre-admin|list`. */
 async function handleChannel(interaction: ChatInputCommandInteraction, guildId: string, sub: string): Promise<void> {
   if (sub === 'set') {
     const role = interaction.options.getString('role', true);
@@ -234,19 +244,22 @@ async function handleChannel(interaction: ChatInputCommandInteraction, guildId: 
     await interaction.reply({ content: `✅ Salon **${role}** → <#${salon.id}>`, flags: MessageFlags.Ephemeral });
     return;
   }
-  if (sub === 'add-log-coffre' || sub === 'remove-log-coffre') {
+  if (sub === 'add-log-coffre' || sub === 'remove-log-coffre' || sub === 'add-log-coffre-admin' || sub === 'remove-log-coffre-admin') {
+    const role = sub.endsWith('-admin') ? 'logs_coffres_admin' : 'logs_coffres';
     const salon = interaction.options.getChannel('salon', true);
-    await configStore.mutate(guildId, () => sub === 'add-log-coffre'
-      ? db.addChannelToRole(guildId, 'logs_coffres', salon.id)
-      : db.removeChannelFromRole(guildId, 'logs_coffres', salon.id));
-    const total = configStore.get(guildId).CHANNELS.logs_coffres.length;
-    await interaction.reply({ content: `✅ Logs de coffre : ${total} salon(s) surveillé(s).`, flags: MessageFlags.Ephemeral });
+    await configStore.mutate(guildId, () => sub.startsWith('add-')
+      ? db.addChannelToRole(guildId, role, salon.id)
+      : db.removeChannelFromRole(guildId, role, salon.id));
+    const total = configStore.get(guildId).CHANNELS[role].length;
+    const label = role === 'logs_coffres_admin' ? 'coffre admin' : 'coffre';
+    await interaction.reply({ content: `✅ Logs de ${label} : ${total} salon(s) surveillé(s).`, flags: MessageFlags.Ephemeral });
     return;
   }
   if (sub === 'list') {
     const c = configStore.get(guildId).CHANNELS;
     const lines = configStore.CHANNEL_ROLES.map(role => `**${role}** : ${c[role] ? `<#${c[role]}>` : '_non configuré_'}`);
     lines.push(`**logs_coffres** : ${c.logs_coffres.length ? c.logs_coffres.map(id => `<#${id}>`).join(', ') : '_aucun_'}`);
+    lines.push(`**logs_coffres_admin** : ${c.logs_coffres_admin.length ? c.logs_coffres_admin.map(id => `<#${id}>`).join(', ') : '_aucun_'}`);
     const embed = new EmbedBuilder().setTitle('⚙️ Salons configurés').setDescription(lines.join('\n')).setColor(0x5865f2);
     await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
   }
@@ -416,11 +429,12 @@ async function handleTypeGroupe(interaction: ChatInputCommandInteraction, guildI
  * Salons de rôle alimentés par le bot de jeu FiveM (pas par ce bot Discord) —
  * exclus de la création automatique (`/config category set`) : ils doivent
  * pointer vers le vrai salon de logs déjà existant, jamais un salon vide
- * fraîchement créé. `logs_coffres` (plusieurs salons possibles, voir
- * `add-log-coffre`) n'a de toute façon pas d'entrée dans {@link
- * CHANNEL_NAME_BY_ROLE} donc n'a pas besoin d'être listé ici.
+ * fraîchement créé. `logs_coffres`/`logs_coffres_admin` (plusieurs salons
+ * possibles chacun, voir `add-log-coffre`/`add-log-coffre-admin`) n'ont de
+ * toute façon pas d'entrée dans {@link CHANNEL_NAME_BY_ROLE} donc n'ont pas
+ * besoin d'être listés ici.
  */
-const CATEGORY_EXCLUDED_ROLES: readonly configStore.ChannelRole[] = ['coffre_admin', 'logs_garages'];
+const CATEGORY_EXCLUDED_ROLES: readonly configStore.ChannelRole[] = ['logs_garages'];
 
 /**
  * Nom de salon par défaut pour chaque rôle auto-créable via `/config category
