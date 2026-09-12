@@ -69,10 +69,27 @@ export async function isKnownGuild(guildId: string): Promise<boolean> {
   return row?.active === true;
 }
 
+/**
+ * Vrai si `guildId` est une guilde active avec un site externe configuré —
+ * utilisé par `requireAuth` (src/api/auth.ts) pour qu'un token émis avant un
+ * `/config site-externe remove` ou un retrait du bot cesse de fonctionner
+ * immédiatement, plutôt que de rester valable jusqu'à son expiration (7j).
+ */
+export async function isAuthorizedGuild(guildId: string): Promise<boolean> {
+  const row = await prisma.guild.findUnique({ where: { guildId }, select: { active: true, frontendUrl: true } });
+  return row?.active === true && row.frontendUrl !== null;
+}
+
 /** Le `frontendUrl` configuré pour une guilde (voir `setGuildSite`) — `null` si jamais configuré, auquel cas `/auth/callback` refuse la connexion plutôt que de rediriger nulle part. */
 export async function getGuildFrontendUrl(guildId: string): Promise<string | null> {
   const row = await prisma.guild.findUnique({ where: { guildId }, select: { frontendUrl: true } });
   return row?.frontendUrl ?? null;
+}
+
+/** `active` + `frontendUrl` en un seul aller-retour DB — utilisé par `/auth/login` (src/api/auth.ts) pour distinguer "guilde inconnue" de "aucun site externe configuré" sans doubler la requête. */
+export async function getGuildLoginStatus(guildId: string): Promise<{ active: boolean; frontendUrl: string | null }> {
+  const row = await prisma.guild.findUnique({ where: { guildId }, select: { active: true, frontendUrl: true } });
+  return { active: row?.active === true, frontendUrl: row?.frontendUrl ?? null };
 }
 
 /** Site externe configuré pour une guilde (voir `setGuildSite`) — pour `/config site-externe list`. */

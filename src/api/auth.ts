@@ -90,11 +90,16 @@ export function assertAuthEnv(): void {
  */
 export async function handleLogin(req: Request, res: Response): Promise<void> {
   const guildId = req.query.guild as string | undefined;
-  if (!guildId || !(await guildRegistry.isKnownGuild(guildId))) {
+  if (!guildId) {
     res.status(400).send('Paramètre ?guild= manquant ou invalide — cette guilde n\'a jamais invité le bot.');
     return;
   }
-  if (!(await guildRegistry.getGuildFrontendUrl(guildId))) {
+  const { active, frontendUrl } = await guildRegistry.getGuildLoginStatus(guildId);
+  if (!active) {
+    res.status(400).send('Paramètre ?guild= manquant ou invalide — cette guilde n\'a jamais invité le bot.');
+    return;
+  }
+  if (!frontendUrl) {
     res.status(400).send('Aucun site externe configuré pour cette guilde — voir `/config site-externe set`.');
     return;
   }
@@ -206,20 +211,33 @@ export function handleCallback(client: Client): (req: Request, res: Response) =>
   };
 }
 
-/** Middleware : exige un JWT valide (`Authorization: Bearer <token>`), attache l'utilisateur résolu (guilde incluse) à `req.apiUser`. */
-export function requireAuth(req: Request, res: Response, next: NextFunction): void {
+/**
+ * Middleware : exige un JWT valide (`Authorization: Bearer <token>`), attache
+ * l'utilisateur résolu (guilde incluse) à `req.apiUser`. Revérifie aussi que
+ * la guilde est toujours active — sans ça, un token émis avant un
+ * `/config site-externe remove` ou un retrait du bot resterait valable
+ * jusqu'à expiration (7 jours), à l'encontre du message affiché à l'admin.
+ */
+export async function requireAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
   const header = req.headers.authorization;
   const token = header?.startsWith('Bearer ') ? header.slice('Bearer '.length) : null;
   if (!token) {
     res.status(401).json({ error: 'Authentification requise (voir /auth/login).' });
     return;
   }
+  let user: ApiUser;
   try {
-    req.apiUser = jwt.verify(token, API_JWT_SECRET!) as ApiUser;
-    next();
+    user = jwt.verify(token, API_JWT_SECRET!) as ApiUser;
   } catch {
     res.status(401).json({ error: 'Token invalide ou expiré — reconnecte-toi via /auth/login.' });
+    return;
   }
+  if (!(await guildRegistry.isAuthorizedGuild(user.guildId))) {
+    res.status(401).json({ error: 'Accès révoqué pour cette guilde — reconnecte-toi via /auth/login.' });
+    return;
+  }
+  req.apiUser = user;
+  next();
 }
 
 /** Middleware à chaîner après `requireAuth` : exige en plus l'accès "taxes" (rôle `TAXES_ROLE_ID` ou admin — même règle que `isAdmin()` partout ailleurs dans le bot). */
