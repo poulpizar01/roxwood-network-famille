@@ -104,15 +104,19 @@ model DiscordRole {
 /// l'exclusion de vente_pnj : une drogue que le tier courant peut produire
 /// lui-même (labo actif pour ce tier, voir LABO_TIERS) n'est pas vendable en
 /// PNJ à ce tier — vente_pnj reste sinon tel que configuré ici. `null` pour
-/// un item sans lien avec un labo (jamais exclu).
+/// un item sans lien avec un labo (jamais exclu). stockMultiplier : nombre
+/// d'unités de base que représente une unité de cet item (ex. une boîte de
+/// munitions) — appliqué au stock de cet item avant de le sommer dans un
+/// STOCK_GROUP (voir armurerie.weightedStockSum). `1` = pas de conversion.
 model Item {
-  guildId      String  @map("guild_id")
-  name         String
-  stockGroup   String? @map("stock_group")
-  vente        Boolean @default(false)
-  displayOrder Int     @default(0) @map("display_order")
-  visibleStock Boolean @default(true) @map("visible_stock")
-  laboLie      String? @map("labo_lie")
+  guildId         String  @map("guild_id")
+  name            String
+  stockGroup      String? @map("stock_group")
+  vente           Boolean @default(false)
+  displayOrder    Int     @default(0) @map("display_order")
+  visibleStock    Boolean @default(true) @map("visible_stock")
+  laboLie         String? @map("labo_lie")
+  stockMultiplier Int     @default(1) @map("stock_multiplier")
 
   @@id([guildId, name])
   @@map("items")

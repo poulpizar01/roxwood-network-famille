@@ -160,6 +160,8 @@ export interface ItemConfig {
   displayOrder: number;
   visibleStock: boolean;
   laboLie: string | null;
+  /** Unités de base par unité de cet item (ex. 24 pour une boîte de munitions) — voir docstring du modèle `Item` et `armurerie.weightedStockSum`. */
+  stockMultiplier: number;
 }
 
 export interface BotConfig {

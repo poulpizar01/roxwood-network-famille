@@ -22,17 +22,23 @@
  */
 import * as db from './db';
 import * as configStore from './config-store';
-import { MUNITIONS_STOCK_GROUP } from './modules/armurerie';
+import { MUNITIONS_STOCK_GROUP, MUNITIONS_SMG_ITEM } from './modules/armurerie';
 import { CONFIRME_VENTE_ITEM } from './modules/ventes';
 
 const DEFAULT_ITEMS: db.ItemInput[] = [
   { name: 'Munition de pistolet', stock_group: MUNITIONS_STOCK_GROUP },
+  // Vaut 24x "Munition de pistolet" (stock_multiplier) — même groupe, comptée
+  // en conséquence dans le total munitions pondéré (voir armurerie.weightedStockSum).
+  { name: 'Boîte mun. pistolet', stock_group: MUNITIONS_STOCK_GROUP, stock_multiplier: 24 },
   // CONFIRME_VENTE_ITEM (voir ventes.ts) — simple item de stock ici, son rôle
   // de confirmation de vente est fixe dans le code, pas un flag à poser.
   { name: CONFIRME_VENTE_ITEM },
   // Distinct de CONFIRME_VENTE_ITEM ("Argent Sale") : simple item de stock,
   // ne joue aucun rôle dans le cycle de vente.
   { name: 'Argent' },
+  // Simple item de stock, sans groupe : affiché dans l'armurerie via
+  // MUNITIONS_SMG_ITEM (stock brut uniquement, pas de quota fabrication/vente).
+  { name: MUNITIONS_SMG_ITEM },
 ];
 
 /**

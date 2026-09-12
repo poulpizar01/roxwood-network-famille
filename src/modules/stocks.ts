@@ -76,9 +76,13 @@ export async function handleMessage(message: Message): Promise<void> {
   const entries = await parseAndApplyAll(guildId, extractText(message), message.channelId, true);
   if (entries.length > 0) {
     // `entry.item` est déjà en minuscules (voir parseAndApply) — comparé tel
-    // quel au groupe munitions pour éviter de rafraîchir l'armurerie sur un
+    // quel aux items affichés dans l'armurerie (groupe munitions de pistolet
+    // + munitions SMG, hors groupe) pour éviter de la rafraîchir sur un
     // mouvement qui n'a rien à voir (voir docstring de updateStockMessage).
-    const munitionsItems = new Set((configStore.get(guildId).STOCK_GROUPS[armurerie.MUNITIONS_STOCK_GROUP] ?? []).map(i => i.toLowerCase()));
+    const munitionsItems = new Set([
+      ...(configStore.get(guildId).STOCK_GROUPS[armurerie.MUNITIONS_STOCK_GROUP] ?? []),
+      armurerie.MUNITIONS_SMG_ITEM,
+    ].map(i => i.toLowerCase()));
     const toucheMunitions = entries.some(e => munitionsItems.has(e.item));
     await updateStockMessage(message.client, guildId, { skipArmurerie: !toucheMunitions });
     if (toucheMunitions) await armurerie.updatePermanentMessage(message.client, guildId);
@@ -323,9 +327,8 @@ function buildStockEmbed(guildId: string, stocks: Array<{ item: string; quantite
     if (group) {
       if (shownGroups.has(group)) continue;
       shownGroups.add(group);
-      const total = c.STOCK_GROUPS[group]
-        .filter(i => isVisible(i) && !itemsAffichesAilleurs.has(i.toLowerCase()))
-        .reduce((sum, i) => sum + (stockMap[i.toLowerCase()] || 0), 0);
+      const groupItems = c.STOCK_GROUPS[group].filter(i => isVisible(i) && !itemsAffichesAilleurs.has(i.toLowerCase()));
+      const total = armurerie.weightedStockSum(groupItems, stockMap, c.ITEMS_BY_NAME);
       lines.push(`**${group}** : \`${total.toLocaleString('fr-FR')}\``);
     } else {
       const qty = stockMap[lower] || 0;

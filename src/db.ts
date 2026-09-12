@@ -111,6 +111,8 @@ export interface ItemInput {
   visible_stock?: boolean;
   /** Clé d'activité labo (ex. "labo_cocaine") si cet item est LA drogue que ce labo produit — voir docstring du modèle Item. */
   labo_lie?: string | null;
+  /** Unités de base représentées par une unité de cet item (ex. 24 pour une boîte de munitions) — voir docstring du modèle Item et `armurerie.weightedStockSum`. Défaut 1 (pas de conversion). */
+  stock_multiplier?: number;
 }
 
 /** Ajoute ou remplace entièrement la configuration d'un item suivi (upsert complet, voir docstring de `/config item add`). */
@@ -125,6 +127,7 @@ export async function upsertItem(guildId: string, data: ItemInput): Promise<void
       displayOrder: data.display_order ?? 0,
       visibleStock: data.visible_stock !== false,
       laboLie: data.labo_lie ?? null,
+      stockMultiplier: data.stock_multiplier ?? 1,
     },
     update: {
       stockGroup: data.stock_group ?? null,
@@ -132,6 +135,7 @@ export async function upsertItem(guildId: string, data: ItemInput): Promise<void
       displayOrder: data.display_order ?? 0,
       visibleStock: data.visible_stock !== false,
       laboLie: data.labo_lie ?? null,
+      stockMultiplier: data.stock_multiplier ?? 1,
     },
   });
 }
@@ -196,14 +200,11 @@ export async function getStock(guildId: string, item: string): Promise<number> {
   return row ? row.quantite : 0;
 }
 
-/** Somme du stock de plusieurs items en une seule requête (0 si aucun n'existe) — voir `armurerie.getMunitionsStock`, qui regroupe potentiellement plusieurs calibres sous un seul total (contre un `getStock` par item, un N+1 pour un groupe qui peut grossir). */
-export async function getStocksSum(guildId: string, items: string[]): Promise<number> {
-  if (!items.length) return 0;
-  const agg = await prisma.stock.aggregate({
-    where: { guildId, item: { in: items.map(i => i.toLowerCase()) } },
-    _sum: { quantite: true },
-  });
-  return agg._sum.quantite ?? 0;
+/** Stock de plusieurs items en une seule requête, individuellement (clé = nom en minuscules, absent si jamais mouvementé) — voir `armurerie.getMunitionsStock`/`weightedStockSum`, qui pondèrent différemment chaque item d'un groupe avant de sommer (contre un `getStock` par item, un N+1 pour un groupe qui peut grossir). */
+export async function getStocksByItems(guildId: string, items: string[]): Promise<Record<string, number>> {
+  if (!items.length) return {};
+  const rows = await prisma.stock.findMany({ where: { guildId, item: { in: items.map(i => i.toLowerCase()) } } });
+  return Object.fromEntries(rows.map(r => [r.item, r.quantite]));
 }
 
 /**

@@ -112,7 +112,8 @@ export function getCommands(guildId: string) {
       .addStringOption(o => o.setName('groupe').setDescription('Libellé de regroupement dans le message de stock (optionnel)').setRequired(false))
       .addBooleanOption(o => o.setName('stock_general').setDescription('Afficher dans le message Stock Général (défaut : oui — le stock reste suivi même à non)').setRequired(false))
       .addStringOption(o => o.setName('labo_lie').setDescription("Ce labo produit cet item ? Exclut alors la vente PNJ pour les tiers ayant ce labo actif (optionnel)").setRequired(false)
-        .addChoices(...Object.entries(configStore.get(guildId).ACTIVITY_TYPES).filter(([, cfg]) => cfg.labo).map(([key, cfg]) => ({ name: cfg.label, value: key })))))
+        .addChoices(...Object.entries(configStore.get(guildId).ACTIVITY_TYPES).filter(([, cfg]) => cfg.labo).map(([key, cfg]) => ({ name: cfg.label, value: key }))))
+      .addIntegerOption(o => o.setName('multiplicateur').setDescription("Unités de base par unité de cet item dans son groupe (ex. 24 pour une boîte de munitions — défaut : 1)").setRequired(false).setMinValue(1)))
     .addSubcommand(s => s
       .setName('remove')
       .setDescription('Retire un item suivi')
@@ -293,13 +294,14 @@ async function handleItem(interaction: ChatInputCommandInteraction, guildId: str
     const groupe = interaction.options.getString('groupe');
     const stockGeneral = interaction.options.getBoolean('stock_general') ?? true;
     const laboLie = interaction.options.getString('labo_lie');
-    await configStore.mutate(guildId, () => db.upsertItem(guildId, { name: nom, stock_group: groupe, vente: ventePnj, visible_stock: stockGeneral, labo_lie: laboLie }));
+    const multiplicateur = interaction.options.getInteger('multiplicateur') ?? 1;
+    await configStore.mutate(guildId, () => db.upsertItem(guildId, { name: nom, stock_group: groupe, vente: ventePnj, visible_stock: stockGeneral, labo_lie: laboLie, stock_multiplier: multiplicateur }));
     // Sans ça, un item tout juste ajouté/masqué/regroupé n'apparaîtrait
     // correctement dans le Stock Général (et l'armurerie, si lié aux
     // munitions) qu'au prochain mouvement de coffre — pas immédiat.
     await stocks.updateStockMessage(interaction.client, guildId);
     const laboLabel = laboLie ? configStore.get(guildId).ACTIVITY_TYPES[laboLie]?.label : null;
-    await interaction.reply({ content: `✅ Item **${nom}** enregistré${groupe ? ` (groupe : ${groupe})` : ''}${ventePnj ? ' — vente PNJ' : ''}${!stockGeneral ? ' — masqué du Stock Général (stock toujours suivi)' : ''}${laboLabel ? ` — lié à ${laboLabel}` : ''}.`, flags: MessageFlags.Ephemeral });
+    await interaction.reply({ content: `✅ Item **${nom}** enregistré${groupe ? ` (groupe : ${groupe})` : ''}${ventePnj ? ' — vente PNJ' : ''}${!stockGeneral ? ' — masqué du Stock Général (stock toujours suivi)' : ''}${laboLabel ? ` — lié à ${laboLabel}` : ''}${multiplicateur !== 1 ? ` — ×${multiplicateur} dans son groupe` : ''}.`, flags: MessageFlags.Ephemeral });
     return;
   }
   if (sub === 'remove') {
@@ -321,12 +323,12 @@ async function handleItem(interaction: ChatInputCommandInteraction, guildId: str
     const lines = items.slice(0, 60).map(i => {
       const laboLabel = i.laboLie ? activityTypes[i.laboLie]?.label ?? i.laboLie : null;
       const confirmeVente = i.name.toLowerCase() === CONFIRME_VENTE_ITEM.toLowerCase();
-      return `**${i.name}**${i.stockGroup ? ` _(${i.stockGroup})_` : ''}${i.vente ? ' 💰' : ''}${confirmeVente ? ' 🪙' : ''}${!i.visibleStock ? ' 🙈' : ''}${laboLabel ? ` 🧪${laboLabel}` : ''}`;
+      return `**${i.name}**${i.stockGroup ? ` _(${i.stockGroup})_` : ''}${i.vente ? ' 💰' : ''}${confirmeVente ? ' 🪙' : ''}${!i.visibleStock ? ' 🙈' : ''}${laboLabel ? ` 🧪${laboLabel}` : ''}${i.stockMultiplier !== 1 ? ` ×${i.stockMultiplier}` : ''}`;
     });
     const embed = new EmbedBuilder()
       .setTitle(`⚙️ Items suivis (${items.length})`)
       .setDescription(lines.join('\n').slice(0, 4000))
-      .setFooter({ text: '💰 vente PNJ · 🪙 confirme les ventes · 🙈 masqué du Stock Général · 🧪 lié à un labo (vente PNJ exclue si ce labo est actif pour le tier)' })
+      .setFooter({ text: '💰 vente PNJ · 🪙 confirme les ventes · 🙈 masqué du Stock Général · 🧪 lié à un labo (vente PNJ exclue si ce labo est actif pour le tier) · ×N unités de base par unité dans son groupe' })
       .setColor(0x5865f2);
     await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
   }

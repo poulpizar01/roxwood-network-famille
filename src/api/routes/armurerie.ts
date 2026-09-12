@@ -59,7 +59,7 @@ router.get('/search', async (req, res) => {
   res.json(armes);
 });
 
-/** GET /api/armurerie/ammo — stock réel + compteurs hebdomadaires indicatifs (fabrication/vente). */
+/** GET /api/armurerie/ammo — munitions de pistolet (stock réel + compteurs hebdomadaires indicatifs fabrication/vente) et munitions de SMG (`stockSmg`, stock brut seul). */
 router.get('/ammo', async (req, res) => {
   res.json(await getMunitionsSummary(req.apiUser!.guildId));
 });

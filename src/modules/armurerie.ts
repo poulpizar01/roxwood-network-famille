@@ -90,26 +90,56 @@ const ARME_TYPES: Array<{ key: string; label: string }> = [
 const MUNITIONS_FABRICATION_QUOTA_HEBDO = 5000;
 
 /**
- * Libellé de regroupement (`/config item add nom:"..." groupe:"Munitions de
+ * Libellé de regroupement (`/config item add nom:"..." groupe:"Munition de
  * pistolet"`) attendu pour le(s) item(s) qui représentent les munitions de
  * pistolet dans les logs de coffre. Volontairement PAS un nom d'item exact
  * (contrairement au piège n°1 du projet, voir docstring de fichier) : le
  * `groupe` est choisi librement par l'admin, il n'a pas besoin de coïncider
  * avec l'orthographe FiveM — ça permet aussi de regrouper plusieurs items
- * (ex. plusieurs calibres) sous un seul total ici.
+ * (ex. plusieurs calibres, ou une boîte qui vaut plusieurs unités via son
+ * propre `multiplicateur` — voir {@link weightedStockSum}) sous un seul
+ * total ici.
  *
  * Exportée pour que `src/default-items.ts` pré-remplisse l'item "Munition de
  * pistolet" avec exactement ce groupe au premier démarrage — sans ce lien,
  * un admin qui ne devine pas cette constante voit silencieusement "0 balles
  * en stock" sans jamais comprendre pourquoi (voir discussion CLAUDE.md).
  */
-export const MUNITIONS_STOCK_GROUP = 'Munitions de pistolet';
+export const MUNITIONS_STOCK_GROUP = 'Munition de pistolet';
 
-/** Stock total des items regroupés sous {@link MUNITIONS_STOCK_GROUP} (0 si aucun item n'est configuré avec ce groupe). */
-async function getMunitionsStock(guildId: string): Promise<number> {
-  const items = configStore.get(guildId).STOCK_GROUPS[MUNITIONS_STOCK_GROUP] ?? [];
-  return db.getStocksSum(guildId, items);
+/**
+ * Somme pondérée du stock d'une liste d'items, à partir d'un stock déjà
+ * chargé en mémoire (clé = nom en minuscules) : chaque item compte pour
+ * `ItemConfig.stockMultiplier` unités de base (`/config item add ...
+ * multiplicateur:`, ex. 24 pour "Boîte mun. pistolet") plutôt que 1 pour 1 —
+ * lu directement sur l'item déjà résolu (`itemsByName`), jamais un second
+ * matching par nom séparé (contrairement au piège n°1, voir CLAUDE.md).
+ * Utilisée aussi bien pour ce total armurerie que pour les sections
+ * `STOCK_GROUPS` du Stock Général (voir `stocks.buildStockEmbed`).
+ */
+export function weightedStockSum(items: string[], stockByItem: Record<string, number>, itemsByName: Record<string, configStore.ItemConfig>): number {
+  return items.reduce((sum, item) => {
+    const lower = item.toLowerCase();
+    const multiplier = itemsByName[item]?.stockMultiplier ?? 1;
+    return sum + (stockByItem[lower] || 0) * multiplier;
+  }, 0);
 }
+
+/** Stock total (pondéré, voir {@link weightedStockSum}) des items regroupés sous {@link MUNITIONS_STOCK_GROUP} (0 si aucun item n'est configuré avec ce groupe). */
+async function getMunitionsStock(guildId: string): Promise<number> {
+  const c = configStore.get(guildId);
+  const items = c.STOCK_GROUPS[MUNITIONS_STOCK_GROUP] ?? [];
+  const stockByItem = await db.getStocksByItems(guildId, items);
+  return weightedStockSum(items, stockByItem, c.ITEMS_BY_NAME);
+}
+
+/**
+ * Nom exact de l'item de munitions SMG (voir piège n°1, docstring de
+ * `default-items.ts`) — contrairement à {@link MUNITIONS_STOCK_GROUP}, juste
+ * un stock affiché tel quel dans l'armurerie, sans quota de fabrication ni
+ * compteur de vente hebdomadaire (pas demandé pour ce calibre).
+ */
+export const MUNITIONS_SMG_ITEM = 'Munition de SMG';
 
 /**
  * Résumé munitions (stock réel + compteurs hebdomadaires indicatifs) —
@@ -119,11 +149,18 @@ async function getMunitionsStock(guildId: string): Promise<number> {
  */
 export async function getMunitionsSummary(guildId: string) {
   const sinceReset = Number((await db.getSetting(guildId, 'last_weekly_reset')) || 0);
+  const [stock, fabriqueesCetteSemaine, vendusCetteSemaine, stockSmg] = await Promise.all([
+    getMunitionsStock(guildId),
+    db.getMunitionsFabriqueesDepuis(guildId, sinceReset),
+    db.getMunitionsVenduesDepuis(guildId, sinceReset),
+    db.getStock(guildId, MUNITIONS_SMG_ITEM),
+  ]);
   return {
-    stock: await getMunitionsStock(guildId),
-    fabriqueesCetteSemaine: await db.getMunitionsFabriqueesDepuis(guildId, sinceReset),
+    stock,
+    fabriqueesCetteSemaine,
     fabricationQuotaHebdo: MUNITIONS_FABRICATION_QUOTA_HEBDO,
-    vendusCetteSemaine: await db.getMunitionsVenduesDepuis(guildId, sinceReset),
+    vendusCetteSemaine,
+    stockSmg,
   };
 }
 
@@ -183,9 +220,10 @@ type Arme = Awaited<ReturnType<typeof db.getAllArmes>>[number];
 async function buildArmurierieEmbed(guildId: string, armes: Arme[]): Promise<EmbedBuilder> {
   const embed = new EmbedBuilder().setTitle('🔫 Armurerie').setColor(0xFEE75C).setTimestamp().setFooter({ text: 'Mis à jour' });
 
-  const { stock, fabriqueesCetteSemaine, vendusCetteSemaine } = await getMunitionsSummary(guildId);
+  const { stock, fabriqueesCetteSemaine, vendusCetteSemaine, stockSmg } = await getMunitionsSummary(guildId);
   const blocs = [
-    `__Munitions de pistolet__\n🧰 ${stock} balles en stock\n🛠️ ${fabriqueesCetteSemaine} / ${MUNITIONS_FABRICATION_QUOTA_HEBDO} fabriquées cette semaine\n💰 ${vendusCetteSemaine} vendues cette semaine`,
+    `__Munition de pistolet__\n🧰 ${stock} balles en stock\n🛠️ ${fabriqueesCetteSemaine} / ${MUNITIONS_FABRICATION_QUOTA_HEBDO} fabriquées cette semaine\n💰 ${vendusCetteSemaine} vendues cette semaine`,
+    `__Munition de SMG__\n🧰 ${stockSmg} balles en stock`,
   ];
 
   if (!armes.length) {
