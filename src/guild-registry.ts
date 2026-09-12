@@ -51,7 +51,7 @@ export async function deactivateGuild(guildId: string): Promise<void> {
   await warmCorsCache();
 }
 
-/** Renseigne (ou efface, avec `null`) le site externe autorisé pour une guilde — voir `/config` (site externe), remplace les anciennes variables d'env globales FRONTEND_URL/API_CORS_ORIGIN. */
+/** Renseigne (ou efface, avec `null`) le site externe autorisé pour une guilde — voir `/config site-externe`. */
 export async function setGuildSite(guildId: string, frontendUrl: string | null, corsOrigin: string | null): Promise<void> {
   await prisma.guild.update({ where: { guildId }, data: { frontendUrl, corsOrigin } });
   await warmCorsCache();
@@ -69,8 +69,14 @@ export async function isKnownGuild(guildId: string): Promise<boolean> {
   return row?.active === true;
 }
 
-/** Le `frontendUrl` configuré pour une guilde (voir `setGuildSite`) — `null` si jamais configuré, auquel cas `/auth/callback` ne doit rediriger vers rien de global (plus de FRONTEND_URL par défaut). */
+/** Le `frontendUrl` configuré pour une guilde (voir `setGuildSite`) — `null` si jamais configuré, auquel cas `/auth/callback` refuse la connexion plutôt que de rediriger nulle part. */
 export async function getGuildFrontendUrl(guildId: string): Promise<string | null> {
   const row = await prisma.guild.findUnique({ where: { guildId }, select: { frontendUrl: true } });
   return row?.frontendUrl ?? null;
+}
+
+/** Site externe configuré pour une guilde (voir `setGuildSite`) — pour `/config site-externe list`. */
+export async function getGuildSite(guildId: string): Promise<{ frontendUrl: string | null; corsOrigin: string | null }> {
+  const row = await prisma.guild.findUnique({ where: { guildId }, select: { frontendUrl: true, corsOrigin: true } });
+  return { frontendUrl: row?.frontendUrl ?? null, corsOrigin: row?.corsOrigin ?? null };
 }

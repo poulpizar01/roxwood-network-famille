@@ -37,6 +37,7 @@ import {
 } from 'discord.js';
 import * as db from '../db';
 import * as configStore from '../config-store';
+import * as guildRegistry from '../guild-registry';
 import * as quotas from './quotas';
 import * as stocks from './stocks';
 import * as taxes from './taxes';
@@ -158,6 +159,16 @@ export function getCommands(guildId: string) {
       .addChannelOption(o => o.setName('categorie').setDescription('Catégorie Discord où créer les salons manquants').setRequired(true)
         .addChannelTypes(ChannelType.GuildCategory))));
 
+  cmd.addSubcommandGroup(g => g
+    .setName('site-externe')
+    .setDescription("Site web externe autorisé à utiliser l'API REST du bot pour cette guilde")
+    .addSubcommand(s => s
+      .setName('set')
+      .setDescription("Autorise ce site à se connecter à l'API (voir README, section Interopérabilité)")
+      .addStringOption(o => o.setName('url').setDescription("URL du site (ex. https://mon-site.exemple.com)").setRequired(true)))
+    .addSubcommand(s => s.setName('remove').setDescription("Retire le site externe autorisé (désactive l'API pour cette guilde)"))
+    .addSubcommand(s => s.setName('list').setDescription('Affiche le site externe actuellement configuré')));
+
   return [{ data: cmd }];
 }
 
@@ -196,6 +207,7 @@ export async function handleCommand(interaction: ChatInputCommandInteraction): P
   if (group === 'salaire') return handleSalaire(interaction, guildId, sub);
   if (group === 'type-groupe') return handleTypeGroupe(interaction, guildId, sub);
   if (group === 'category') return handleCategory(interaction, guildId, sub);
+  if (group === 'site-externe') return handleSiteExterne(interaction, guildId, sub);
 }
 
 /** `/config channel set|add-log-coffre|remove-log-coffre|list`. */
@@ -499,6 +511,55 @@ async function handleCategory(interaction: ChatInputCommandInteraction, guildId:
   ].filter((l): l is string => l !== null);
 
   await interaction.editReply({ content: lines.join('\n\n') || 'Rien à faire — tous les salons sont déjà configurés.' });
+}
+
+/**
+ * `/config site-externe set|remove|list` : autorise (ou retire) un site
+ * externe à utiliser l'API REST du bot pour CETTE guilde (voir README,
+ * section Interopérabilité, et `guild-registry.setGuildSite`) — self-serve
+ * depuis Discord, chaque guilde configure le sien indépendamment.
+ */
+async function handleSiteExterne(interaction: ChatInputCommandInteraction, guildId: string, sub: string): Promise<void> {
+  if (sub === 'set') {
+    const url = interaction.options.getString('url', true).trim();
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      await interaction.reply({ content: '❌ URL invalide — attendu une URL complète (ex. https://mon-site.exemple.com).', flags: MessageFlags.Ephemeral });
+      return;
+    }
+    // Un schéma non http(s) (data:, javascript:, file:...) donne une origine
+    // OPAQUE — `.origin` vaut alors la CHAÎNE LITTÉRALE "null", pas rejetée
+    // par le constructeur URL. Comme `isKnownCorsOrigin` (guild-registry.ts)
+    // partage un seul Set entre toutes les guildes, laisser passer "null"
+    // ouvrirait le CORS de TOUTES les guildes aux contextes qui envoient un
+    // header `Origin: null` littéral (iframe sandboxée, file://...), pas
+    // seulement celle mal configurée.
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      await interaction.reply({ content: '❌ URL invalide — seuls les schémas http:// et https:// sont acceptés.', flags: MessageFlags.Ephemeral });
+      return;
+    }
+    const origin = parsed.origin;
+    await guildRegistry.setGuildSite(guildId, url, origin);
+    await interaction.reply({ content: `✅ Site externe autorisé : **${url}**\nOrigine CORS acceptée : \`${origin}\``, flags: MessageFlags.Ephemeral });
+    return;
+  }
+  if (sub === 'remove') {
+    await guildRegistry.setGuildSite(guildId, null, null);
+    await interaction.reply({ content: "✅ Site externe retiré — l'API REST refusera désormais toute connexion pour cette guilde.", flags: MessageFlags.Ephemeral });
+    return;
+  }
+  if (sub === 'list') {
+    const { frontendUrl, corsOrigin } = await guildRegistry.getGuildSite(guildId);
+    const embed = new EmbedBuilder()
+      .setTitle('⚙️ Site externe')
+      .setDescription(frontendUrl
+        ? `**Site** : ${frontendUrl}\n**Origine CORS** : \`${corsOrigin}\``
+        : "_Aucun site externe configuré — voir `/config site-externe set`._")
+      .setColor(0x5865f2);
+    await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+  }
 }
 
 /** Autocomplete pour les options `nom`/`cle` des sous-commandes `remove`. */

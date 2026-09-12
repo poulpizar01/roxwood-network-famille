@@ -73,7 +73,7 @@ function readCookie(req: Request, name: string): string | null {
   return null;
 }
 
-/** Vérifie au démarrage que les variables d'environnement requises par l'auth API sont présentes — échoue vite et clairement plutôt que silencieusement au premier login. `FRONTEND_URL` n'en fait plus partie : c'est un réglage PAR GUILDE (`Guild.frontendUrl`, voir `/config`), plus une variable d'env globale. */
+/** Vérifie au démarrage que les variables d'environnement requises par l'auth API sont présentes — échoue vite et clairement plutôt que silencieusement au premier login. Le site externe, lui, est un réglage PAR GUILDE (`Guild.frontendUrl`, voir `/config site-externe`), pas une variable d'env ici. */
 export function assertAuthEnv(): void {
   const missing = ['API_JWT_SECRET', 'DISCORD_CLIENT_SECRET', 'API_BASE_URL']
     .filter(k => !process.env[k]);
@@ -92,6 +92,10 @@ export async function handleLogin(req: Request, res: Response): Promise<void> {
   const guildId = req.query.guild as string | undefined;
   if (!guildId || !(await guildRegistry.isKnownGuild(guildId))) {
     res.status(400).send('Paramètre ?guild= manquant ou invalide — cette guilde n\'a jamais invité le bot.');
+    return;
+  }
+  if (!(await guildRegistry.getGuildFrontendUrl(guildId))) {
+    res.status(400).send('Aucun site externe configuré pour cette guilde — voir `/config site-externe set`.');
     return;
   }
 

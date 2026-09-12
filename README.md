@@ -4,12 +4,13 @@ Bot Discord (TypeScript / discord.js v14 / PostgreSQL via Prisma) pour la gestio
 
 Contrairement à un bot figé pour un serveur précis, **toute la structure métier est configurable depuis Discord** via la commande `/config` : items suivis, activités déclarables (quotas, cooldowns, limites de braquage, labos), objectifs de quota, taux de paie, salons, rôles, et le **type d'organisation** (Indépendant/Petite Frappe/Gang/Organisation, `/config type-groupe`) qui fait varier les limites de braquage, les labos accessibles et les taxes/zones de vente sans toucher au code. Aucune de ces valeurs n'est codée en dur — un changement prend effet immédiatement, sans redémarrage (jamais besoin de relancer le bot après une écriture `/config`, voir "Robustesse & fiabilité" plus bas). À l'inverse, certaines valeurs restent volontairement fixes dans le code car elles ne bougent jamais une fois le bot déployé pour une organisation donnée : types d'armes, types de taxe, plafonds de munitions, amende de fourrière (voir "Modules" plus bas).
 
-Le bot reste **mono-serveur** (un déploiement = un serveur Discord), mais devient réutilisable pour n'importe quelle organisation RP illégale sans toucher au code : après avoir invité le bot, tout se configure via `/config`.
+**Multi-tenant** : un seul déploiement (un process, une base) peut servir plusieurs serveurs Discord à la fois, chacun avec des données totalement étanches — inviter le bot sur un nouveau serveur suffit à l'enregistrer, aucun redéploiement nécessaire. Réutilisable pour n'importe quelle organisation RP illégale sans toucher au code : après avoir invité le bot, tout se configure via `/config`. Voir la section [Plusieurs guildes](#plusieurs-guildes--multi-tenant) pour le détail.
 
 ## Sommaire
 
 - [Prérequis](#prérequis) ([Créer l'application Discord](#créer-lapplication-discord))
 - [Installation](#installation) ([Via systemd](#via-systemd-production-sans-docker), [Via Docker](#via-docker))
+- [Plusieurs guildes — multi-tenant](#plusieurs-guildes--multi-tenant)
 - [Interopérabilité — API REST](#interopérabilité--api-rest-optionnelle)
 - [Configuration — `/config`](#configuration--tout-se-fait-depuis-discord-via-config)
 - [Modules](#modules)
@@ -34,15 +35,14 @@ Le bot reste **mono-serveur** (un déploiement = un serveur Discord), mais devie
 2. Onglet **Bot** (menu de gauche) :
    - **Reset Token** → copier la valeur, ce sera `TOKEN` dans `.env`. Discord ne la réaffiche plus jamais après — la garder de côté (jamais commitée, voir "Sécurité" dans `CLAUDE.md`).
    - Section **Privileged Gateway Intents**, activer **Server Members Intent** et **Message Content Intent**. **Obligatoire** : le bot lit le contenu des messages de logs coffre et résout les membres du serveur pour l'API — sans ces deux cases cochées, il plante au démarrage avec une erreur `DisallowedIntents`.
-   - Décocher **Public Bot** si le bot ne doit être invitable que par toi (recommandé pour un bot mono-serveur).
+   - **Public Bot** : décoché = seul toi peux l'inviter (une seule organisation) ; coché = n'importe qui peut l'inviter sur son propre serveur (voir "Plusieurs guildes" plus bas — chaque serveur s'enregistre tout seul, rien à faire côté bot).
 3. Onglet **General Information** : copier l'**Application ID**, ce sera `CLIENT_ID` dans `.env`.
 4. Onglet **OAuth2 → URL Generator** :
    - Scopes : cocher `bot` et `applications.commands` (indispensable pour que les commandes `/` apparaissent).
    - Bot Permissions : `Send Messages`, `Embed Links`, `Read Message History`, `View Channels`, `Manage Channels` (renommage des salons "labo" 🔴/🟢).
-   - Copier l'URL générée en bas de page, l'ouvrir dans un navigateur, choisir le serveur Discord de l'organisation, valider.
-5. Récupérer l'ID du serveur (`GUILD_ID`) : dans Discord, **Paramètres utilisateur → Avancés → Mode développeur** (à activer une fois), puis clic droit sur l'icône du serveur → **Copier l'ID du serveur**.
+   - Copier l'URL générée en bas de page — c'est cette même URL qu'on réutilise pour inviter le bot sur chaque serveur (voir "Plusieurs guildes" plus bas), pas besoin d'en régénérer une par organisation.
 
-À la fin de cette étape, on a les trois valeurs `TOKEN`, `CLIENT_ID`, `GUILD_ID` nécessaires à `.env`.
+À la fin de cette étape, on a les deux valeurs `TOKEN`, `CLIENT_ID` nécessaires à `.env`. Chaque serveur qui invite le bot s'enregistre lui-même (voir "Plusieurs guildes").
 
 ---
 
@@ -55,7 +55,7 @@ cd roxwood-network-famille
 npm install
 
 cp .env.example .env
-# Éditer .env : TOKEN, CLIENT_ID, GUILD_ID (voir "Créer l'application Discord" ci-dessus), DATABASE_URL
+# Éditer .env : TOKEN, CLIENT_ID (voir "Créer l'application Discord" ci-dessus), DATABASE_URL
 
 # Applique les migrations existantes à la base PostgreSQL
 npx prisma migrate deploy
@@ -97,7 +97,7 @@ Après toute mise à jour du code : `git pull && npm install && npx prisma migra
 
 ```bash
 cp .env.example .env
-# Éditer .env : TOKEN, CLIENT_ID, GUILD_ID, POSTGRES_PASSWORD
+# Éditer .env : TOKEN, CLIENT_ID, POSTGRES_PASSWORD
 # (DATABASE_URL est recalculé par docker-compose pour pointer vers le service "db" — inutile de l'éditer)
 
 docker compose up -d --build
@@ -111,6 +111,36 @@ Si `docker compose build` échoue avec `invalid file request` (observé sur Wind
 
 ---
 
+## Plusieurs guildes — multi-tenant
+
+Un seul déploiement (un process, une base Postgres) peut servir **plusieurs serveurs Discord à la fois**, chacun avec ses propres salons, items, quotas, taxes, etc. — totalement étanches d'un serveur à l'autre. Rien à faire côté infra pour ajouter une organisation : inviter le bot sur un nouveau serveur suffit.
+
+### Inviter le bot sur un serveur (le premier, ou un suivant)
+
+1. Générer l'URL d'invitation une seule fois (voir "Créer l'application Discord" ci-dessus, étape OAuth2 → URL Generator).
+2. Ouvrir cette URL, choisir le serveur Discord, valider — c'est la **même URL** pour chaque nouveau serveur, pas besoin d'en régénérer une par organisation.
+3. Le bot s'enregistre automatiquement (`guildCreate`) : commandes slash déployées sur ce serveur en quelques secondes, panneaux prêts à être mis en place via `/config category set` ou `/config channel set`.
+
+Si le bot était hors ligne au moment de l'invitation, il rattrape au démarrage suivant (boucle sur tous les serveurs dans lesquels il se trouve).
+
+### Ce qui est isolé par serveur
+
+Tout : salons, rôles, items suivis, objectifs de quota, taux de paie, type d'organisation, stocks, taxes, armurerie, ventes, historique. Un même joueur (même ID Discord) peut avoir des quotas/paie totalement différents sur deux serveurs — aucune donnée ne fuite de l'un à l'autre.
+
+### Si le bot quitte un serveur
+
+Retirer le bot d'un serveur ne supprime **jamais** ses données (`guildDelete` marque juste ce serveur comme inactif — plus aucun cron/commande ne s'exécute pour lui). Le réinviter plus tard restaure exactement l'état où on l'avait laissé.
+
+### Site externe par serveur (voir Interopérabilité ci-dessous)
+
+Si l'API REST est activée (`API_PORT`, voir plus bas), chaque serveur configure **son propre** site externe autorisé à s'y connecter — pas une URL globale pour tout le monde :
+```
+/config site-externe set <url_du_site>
+```
+Un admin peut aussi consulter (`/config site-externe list`) ou retirer (`/config site-externe remove`) le site configuré pour son serveur.
+
+---
+
 ## Interopérabilité — API REST (optionnelle)
 
 Une petite API REST **en lecture seule**, dans le même process que le bot (`src/api/`), permet à un outil externe (ex. un site web) de récupérer les données du bot. **Désactivée par défaut** — n'existe que si `API_PORT` est défini dans `.env` ; sinon aucun port n'est ouvert, comportement inchangé.
@@ -118,16 +148,16 @@ Une petite API REST **en lecture seule**, dans le même process que le bot (`src
 ### Mise en place
 
 1. Dans le [Discord Developer Portal](https://discord.com/developers/applications), onglet **OAuth2** de l'application du bot : noter le **Client Secret**, et ajouter une **Redirect URI** = `<API_BASE_URL>/auth/callback` (ex. `http://localhost:3001/auth/callback` en dev, l'URL publique réelle en prod).
-2. Renseigner dans `.env` : `API_PORT`, `DISCORD_CLIENT_SECRET`, `API_JWT_SECRET` (une longue chaîne aléatoire, à générer une fois), `API_BASE_URL`, `FRONTEND_URL` (où rediriger après connexion), `API_CORS_ORIGIN` (origine autorisée pour les appels `fetch()` du site externe) — voir `.env.example`.
+2. Renseigner dans `.env` : `API_PORT`, `DISCORD_CLIENT_SECRET`, `API_JWT_SECRET` (une longue chaîne aléatoire, à générer une fois), `API_BASE_URL` — voir `.env.example`. Rien à renseigner de plus par site externe : chaque **serveur Discord** configure le sien directement depuis Discord, voir `/config site-externe set` (chapitre "Plusieurs guildes" ci-dessus).
 3. Démarrer/redémarrer le bot : `✅ API REST en écoute sur le port <API_PORT>` dans les logs confirme que c'est actif.
 
 ### Authentification — connexion via Discord
 
-Pas de clé API statique : l'utilisateur se connecte avec son compte Discord, et l'accès est dérivé de ses rôles sur le serveur configuré (`GUILD_ID`) — les mêmes règles qu'en Discord, pas une logique dupliquée.
+Pas de clé API statique : l'utilisateur se connecte avec son compte Discord, et l'accès est dérivé de ses rôles sur **le serveur Discord auquel ce site est rattaché** (multi-tenant — un site externe sert toujours un seul serveur à la fois) — les mêmes règles qu'en Discord, pas une logique dupliquée.
 
-1. Le site externe redirige le navigateur vers `<API_BASE_URL>/auth/login`.
-2. Après connexion Discord, l'utilisateur revient sur `<FRONTEND_URL>#token=<jwt>` — le site récupère ce token côté client (fragment d'URL, jamais envoyé à un serveur) et le stocke.
-3. Chaque appel à `/api/*` doit inclure `Authorization: Bearer <jwt>`. Le token expire au bout de 7 jours (pas de refresh token — se reconnecter via `/auth/login`).
+1. Le site externe redirige le navigateur vers `<API_BASE_URL>/auth/login?guild=<ID_DU_SERVEUR>` (l'ID du serveur Discord concerné — refusé si ce serveur n'a jamais invité le bot, ou si aucun site n'y est configuré via `/config site-externe`).
+2. Après connexion Discord, l'utilisateur revient sur `<url_du_site>#token=<jwt>` (l'URL configurée via `/config site-externe set` PAR CE SERVEUR) — le site récupère ce token côté client (fragment d'URL, jamais envoyé à un serveur) et le stocke.
+3. Chaque appel à `/api/*` doit inclure `Authorization: Bearer <jwt>`. Le token expire au bout de 7 jours (pas de refresh token — se reconnecter via `/auth/login`) et reste scopé au serveur choisi à l'étape 1 : impossible de l'utiliser pour lire les données d'un autre serveur.
 
 Deux niveaux d'accès : **membre du serveur Discord** (suffit pour `/api/stocks`, `/api/quotas`, `/api/armurerie`, `/api/ventes`) et **rôle taxes ou admin** (requis en plus pour `/api/taxes` — le rôle `TAXES_ROLE_ID` de `/config role`, jusqu'ici sans utilisateur réel, sert enfin à ça).
 
@@ -216,6 +246,12 @@ Taux de paie ($ par unité) par catégorie de quota — mêmes catégories que `
 
 Exemple : `/config salaire set vente 30` → chaque unité vendue rapporte 30$. On peut faire pareil pour `labos`, `recolte`, etc. — indépendamment des objectifs fixés par `/config quota` (une catégorie peut avoir un objectif sans taux de paie, un taux sans objectif, ou les deux).
 
+### `/config site-externe` — site web autorisé à utiliser l'API REST
+Uniquement pertinent si l'API REST est activée (`API_PORT`, voir "Interopérabilité" plus haut). Chaque serveur Discord (guilde) configure le sien indépendamment.
+- `/config site-externe set <url>` — autorise ce site (ex. `https://mon-site.exemple.com`) ; l'origine CORS acceptée est dérivée automatiquement de cette URL.
+- `/config site-externe remove` — retire le site autorisé (l'API refuse alors toute connexion pour ce serveur).
+- `/config site-externe list` — affiche le site actuellement configuré.
+
 ---
 
 ## Modules
@@ -260,6 +296,8 @@ Un retrait de coffre sur un item marqué `vente_pnj: true` crée une vente en at
 
 PostgreSQL via [Prisma](https://www.prisma.io/) (`prisma/schema.prisma`, migrations dans `prisma/migrations/`). Voir `npx prisma studio` pour explorer les données, `npx prisma migrate dev` pour créer une nouvelle migration en développement (après une modif de `schema.prisma`), `npx prisma migrate deploy` pour appliquer les migrations existantes (production, ou premier lancement).
 
+**Multi-tenant** : toutes les tables métier ci-dessous ont une colonne `guild_id` qui fait partie de leur clé primaire/unique — chaque ligne appartient à un seul serveur Discord, jamais partagée entre deux. La table `guilds` (voir `src/guild-registry.ts`) est à part : c'est le registre des serveurs connus (actif/inactif, site externe autorisé), pas une table de config métier.
+
 Tables de configuration (pilotées par `/config`) : `channels` (rôle fonctionnel → salon(s)), `discord_roles` (admin/taxes → rôle Discord), `items` (nom, groupe, `vente`/`visibleStock`/`laboLie`), `quota_targets`, `salary_rates`. Le type d'organisation (`/config type-groupe`) est stocké comme un `Setting` scalaire (clé `type_groupe`). Le registre des activités déclarables et les barèmes par tier (braquage, labos) n'ont pas de table — ce sont des constantes fixes dans `src/config-store.ts` (voir plus haut).
 Tables métier (génériques) : `stocks` (total global), `coffre_stocks` (détail par coffre, voir section Interopérabilité), `stock_history`, `transactions`, `stats`, `cooldowns`, `braquages`, `taxes`, `armurerie`, `user_mapping`, `pending_sales`, `vehicules`, `fourrieres`, `munitions_ventes`.
 
@@ -271,8 +309,9 @@ Tables métier (génériques) : `stocks` (total global), `coffre_stocks` (détai
 roxwood-network-famille/
 ├── src/
 │   ├── index.ts               # Point d'entrée, client Discord, routage, cron jobs
-│   ├── config-store.ts        # Cache de config en mémoire, rechargé par /config
-│   ├── db.ts                   # Couche d'accès Prisma/PostgreSQL
+│   ├── config-store.ts        # Cache de config en mémoire PAR GUILDE, rechargé par /config
+│   ├── guild-registry.ts       # Registre des guildes connues (multi-tenant, voir "Plusieurs guildes")
+│   ├── db.ts                   # Couche d'accès Prisma/PostgreSQL (chaque fonction prend un guildId)
 │   ├── permissions.ts          # Vérification admin partagée
 │   ├── interaction-helpers.ts  # Helpers de réponse partagés (réaction 🗑️, auto-suppression)
 │   ├── default-items.ts        # Préremplissage d'items connus (voir CLAUDE.md)
@@ -293,6 +332,8 @@ roxwood-network-famille/
 ├── prisma/
 │   ├── schema.prisma
 │   └── migrations/
+├── scripts/
+│   └── backfill-guild-id.ts    # One-off migration multi-tenant (voir historique du projet)
 ├── deploy/
 │   └── roxwood-network-famille.service  # Modèle de service systemd (voir "Via systemd")
 ├── Dockerfile
@@ -311,7 +352,8 @@ roxwood-network-famille/
 |----------|----------|
 | Erreur `Used disallowed intents` / le bot ne se connecte pas du tout | Les intents privilégiés **Server Members** et **Message Content** ne sont pas activés dans le Developer Portal (onglet Bot) — voir "Créer l'application Discord" |
 | Le message permanent n'apparaît pas | Vérifier `/config channel list` et la permission `Send Messages` |
-| Les commandes slash ne s'affichent pas | Attendre ~1 min après le démarrage, ou vérifier `CLIENT_ID`/`GUILD_ID` |
+| Les commandes slash ne s'affichent pas sur un serveur | Attendre quelques secondes après l'invitation du bot (déploiement par `guildCreate`), ou vérifier `CLIENT_ID` |
+| `/auth/login` refuse la connexion (`?guild= invalide`) | Le bot n'a jamais été invité sur ce serveur, ou aucun site n'y est configuré — voir `/config site-externe set` |
 | Un mouvement de coffre est ignoré | L'item n'est probablement pas dans `/config item list`, ou son orthographe (accents/casse) diffère du log FiveM |
 | Erreur `Cannot rename channel` | Le bot a besoin de la permission `Manage Channels` sur les salons "labo" |
 | Erreur Prisma au démarrage | Vérifier `DATABASE_URL` dans `.env` et que PostgreSQL est accessible ; `npx prisma migrate deploy` |
