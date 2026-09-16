@@ -39,6 +39,27 @@ const DEFAULT_ITEMS: db.ItemInput[] = [
   // Simple item de stock, sans groupe : affiché dans l'armurerie via
   // MUNITIONS_SMG_ITEM (stock brut uniquement, pas de quota fabrication/vente).
   { name: MUNITIONS_SMG_ITEM },
+  // Labo Salvia (Indépendant uniquement) — Salvia, contrairement aux autres
+  // drogues de labo, n'est volontairement PAS liée à son labo (pas de
+  // labo_lie) : elle reste vendable au PNJ même quand ce labo est actif.
+  { name: 'Salvia', vente: true },
+  { name: 'Feuilles de salvia', labo_lie: 'labo_salvia', labo_lie_role: 'materiau' },
+  // Labo Branche De Cannabis (Indépendant uniquement) — ici la drogue produite
+  // (Branche de cannabis) EST liée à son labo, donc exclue de la vente PNJ
+  // tant que ce labo est actif, contrairement à Salvia ci-dessus.
+  { name: 'Branche de cannabis', labo_lie: 'labo_branche_cannabis', labo_lie_role: 'produit' },
+  { name: 'Graine de strawberry', labo_lie: 'labo_branche_cannabis', labo_lie_role: 'materiau' },
+  { name: 'Pot de plantation', labo_lie: 'labo_branche_cannabis', labo_lie_role: 'materiau' },
+  { name: 'Fertilisant', labo_lie: 'labo_branche_cannabis', labo_lie_role: 'materiau' },
+  // Matériaux du labo Spore X (déjà existant).
+  { name: 'Psilocybe Rouge', labo_lie: 'labo_sporex', labo_lie_role: 'materiau' },
+  { name: 'Psilocybe Vert', labo_lie: 'labo_sporex', labo_lie_role: 'materiau' },
+  { name: 'Psilocybe Violet', labo_lie: 'labo_sporex', labo_lie_role: 'materiau' },
+  { name: 'Poudre à canon', labo_lie: 'labo_sporex', labo_lie_role: 'materiau' },
+  { name: 'Fragment de métal', labo_lie: 'labo_sporex', labo_lie_role: 'materiau' },
+  // Matériaux du labo Héroïne (déjà existant).
+  { name: 'Datura', labo_lie: 'labo_heroine', labo_lie_role: 'materiau' },
+  { name: 'Morphine', labo_lie: 'labo_heroine', labo_lie_role: 'materiau' },
 ];
 
 /**

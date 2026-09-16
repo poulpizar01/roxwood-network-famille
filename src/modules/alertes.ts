@@ -123,8 +123,8 @@ function laboTimerKey(guildId: string, laboKey: string): string {
  */
 function stripLaboPrefix(name: string): string {
   let result = name;
-  while (/^(\d+[-\s]*)?[🔴🟢]/.test(result)) {
-    result = result.replace(/^(\d+[-\s]*)?[🔴🟢][-\s]*/, '');
+  while (/^(\d+[-\s・]*)?[🔴🟢]/.test(result)) {
+    result = result.replace(/^(\d+[-\s・]*)?[🔴🟢][-\s・]*/, '');
   }
   return result.trim();
 }
@@ -147,28 +147,32 @@ export async function setLaboStatut(client: Client, guildId: string, laboKey: st
     const baseName = stripLaboPrefix(channel.name || '');
     const timerKey = laboTimerKey(guildId, laboKey);
 
-    if (available) {
+    // Un labo déclaré indisponible mais sans délai de production réel
+    // (tempsRestantMinutes<=0) reste quand même disponible — sinon le salon
+    // passerait au rouge sans jamais avoir de timer pour repasser au vert.
+    const staysAvailable = available || tempsRestantMinutes <= 0;
+
+    if (staysAvailable) {
+      if (laboTimers[timerKey]) { clearTimeout(laboTimers[timerKey]); delete laboTimers[timerKey]; }
       await db.setSetting(guildId, `labo_end_${laboKey}`, '0');
       if (!channel.name.startsWith('🟢')) {
-        await channel.setName(`🟢 ${baseName}`).catch((err: Error) => console.error('[alertes] rename labo (dispo):', err.message));
+        await channel.setName(`🟢・${baseName}`).catch((err: Error) => console.error('[alertes] rename labo (dispo):', err.message));
       }
     } else {
-      const endsAt = tempsRestantMinutes > 0 ? Date.now() + tempsRestantMinutes * 60 * 1000 : 0;
-      if (endsAt) await db.setSetting(guildId, `labo_end_${laboKey}`, String(endsAt));
+      const endsAt = Date.now() + tempsRestantMinutes * 60 * 1000;
+      await db.setSetting(guildId, `labo_end_${laboKey}`, String(endsAt));
 
       if (!channel.name.startsWith('🔴')) {
-        await channel.setName(`🔴 ${baseName}`).catch((err: Error) => console.error('[alertes] rename labo (indispo):', err.message));
+        await channel.setName(`🔴・${baseName}`).catch((err: Error) => console.error('[alertes] rename labo (indispo):', err.message));
       }
 
       if (laboTimers[timerKey]) clearTimeout(laboTimers[timerKey]);
 
-      if (tempsRestantMinutes > 0) {
-        const ms = tempsRestantMinutes * 60 * 1000;
-        laboTimers[timerKey] = setTimeout(async () => {
-          await setLaboStatut(client, guildId, laboKey, true);
-          delete laboTimers[timerKey];
-        }, ms);
-      }
+      const ms = tempsRestantMinutes * 60 * 1000;
+      laboTimers[timerKey] = setTimeout(async () => {
+        await setLaboStatut(client, guildId, laboKey, true);
+        delete laboTimers[timerKey];
+      }, ms);
     }
   } catch (err) {
     console.error(`[alertes] setLaboStatut(${guildId}):`, (err as Error).message);

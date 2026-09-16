@@ -68,9 +68,14 @@ model Setting {
 /// (tous les salons de logs de coffre surveillés) — même table, pas de cas
 /// spécial.
 model Channel {
-  guildId   String @map("guild_id")
+  guildId   String  @map("guild_id")
   role      String
-  channelId String @map("channel_id")
+  channelId String  @map("channel_id")
+  /// Nom donné par l'admin pour distinguer ce salon des autres du même rôle
+  /// à valeurs multiples (ex. "Coffre principal" pour un `logs_coffres`) —
+  /// `null` tant que non renseigné. Sans intérêt pour un rôle à valeur
+  /// unique (une seule ligne de toute façon).
+  label     String?
 
   @@id([guildId, role, channelId])
   @@map("channels")
@@ -116,6 +121,10 @@ model Item {
   displayOrder    Int     @default(0) @map("display_order")
   visibleStock    Boolean @default(true) @map("visible_stock")
   laboLie         String? @map("labo_lie")
+  /// 'produit' (LA drogue que le labo `laboLie` fabrique) ou 'materiau'
+  /// (consommé par ce labo) — `null` si `laboLie` est `null`. Voir
+  /// `db.upsertItem` pour la règle de cohérence entre les deux champs.
+  laboLieRole     String? @map("labo_lie_role")
   stockMultiplier Int     @default(1) @map("stock_multiplier")
 
   @@id([guildId, name])
@@ -144,6 +153,43 @@ model SalaryRate {
 
   @@id([guildId, quotaType])
   @@map("salary_rates")
+}
+
+/// Taux de paie ($ par unité) spécifique à UN item vendu, remplace le taux
+/// général de la catégorie "vente" (SalaryRate) pour cet item précis — un
+/// item sans ligne ici utilise le taux général. Voir `/config salaire` et
+/// `quotas.getVenteByItemMap` (lu seulement si au moins une ligne existe
+/// pour la guilde, jamais par défaut).
+model ItemSalaryRate {
+  guildId String @map("guild_id")
+  item    String
+  amount  Float
+
+  @@id([guildId, item])
+  @@map("item_salary_rates")
+}
+
+/// Points de classement (entiers, pas $ — indépendant de SalaryRate) par
+/// catégorie de quota. Voir `/config classement` et `quotas.computeClassement`.
+model ClassementRate {
+  guildId   String @map("guild_id")
+  quotaType String @map("quota_type")
+  amount    Int
+
+  @@id([guildId, quotaType])
+  @@map("classement_rates")
+}
+
+/// Points de classement spécifiques à UNE activité de la catégorie "actions"
+/// (clé fixe du registre `ACTIVITY_TYPES`, jamais du texte libre), remplace
+/// le nombre général de ClassementRate pour cette activité précise.
+model ActivityClassementRate {
+  guildId     String @map("guild_id")
+  activityKey String @map("activity_key")
+  amount      Int
+
+  @@id([guildId, activityKey])
+  @@map("activity_classement_rates")
 }
 
 // ═══ DONNÉES MÉTIER (génériques, indépendantes de la config ci-dessus) ═══

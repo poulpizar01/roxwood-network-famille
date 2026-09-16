@@ -177,6 +177,13 @@ export async function catchUpMissedMessages(client: Client, guildId: string): Pr
   return total;
 }
 
+const FOURRIERE_NOTIF_TITLE = '🚗 Mise en fourrière';
+
+/** Identifie une notification de mise en fourrière par le titre de son embed (voir convention "Robustesse" du projet) — sert à l'exclure de la réaction 🗑️ automatique (voir `index.ts`) sans exclure tout le salon `admin`, partagé avec d'autres alertes qui restent, elles, supprimables par réaction. */
+export function isFourriereNotification(message: Message): boolean {
+  return message.embeds?.[0]?.title === FOURRIERE_NOTIF_TITLE;
+}
+
 /** Envoie une notification immédiate dans `admin` quand une fourrière est facturée. */
 async function notifierFourriere(client: Client, guildId: string, facturation: Facturation): Promise<void> {
   const c = configStore.get(guildId);
@@ -187,7 +194,7 @@ async function notifierFourriere(client: Client, guildId: string, facturation: F
   const montant = MONTANT_FOURRIERE;
   const qui = facturation.discordId ? `<@${facturation.discordId}>` : `**${facturation.joueur}**`;
   const embed = new EmbedBuilder()
-    .setTitle('🚗 Mise en fourrière')
+    .setTitle(FOURRIERE_NOTIF_TITLE)
     .setColor(0xED4245)
     .setDescription(`${qui} a laissé un véhicule finir en fourrière.`)
     .addFields(

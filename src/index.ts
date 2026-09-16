@@ -124,6 +124,7 @@ async function bootstrapGuild(guild: Guild): Promise<void> {
   await quotas.initPermanentMessage(client, guildId);
   await armurerie.initPermanentMessage(client, guildId);
   await taxes.initPermanentMessage(client, guildId);
+  await configModule.initDocumentationMessage(client, guildId);
   await alertes.initLaboTimers(client, guildId);
   await garages.catchUpMissedMessages(client, guildId);
 }
@@ -288,7 +289,8 @@ client.on('messageCreate', async (message) => {
   if (
     message.author.id === client.user?.id &&
     !noTrashChannels.includes(message.channelId) &&
-    !quotas.isQuotaReminderMessage(message)
+    !quotas.isQuotaReminderMessage(message) &&
+    !garages.isFourriereNotification(message)
   ) {
     if (!message.components?.length) message.react('🗑️').catch(() => null);
   }

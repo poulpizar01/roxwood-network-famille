@@ -162,6 +162,24 @@ async function editAccumulatedAlert(client: Client, sale: NonNullable<PendingSal
   } catch { /* silence */ }
 }
 
+/** Met à jour l'embed d'une vente déclarée (statut `declare`) après une réduction de quantité par redépôt partiel — sans les boutons d'action, une vente déjà déclarée n'en a plus. */
+async function editDeclaredAlertQuantite(client: Client, sale: NonNullable<PendingSale>, newQuantite: number): Promise<void> {
+  if (!sale.channelId || !sale.messageId) return;
+  try {
+    const channel = await client.channels.fetch(sale.channelId).catch(() => null);
+    if (!channel?.isTextBased()) return;
+    const msg = await channel.messages.fetch(sale.messageId).catch(() => null);
+    if (!msg) return;
+
+    const embed = buildAlertEmbed(
+      { joueur: sale.joueur, item: sale.item, quantite: newQuantite }, sale.id,
+      "💰 Vente déclarée — en attente du dépôt d'argent (quantité corrigée)",
+      0xFEE75C, sale.discordId,
+    );
+    await msg.edit({ embeds: [embed], components: [] });
+  } catch { /* silence */ }
+}
+
 // ─── CONFIRMATION PAR DÉPÔT D'ARGENT ─────────────────────────────────────────
 
 /** Un dépôt d'un item de paiement confirme toutes les ventes déclarées en attente d'un joueur dans la fenêtre {@link WINDOW_MS}. */
@@ -178,7 +196,19 @@ async function tryConfirmMoneyDeposit(client: Client, guildId: string, entry: St
 
 // ─── CONFIRMATION PAR RETOUR DE DROGUE ───────────────────────────────────────
 
-/** Un dépôt de l'item de vente lui-même confirme un reposage déclaré, ou décrémente/annule une vente en attente pas encore déclarée (redépôt partiel ou total). */
+/**
+ * Un dépôt de l'item de vente lui-même confirme un reposage déclaré, ou
+ * décrémente/annule une vente active (`en_attente` OU déjà `declare` — un
+ * joueur peut reposer après avoir cliqué "Déclarer" au lieu de payer, ça ne
+ * doit pas laisser la vente bloquée "en attente" pour toujours).
+ *
+ * **Limite connue** : cible la vente la PLUS RÉCENTE pour ce joueur/item —
+ * si un joueur a deux ventes actives du même item en même temps (rare :
+ * retrait, déclaration, puis un second retrait avant confirmation), un
+ * redépôt peut cibler la mauvaise des deux. Pas corrigé ici (demanderait un
+ * ordre de tri différent, ex. prioriser `declare` sur `en_attente`) — à
+ * valider avec l'utilisateur avant de complexifier.
+ */
 async function tryConfirmRedeposit(client: Client, guildId: string, entry: StockEntry): Promise<void> {
   const saleRepose = await db.getPendingSaleRepose(guildId, entry.joueur, entry.item, Date.now() - WINDOW_MS);
   if (saleRepose) {
@@ -187,16 +217,19 @@ async function tryConfirmRedeposit(client: Client, guildId: string, entry: Stock
     return;
   }
 
-  const saleEnAttente = await db.getPendingSaleForAccumulation(guildId, entry.joueur, entry.item, Date.now() - WINDOW_MS);
-  if (!saleEnAttente) return;
+  const saleActive = await db.getPendingSaleForReduction(guildId, entry.joueur, entry.item, Date.now() - WINDOW_MS);
+  if (!saleActive) return;
 
-  const nouvelleQuantite = saleEnAttente.quantite - entry.quantite;
+  const nouvelleQuantite = saleActive.quantite - entry.quantite;
   if (nouvelleQuantite <= 0) {
-    await db.updatePendingSaleStatut(guildId, saleEnAttente.id, 'ignore');
-    await editAlertMessage(client, saleEnAttente, '📦 Drogue intégralement reposée — vente annulée', 0x95A5A6);
+    await db.updatePendingSaleStatut(guildId, saleActive.id, 'ignore');
+    await editAlertMessage(client, saleActive, '📦 Drogue intégralement reposée — vente annulée', 0x95A5A6);
+  } else if (saleActive.statut === 'declare') {
+    await db.updatePendingSaleQuantite(guildId, saleActive.id, nouvelleQuantite);
+    await editDeclaredAlertQuantite(client, saleActive, nouvelleQuantite);
   } else {
-    await db.accumulatePendingSale(guildId, saleEnAttente.id, nouvelleQuantite, Date.now());
-    await editAccumulatedAlert(client, saleEnAttente, nouvelleQuantite);
+    await db.accumulatePendingSale(guildId, saleActive.id, nouvelleQuantite, Date.now());
+    await editAccumulatedAlert(client, saleActive, nouvelleQuantite);
   }
 }
 

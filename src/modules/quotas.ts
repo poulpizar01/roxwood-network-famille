@@ -234,16 +234,63 @@ function computeSalaire(byQuotaType: Record<string, number>, rates: Record<strin
 }
 
 /**
+ * Comme `computeSalaire`, mais la catégorie "vente" est calculée par item
+ * (`venteByItem`) plutôt que via le compte agrégé `byQuotaType.vente` : un
+ * item avec un taux dans `itemRates` (voir `/config salaire ... item:`) est
+ * payé à ce taux, les autres au taux général "vente". N'appeler que si
+ * `itemRates` est non vide (voir `getVenteByItemMap`) — sinon `computeSalaire`
+ * suffit et évite une lecture `Transaction` inutile.
+ */
+function computeSalaireAvecItems(byQuotaType: Record<string, number>, rates: Record<string, number>, venteByItem: Record<string, number>, itemRates: Record<string, number>): number {
+  let sum = 0;
+  for (const [qt, rate] of Object.entries(rates)) {
+    if (qt === 'vente') continue;
+    sum += (byQuotaType[qt] ?? 0) * rate;
+  }
+  const generalVenteRate = rates.vente ?? 0;
+  sum += Object.entries(venteByItem).reduce((s, [item, qty]) => s + qty * (itemRates[item] ?? generalVenteRate), 0);
+  return sum;
+}
+
+/**
+ * Répartition des ventes par item, pour tous les joueurs, sur une plage —
+ * relit `Transaction` (voir `db.getVenteDetailAllUsers`), une requête que le
+ * panneau Discord live n'a normalement jamais besoin de faire. **N'appeler
+ * que si `configStore.get(guildId).ITEM_SALARY_RATES` est non vide** — voir
+ * chaque appelant (`getSalaryRanking`, `getUserPayForRange`,
+ * `getAllUserPayForRange`, `buildPayEmbed`), qui garde cette vérification
+ * localement plutôt qu'un seul point central, pour qu'aucun chemin ne
+ * l'oublie.
+ */
+async function getVenteByItemMap(guildId: string, sinceTs: number, untilTs: number): Promise<Map<string, Record<string, number>>> {
+  const rows = await db.getVenteDetailAllUsers(guildId, sinceTs, untilTs);
+  const map = new Map<string, Record<string, number>>();
+  for (const r of rows) {
+    const userMap = map.get(r.userId) ?? {};
+    userMap[r.item] = (userMap[r.item] ?? 0) + r.quantite;
+    map.set(r.userId, userMap);
+  }
+  return map;
+}
+
+/**
  * Classement de tous les membres suivis par salaire total décroissant,
  * uniquement ceux dont le salaire est > 0 (aucun taux configuré ou aucune
  * activité payante déclarée → absent du classement, pas juste à 0$).
  */
 async function getSalaryRanking(guildId: string): Promise<Array<{ userId: string; salaire: number; byQuotaType: Record<string, number> }>> {
   const rates = configStore.get(guildId).SALARY_RATES;
+  const itemRates = configStore.get(guildId).ITEM_SALARY_RATES;
+  const hasItemOverrides = Object.keys(itemRates).length > 0;
   const summaries = await getAllUserQuotaSummaries(guildId);
+  const venteByItemMap = hasItemOverrides
+    ? await getVenteByItemMap(guildId, Number((await db.getSetting(guildId, LAST_RESET_KEY)) || 0), Date.now())
+    : null;
   const results: Array<{ userId: string; salaire: number; byQuotaType: Record<string, number> }> = [];
   for (const [userId, { byQuotaType }] of summaries) {
-    const salaire = computeSalaire(byQuotaType, rates);
+    const salaire = venteByItemMap
+      ? computeSalaireAvecItems(byQuotaType, rates, venteByItemMap.get(userId) ?? {}, itemRates)
+      : computeSalaire(byQuotaType, rates);
     if (salaire > 0) results.push({ userId, salaire, byQuotaType });
   }
   return results.sort((a, b) => b.salaire - a.salaire);
@@ -300,13 +347,24 @@ export async function getAllUserQuotaSummariesForRange(guildId: string, range: Q
 /** Paie d'un joueur (taux actuels appliqués à l'activité de la plage) — voir note ci-dessus sur les taux non historisés. */
 export async function getUserPayForRange(guildId: string, userId: string, range: QuotaRange): Promise<{ salaire: number; byQuotaType: Record<string, number> }> {
   const { byQuotaType } = await getUserQuotaSummaryForRange(guildId, userId, range);
-  return { salaire: computeSalaire(byQuotaType, configStore.get(guildId).SALARY_RATES), byQuotaType };
+  const rates = configStore.get(guildId).SALARY_RATES;
+  const itemRates = configStore.get(guildId).ITEM_SALARY_RATES;
+  if (Object.keys(itemRates).length) {
+    const venteByItem = (await getVenteByItemMap(guildId, range.since, range.until)).get(userId) ?? {};
+    return { salaire: computeSalaireAvecItems(byQuotaType, rates, venteByItem, itemRates), byQuotaType };
+  }
+  return { salaire: computeSalaire(byQuotaType, rates), byQuotaType };
 }
 
 /** Paie de tous les joueurs suivis sur la plage, y compris à 0$ (contrairement à `getSalaryRankingForRange`) — pas triée. */
 export async function getAllUserPayForRange(guildId: string, range: QuotaRange): Promise<Array<{ userId: string; salaire: number; byQuotaType: Record<string, number> }>> {
   const rates = configStore.get(guildId).SALARY_RATES;
+  const itemRates = configStore.get(guildId).ITEM_SALARY_RATES;
   const summaries = await getAllUserQuotaSummariesForRange(guildId, range);
+  if (Object.keys(itemRates).length) {
+    const venteByItemMap = await getVenteByItemMap(guildId, range.since, range.until);
+    return summaries.map(({ userId, byQuotaType }) => ({ userId, salaire: computeSalaireAvecItems(byQuotaType, rates, venteByItemMap.get(userId) ?? {}, itemRates), byQuotaType }));
+  }
   return summaries.map(({ userId, byQuotaType }) => ({ userId, salaire: computeSalaire(byQuotaType, rates), byQuotaType }));
 }
 
@@ -327,11 +385,16 @@ export async function getGroupSummaryForRange(guildId: string, range: QuotaRange
   }));
 }
 
-/** Embed de paie personnelle : détail par catégorie payante + salaire total + classement. */
+/** Embed de paie personnelle : détail par catégorie payante (par item pour "vente" si au moins un taux par item est configuré) + salaire total + classement (paie). */
 async function buildPayEmbed(guildId: string, userId: string, member: GuildMember | null): Promise<EmbedBuilder> {
   const rates = configStore.get(guildId).SALARY_RATES;
+  const itemRates = configStore.get(guildId).ITEM_SALARY_RATES;
+  const hasItemOverrides = Object.keys(itemRates).length > 0;
   const { byQuotaType } = await getUserQuotaSummary(guildId, userId);
-  const salaire = computeSalaire(byQuotaType, rates);
+  const venteByItem = hasItemOverrides
+    ? (await getVenteByItemMap(guildId, Number((await db.getSetting(guildId, LAST_RESET_KEY)) || 0), Date.now())).get(userId) ?? {}
+    : {};
+  const salaire = hasItemOverrides ? computeSalaireAvecItems(byQuotaType, rates, venteByItem, itemRates) : computeSalaire(byQuotaType, rates);
 
   const embed = new EmbedBuilder().setTitle(`💰 Ma Paie — ${member?.displayName || userId}`).setColor(0xFEE75C);
 
@@ -341,9 +404,18 @@ async function buildPayEmbed(guildId: string, userId: string, member: GuildMembe
     return embed;
   }
 
-  const detail = categories
-    .map(qt => `• ${capitalize(qt)} : ${byQuotaType[qt] ?? 0} × ${rates[qt]}$ = **${Math.round((byQuotaType[qt] ?? 0) * rates[qt]).toLocaleString('fr-FR')}$**`)
-    .join('\n');
+  const detail = categories.map(qt => {
+    if (qt === 'vente' && hasItemOverrides) {
+      const items = Object.keys(venteByItem).sort();
+      if (!items.length) return `• Vente : 0 × ${rates.vente ?? 0}$ = **0$**`;
+      return items.map(item => {
+        const qty = venteByItem[item];
+        const rate = itemRates[item] ?? rates.vente ?? 0;
+        return `• Vente ${item} : ${qty} × ${rate}$ = **${Math.round(qty * rate).toLocaleString('fr-FR')}$**`;
+      }).join('\n');
+    }
+    return `• ${capitalize(qt)} : ${byQuotaType[qt] ?? 0} × ${rates[qt]}$ = **${Math.round((byQuotaType[qt] ?? 0) * rates[qt]).toLocaleString('fr-FR')}$**`;
+  }).join('\n');
 
   const ranking = await getSalaryRanking(guildId);
   const rank = ranking.findIndex(r => r.userId === userId) + 1;
@@ -351,14 +423,57 @@ async function buildPayEmbed(guildId: string, userId: string, member: GuildMembe
   embed.addFields(
     { name: '📋 Détail', value: detail },
     { name: '💵 Salaire total', value: `${Math.round(salaire).toLocaleString('fr-FR')} $`, inline: true },
-    { name: '🏆 Classement', value: rank ? `#${rank}` : 'N/A', inline: true },
+    // "(paie)" pour lever l'ambiguïté avec le classement de groupe, basé sur
+    // les points et totalement distinct (voir buildClassementEmbed/getClassementRanking).
+    { name: '🏆 Classement (paie)', value: rank ? `#${rank}` : 'N/A', inline: true },
   );
   return embed;
 }
 
-/** Embed du classement de groupe trié par salaire total décroissant. */
+/**
+ * Points de classement d'un joueur à partir de sa carte de stats déjà
+ * chargée (`map`, voir `QuotaSummary`) — contrairement à la paie par item
+ * (voir `computeSalaireAvecItems`/`getVenteByItemMap`), AUCUNE requête
+ * supplémentaire n'est nécessaire ici : le cache `Stat` est déjà détaillé
+ * par activité individuelle (une entrée par clé `ACTIVITY_TYPES`), la
+ * catégorie "actions" n'étant qu'un regroupement de clés déjà disponibles.
+ */
+function computeClassement(guildId: string, map: Record<string, { count: number }>, classementRates: Record<string, number>, activityClassementRates: Record<string, number>): number {
+  const activityTypes = configStore.get(guildId).ACTIVITY_TYPES;
+  let sum = 0;
+  for (const [key, cfg] of Object.entries(activityTypes)) {
+    if (!cfg.quotaType) continue;
+    const count = map[key]?.count || 0;
+    if (!count) continue;
+    const rate = cfg.quotaType === 'actions' && activityClassementRates[key] != null
+      ? activityClassementRates[key]
+      : classementRates[cfg.quotaType] ?? 0;
+    sum += count * rate;
+  }
+  return sum;
+}
+
+/**
+ * Classement de tous les membres suivis par points de classement
+ * décroissants (voir `/config classement`) — totalement indépendant du
+ * salaire (`getSalaryRanking`), un joueur peut être premier ici et absent du
+ * classement de paie, ou inversement.
+ */
+async function getClassementRanking(guildId: string): Promise<Array<{ userId: string; points: number }>> {
+  const classementRates = configStore.get(guildId).CLASSEMENT_RATES;
+  const activityClassementRates = configStore.get(guildId).ACTIVITY_CLASSEMENT_RATES;
+  const summaries = await getAllUserQuotaSummaries(guildId);
+  const results: Array<{ userId: string; points: number }> = [];
+  for (const [userId, { map }] of summaries) {
+    const points = computeClassement(guildId, map, classementRates, activityClassementRates);
+    if (points > 0) results.push({ userId, points });
+  }
+  return results.sort((a, b) => b.points - a.points);
+}
+
+/** Embed du classement de groupe, trié par points décroissants (voir `/config classement` — indépendant de la paie, voir `buildPayEmbed`). */
 async function buildClassementEmbed(client: Client, guildId: string): Promise<EmbedBuilder> {
-  const ranking = await getSalaryRanking(guildId);
+  const ranking = await getClassementRanking(guildId);
   const lines: string[] = [];
   const guild = client.guilds.cache.get(guildId);
 
@@ -367,13 +482,13 @@ async function buildClassementEmbed(client: Client, guildId: string): Promise<Em
     const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i + 1}.`;
     const member = await guild?.members.fetch(r.userId).catch(() => null);
     const name = member?.displayName || `<@${r.userId}>`;
-    lines.push(`${medal} ${name} — **${Math.round(r.salaire).toLocaleString('fr-FR')}** $`);
+    lines.push(`${medal} ${name} — **${r.points.toLocaleString('fr-FR')}** pt`);
   }
 
   return new EmbedBuilder()
     .setTitle('🏆 Classement du Groupe')
     .setColor(0xFEE75C)
-    .setDescription(lines.length ? lines.join('\n') : '*Aucune donnée (voir /config salaire set)*')
+    .setDescription(lines.length ? lines.join('\n') : '*Aucune donnée (voir /config classement set)*')
     .setTimestamp();
 }
 
@@ -497,7 +612,10 @@ function buildButtonRows(guildId: string) {
   for (const rowEntries of direct) {
     const row = new ActionRowBuilder<ButtonBuilder>();
     for (const [key, cfg] of rowEntries) {
-      row.addComponents(new ButtonBuilder().setCustomId(`act_${key}`).setLabel(activityDisplayLabel(cfg).slice(0, 80)).setStyle(styleFor(cfg)));
+      // Pas d'emoji sur le bouton (cfg.label brut, pas activityDisplayLabel) : cohérent avec
+      // les boutons ATM/Cambu/Supérette/Go Fast/Récolte/Labo, qui n'en ont pas non plus.
+      // L'emoji reste utilisé ailleurs (slots braquages, minuterie, select de repli — voir activityDisplayLabel).
+      row.addComponents(new ButtonBuilder().setCustomId(`act_${key}`).setLabel(cfg.label.slice(0, 80)).setStyle(styleFor(cfg)));
     }
     rows.push(row as ActionRowBuilder<ButtonBuilder | UserSelectMenuBuilder>);
   }
@@ -816,7 +934,9 @@ export async function handleModal(interaction: ModalSubmitInteraction): Promise<
 
     const tempsRaw = interaction.fields.getTextInputValue('temps_restant').trim();
     const tempsMinutes = parseInt(tempsRaw, 10);
-    if (isNaN(tempsMinutes) || tempsMinutes <= 0) return replyAutoDelete(interaction, '❌ Temps restant invalide.');
+    // 0 accepté : certains labos n'ont pas de délai de production réel — le
+    // salon reste disponible (voir setLaboStatut, alertes.ts).
+    if (isNaN(tempsMinutes) || tempsMinutes < 0) return replyAutoDelete(interaction, '❌ Temps restant invalide.');
 
     const partnerIds = token ? (pendingLaboParticipants.get(token) || []) : [];
     if (token && !partnerIds.length) {
@@ -871,7 +991,8 @@ export async function handleSelect(interaction: UserSelectMenuInteraction): Prom
       .addComponents(
         new ActionRowBuilder<TextInputBuilder>().addComponents(
           new TextInputBuilder().setCustomId('temps_restant').setLabel('Temps restant (en minutes)')
-            .setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(5),
+            .setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(5)
+            .setPlaceholder("0 si ce labo n'a pas de délai de production"),
         ),
       );
     return interaction.showModal(modal);

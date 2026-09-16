@@ -14,7 +14,7 @@
  * documenté dans le projet source : vérifier l'orthographe EXACTE des logs
  * FiveM avant d'ajouter un item).
  */
-import { EmbedBuilder, SlashCommandBuilder, MessageFlags, type Client, type Message, type ChatInputCommandInteraction, type AutocompleteInteraction, type TextBasedChannel } from 'discord.js';
+import { EmbedBuilder, SlashCommandBuilder, MessageFlags, ChannelType, type Client, type Message, type ChatInputCommandInteraction, type AutocompleteInteraction, type TextBasedChannel } from 'discord.js';
 import * as db from '../db';
 import * as configStore from '../config-store';
 import { isAdmin } from '../permissions';
@@ -308,53 +308,85 @@ function buildStockEmbed(guildId: string, stocks: Array<{ item: string; quantite
   // total d'un groupe auquel il appartiendrait.
   const isVisible = (item: string) => c.ITEMS_BY_NAME[item]?.visibleStock !== false;
 
-  // Un item actuellement dans VENTE_ITEMS/LABO_ITEMS est TOUJOURS exclu du
-  // corps principal, indépendamment de `visibleStock` : il est déjà montré
-  // via l'un des deux champs dédiés ci-dessous, jamais les deux à la fois
-  // (voir config-store.ts — mutuellement exclusifs). Sans ça, oublier
+  // Un item lié à un labo (`laboLie` non nul) n'apparaît JAMAIS dans le corps
+  // principal, que son labo soit actif pour le tier courant ou non : actif,
+  // il est déjà montré via VENTE_ITEMS/LABO_ITEMS/MATERIAL_ITEMS (voir
+  // itemsAffichesAilleurs ci-dessous) ; inactif pour ce tier, il doit rester
+  // totalement invisible (pas de repli en item générique) — un item créé
+  // pour un labo d'un autre tier ne doit apparaître nulle part tant que ce
+  // tier n'est pas sélectionné.
+  const hasLaboLie = (item: string) => !!c.ITEMS_BY_NAME[item]?.laboLie;
+
+  // Un item actuellement dans VENTE_ITEMS/LABO_ITEMS/MATERIAL_ITEMS est
+  // TOUJOURS exclu du corps principal, indépendamment de `visibleStock` : il
+  // est déjà montré via l'un des trois champs dédiés ci-dessous, jamais deux
+  // fois (VENTE_ITEMS/LABO_ITEMS sont mutuellement exclusifs entre eux, voir
+  // config-store.ts ; MATERIAL_ITEMS ne recoupe ni l'un ni l'autre, un item
+  // n'ayant qu'un seul rôle labo_lie_role à la fois). Sans ça, oublier
   // `stock_general:false` sur un item vente_pnj/labo_lie le ferait apparaître
   // en double sur ce même message.
-  const itemsAffichesAilleurs = new Set([...c.VENTE_ITEMS, ...c.LABO_ITEMS].map(i => i.toLowerCase()));
+  const itemsAffichesAilleurs = new Set([...c.VENTE_ITEMS, ...c.LABO_ITEMS, ...c.MATERIAL_ITEMS].map(i => i.toLowerCase()));
 
   const lines: string[] = [];
   const shownGroups = new Set<string>();
 
   for (const item of c.ALLOWED_ITEMS) {
-    if (!isVisible(item) || itemsAffichesAilleurs.has(item.toLowerCase())) continue;
+    if (!isVisible(item) || itemsAffichesAilleurs.has(item.toLowerCase()) || hasLaboLie(item)) continue;
     const lower = item.toLowerCase();
     const group = itemToGroup[lower];
 
     if (group) {
       if (shownGroups.has(group)) continue;
       shownGroups.add(group);
-      const groupItems = c.STOCK_GROUPS[group].filter(i => isVisible(i) && !itemsAffichesAilleurs.has(i.toLowerCase()));
+      const groupItems = c.STOCK_GROUPS[group].filter(i => isVisible(i) && !itemsAffichesAilleurs.has(i.toLowerCase()) && !hasLaboLie(i));
       const total = armurerie.weightedStockSum(groupItems, stockMap, c.ITEMS_BY_NAME);
-      lines.push(`**${group}** : \`${total.toLocaleString('fr-FR')}\``);
+      // Traité comme un item classique (pas de gras) : dans cette liste sans
+      // titre de catégorie ni séparation, mettre ce total en avant n'aurait
+      // pas de sens — contrairement aux 3 champs dédiés plus bas, qui ont
+      // leur propre titre et une séparation avant le Total.
+      lines.push(`${group} : \`${total.toLocaleString('fr-FR')}\``);
     } else {
       const qty = stockMap[lower] || 0;
-      lines.push(`**${item}** : \`${qty.toLocaleString('fr-FR')}\``);
+      lines.push(`${item} : \`${qty.toLocaleString('fr-FR')}\``);
     }
   }
 
   embed.setDescription(lines.length ? lines.join('\n') : '*Aucun stock enregistré*');
 
-  // Drogue à vendre : uniquement un total, sans détail par item (le détail
-  // reste consultable via `/drogues-a-vendre`, gardée en parallèle). Drogue
-  // de production : détail par item, utile pour suivre la production en
-  // cours. Les deux listes sont dynamiques (dépendent du tier — voir
-  // VENTE_ITEMS/LABO_ITEMS dans config-store.ts) et mutuellement exclusives.
-  if (c.VENTE_ITEMS.length) {
-    const total = c.VENTE_ITEMS.reduce((sum, item) => sum + (stockMap[item.toLowerCase()] || 0), 0);
-    embed.addFields({ name: '💊 Drogue à vendre', value: `\`${total.toLocaleString('fr-FR')}\`` });
+  // Drogues à vendre : détail par item ayant un stock > 0 (le détail
+  // complet, items à 0 compris, reste consultable via `/drogues-a-vendre`) +
+  // un total — même format que Drogues de production ci-dessous. Les listes
+  // sont dynamiques (dépendent du tier — voir VENTE_ITEMS/LABO_ITEMS/
+  // MATERIAL_ITEMS dans config-store.ts) et mutuellement exclusives.
+  // Format commun aux 3 champs ci-dessous : items en clair (pas de gras,
+  // pour bien les distinguer du Total), pas de ligne blanche avant le Total
+  // en gras.
+  const venteEnStock = c.VENTE_ITEMS.filter(item => (stockMap[item.toLowerCase()] || 0) > 0);
+  if (venteEnStock.length) {
+    const venteLines = venteEnStock.map(item => `${item} : \`${stockMap[item.toLowerCase()].toLocaleString('fr-FR')}\``);
+    const total = venteEnStock.reduce((sum, item) => sum + stockMap[item.toLowerCase()], 0);
+    embed.addFields({
+      name: '💊 Drogues à vendre',
+      value: `${venteLines.join('\n')}\n**Total : \`${total.toLocaleString('fr-FR')}\`**`,
+    });
   }
 
   if (c.LABO_ITEMS.length) {
-    const laboLines = c.LABO_ITEMS.map(item => `**${item}** : \`${(stockMap[item.toLowerCase()] || 0).toLocaleString('fr-FR')}\``);
+    const laboLines = c.LABO_ITEMS.map(item => `${item} : \`${(stockMap[item.toLowerCase()] || 0).toLocaleString('fr-FR')}\``);
     const total = c.LABO_ITEMS.reduce((sum, item) => sum + (stockMap[item.toLowerCase()] || 0), 0);
     embed.addFields({
-      name: '🧪 Drogue de production',
-      value: `${laboLines.join('\n')}\n**Total** : \`${total.toLocaleString('fr-FR')}\``,
+      name: '🧪 Drogues de production',
+      value: `${laboLines.join('\n')}\n**Total : \`${total.toLocaleString('fr-FR')}\`**`,
     });
+  }
+
+  // Matériaux de production : détail par item sans total (contrairement aux
+  // deux champs ci-dessus) — des matières premières hétérogènes n'ont pas de
+  // somme qui fasse sens ensemble. Dépend du tier comme Drogues de
+  // production (voir MATERIAL_ITEMS dans config-store.ts).
+  if (c.MATERIAL_ITEMS.length) {
+    const materialLines = c.MATERIAL_ITEMS.map(item => `${item} : \`${(stockMap[item.toLowerCase()] || 0).toLocaleString('fr-FR')}\``);
+    embed.addFields({ name: '🧱 Matériaux de production', value: materialLines.join('\n') });
   }
 
   return embed;
@@ -375,7 +407,9 @@ export function getCommands() {
         .setName('set-stock')
         .setDescription("Force la valeur du stock d'un item (correction manuelle, admin)")
         .addStringOption(opt => opt.setName('item').setDescription("L'item à corriger").setRequired(true).setAutocomplete(true))
-        .addIntegerOption(opt => opt.setName('quantite').setDescription('Nouvelle valeur du stock').setRequired(true).setMinValue(0)),
+        .addIntegerOption(opt => opt.setName('quantite').setDescription('Nouvelle valeur du stock').setRequired(true).setMinValue(0))
+        .addChannelOption(opt => opt.setName('coffre').setDescription('Optionnel — corrige ce coffre précis (répercuté sur le total global) plutôt que le total directement').setRequired(false)
+          .addChannelTypes(ChannelType.GuildText)),
     },
     {
       data: new SlashCommandBuilder()
@@ -413,12 +447,28 @@ export async function handleSetStockCommand(interaction: ChatInputCommandInterac
 
   const item = interaction.options.getString('item', true);
   const quantite = interaction.options.getInteger('quantite', true);
-  const avant = await db.getStock(guildId, item);
+  const coffre = interaction.options.getChannel('coffre');
+  const itemLabel = configStore.get(guildId).ALLOWED_ITEMS.find(i => i.toLowerCase() === item) || item;
 
+  if (coffre) {
+    // Corrige CE coffre précis (SET absolu) et répercute le même delta sur
+    // le total global — cohérent avec le fait qu'un mouvement réel met à
+    // jour les deux compteurs en parallèle du même delta (voir parseAndApply).
+    const { avant, apres } = await db.setCoffreStock(guildId, coffre.id, item, quantite);
+    const delta = apres - avant;
+    if (delta !== 0) await db.applyStockDelta(guildId, item, delta);
+    await updateStockMessage(interaction.client, guildId);
+    await interaction.reply({
+      content: `✅ Stock de **${itemLabel}** corrigé pour <#${coffre.id}> : \`${avant.toLocaleString('fr-FR')}\` → \`${apres.toLocaleString('fr-FR')}\` (total global ajusté du même delta).`,
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  const avant = await db.getStock(guildId, item);
   await db.setStock(guildId, item, quantite);
   await updateStockMessage(interaction.client, guildId);
 
-  const itemLabel = configStore.get(guildId).ALLOWED_ITEMS.find(i => i.toLowerCase() === item) || item;
   await interaction.reply({
     content: `✅ Stock de **${itemLabel}** corrigé : \`${avant.toLocaleString('fr-FR')}\` → \`${quantite.toLocaleString('fr-FR')}\``,
     flags: MessageFlags.Ephemeral,

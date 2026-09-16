@@ -299,12 +299,19 @@ export async function initPermanentMessage(client: Client, guildId: string): Pro
     const channel = await client.channels.fetch(channelId).catch(() => null);
     if (!channel?.isSendable()) return;
 
+    const tier = configStore.get(guildId).TYPE_GROUPE;
+    const tierLabel = configStore.GROUP_TIERS.find(t => t.key === tier)?.label ?? tier;
+    const taxesFixesLabels = currentTaxesFixes(guildId).map(type => FIXED_TYPE_META[type].title);
+    const zones = currentZones(guildId);
+
     const embed = new EmbedBuilder()
       .setTitle('💰 Gestion des Taxes & Rackets')
       .setColor(0xFEE75C)
       .setDescription(
         'Utilisez les boutons ci-dessous pour enregistrer une taxe.\n\n' +
-        'Les zones et les taxes fixes disponibles dépendent du type d\'organisation actuel (voir `/config type-groupe`).',
+        `Type d'organisation actuel : **${tierLabel}** (voir \`/config type-groupe\`)\n` +
+        `Taxes fixes disponibles : ${taxesFixesLabels.length ? taxesFixesLabels.join(', ') : '_aucune_'}\n` +
+        `Zones disponibles : ${zones.length ? zones.join(', ') : '_aucune_'}`,
       );
 
     const searchRow = new ActionRowBuilder<ButtonBuilder>().addComponents(

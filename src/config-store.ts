@@ -38,11 +38,12 @@ import * as db from './db';
  * assignable à n'importe quel salon Discord via `/config channel set`).
  */
 export const CHANNEL_ROLES = [
-  'stock_general', 'logs_activites', 'alertes_braquages',
+  'documentation', 'stock_general', 'logs_activites', 'alertes_braquages',
   'alertes_actions', 'bilan', 'paie', 'armurerie', 'quotas', 'taxes',
   'alertes_taxes', 'historique_stock', 'ventes_drogue', 'log_ventes',
   'admin', 'logs_garages', 'labo_heroine', 'labo_sporex',
-  'labo_mexicana', 'labo_cannabis', 'labo_cocaine',
+  'labo_mexicana', 'labo_cannabis', 'labo_cocaine', 'labo_salvia',
+  'labo_branche_cannabis',
 ] as const;
 
 export type ChannelRole = (typeof CHANNEL_ROLES)[number];
@@ -110,18 +111,20 @@ const ACTIVITY_TYPES_FIXED: Record<string, Omit<ActivityTypeConfig, 'laboChannel
   cambu:          { label: 'Cambu',         quotaType: 'actions', cooldownMs: 3 * H,  partners: false, braquageWeeklyLimit: null, labo: false, quantity: false, panelButton: true,  displayOrder: 2 },
   superette:      { label: 'Supérette',     quotaType: 'actions', cooldownMs: 2 * H,  partners: false, braquageWeeklyLimit: null, labo: false, quantity: false, panelButton: true,  displayOrder: 3 },
   gofast:         { label: 'Go Fast',       quotaType: 'actions', cooldownMs: 24 * H, partners: false, braquageWeeklyLimit: null, labo: false, quantity: false, panelButton: true,  displayOrder: 4 },
-  fleeca:         { label: 'Fleeca',        quotaType: 'actions', cooldownMs: null,   partners: true,  braquageWeeklyLimit: null, labo: false, quantity: false, panelButton: true,  displayOrder: 5, icon: '🏦' },
-  braq_armurerie: { label: 'Armurerie',     quotaType: 'actions', cooldownMs: null,   partners: true,  braquageWeeklyLimit: null, labo: false, quantity: false, panelButton: true,  displayOrder: 6, icon: '🔫' },
+  braq_armurerie: { label: 'Armurerie',     quotaType: 'actions', cooldownMs: null,   partners: true,  braquageWeeklyLimit: null, labo: false, quantity: false, panelButton: true,  displayOrder: 5, icon: '🔫' },
+  fleeca:         { label: 'Fleeca',        quotaType: 'actions', cooldownMs: null,   partners: true,  braquageWeeklyLimit: null, labo: false, quantity: false, panelButton: true,  displayOrder: 6, icon: '🏦' },
   bijouterie:     { label: 'Bijouterie',    quotaType: 'actions', cooldownMs: null,   partners: true,  braquageWeeklyLimit: null, labo: false, quantity: false, panelButton: true,  displayOrder: 7, icon: '💎' },
   pinebank:       { label: 'Pinebank',      quotaType: 'actions', cooldownMs: null,   partners: true,  braquageWeeklyLimit: null, labo: false, quantity: false, panelButton: true,  displayOrder: 8, icon: '🏦' },
   human_labs:     { label: 'Human Labs',    quotaType: 'actions', cooldownMs: null,   partners: true,  braquageWeeklyLimit: null, labo: false, quantity: false, panelButton: true,  displayOrder: 9, icon: '🫀' },
   vente:          { label: 'Vente drogue',  quotaType: 'vente',   cooldownMs: null,   partners: false, braquageWeeklyLimit: null, labo: false, quantity: true,  panelButton: false, displayOrder: 10 },
   recolte:        { label: 'Récolte',       quotaType: 'recolte', cooldownMs: null,   partners: false, braquageWeeklyLimit: null, labo: false, quantity: true,  panelButton: true,  displayOrder: 11 },
   labo_heroine:   { label: 'Labo Héroïne',  quotaType: 'labos',   cooldownMs: null,   partners: true,  braquageWeeklyLimit: null, labo: true,  quantity: false, panelButton: true,  displayOrder: 12 },
-  labo_sporex:    { label: 'Labo Sporex',   quotaType: 'labos',   cooldownMs: null,   partners: true,  braquageWeeklyLimit: null, labo: true,  quantity: false, panelButton: true,  displayOrder: 13 },
+  labo_sporex:    { label: 'Labo Spore X',  quotaType: 'labos',   cooldownMs: null,   partners: true,  braquageWeeklyLimit: null, labo: true,  quantity: false, panelButton: true,  displayOrder: 13 },
   labo_mexicana:  { label: 'Labo Mexicana', quotaType: 'labos',   cooldownMs: null,   partners: true,  braquageWeeklyLimit: null, labo: true,  quantity: false, panelButton: true,  displayOrder: 14 },
   labo_cannabis:  { label: 'Labo Cannabis', quotaType: 'labos',   cooldownMs: null,   partners: true,  braquageWeeklyLimit: null, labo: true,  quantity: false, panelButton: true,  displayOrder: 15 },
   labo_cocaine:   { label: 'Labo Cocaïne',  quotaType: 'labos',   cooldownMs: null,   partners: true,  braquageWeeklyLimit: null, labo: true,  quantity: false, panelButton: true,  displayOrder: 16 },
+  labo_salvia:    { label: 'Labo Salvia',   quotaType: 'labos',   cooldownMs: null,   partners: true,  braquageWeeklyLimit: null, labo: true,  quantity: false, panelButton: true,  displayOrder: 17 },
+  labo_branche_cannabis: { label: 'Labo Branche De Cannabis', quotaType: 'labos', cooldownMs: null, partners: true, braquageWeeklyLimit: null, labo: true, quantity: false, panelButton: true, displayOrder: 18 },
 };
 
 /**
@@ -141,9 +144,8 @@ export const BRAQUAGE_LIMITS_BY_TIER: Record<GroupTier, Record<string, number>> 
 
 /**
  * Labos accessibles par type d'organisation — une clé absente ici (aucun
- * tier ne la liste) est désactivée pour TOUS les tiers ; le tier
- * `independant` n'apparaît dans aucune liste, donc aucun labo n'y est
- * jamais disponible. Détermine `ActivityTypeConfig.enabled` dans `reload()`.
+ * tier ne la liste) est désactivée pour TOUS les tiers. Détermine
+ * `ActivityTypeConfig.enabled` dans `reload()`.
  */
 export const LABO_TIERS: Record<string, GroupTier[]> = {
   labo_heroine: ['petite_frappe'],
@@ -151,6 +153,8 @@ export const LABO_TIERS: Record<string, GroupTier[]> = {
   labo_mexicana: ['gang', 'organisation'],
   labo_cannabis: ['gang'],
   labo_cocaine: ['organisation'],
+  labo_salvia: ['independant'],
+  labo_branche_cannabis: ['independant'],
 };
 
 export interface ItemConfig {
@@ -160,6 +164,8 @@ export interface ItemConfig {
   displayOrder: number;
   visibleStock: boolean;
   laboLie: string | null;
+  /** 'produit'/'materiau'/`null` — voir docstring du modèle `Item`. */
+  laboLieRole: 'produit' | 'materiau' | null;
   /** Unités de base par unité de cet item (ex. 24 pour une boîte de munitions) — voir docstring du modèle `Item` et `armurerie.weightedStockSum`. */
   stockMultiplier: number;
 }
@@ -171,14 +177,22 @@ export interface BotConfig {
   ITEMS_BY_NAME: Record<string, ItemConfig>;
   STOCK_GROUPS: Record<string, string[]>;
   VENTE_ITEMS: string[];
-  /** Items dont le `laboLie` est actif pour le tier courant — drogues en production interne, complément exact de VENTE_ITEMS pour ces items-là (voir `laboLie` dans db.ts). */
+  /** Items dont le `laboLie` (rôle 'produit') est actif pour le tier courant — drogues en production interne, complément exact de VENTE_ITEMS pour ces items-là (voir `laboLie`/`laboLieRole` dans db.ts). */
   LABO_ITEMS: string[];
+  /** Items dont le `laboLie` (rôle 'materiau') est actif pour le tier courant — matières premières consommées, n'affecte jamais VENTE_ITEMS/LABO_ITEMS. */
+  MATERIAL_ITEMS: string[];
   ACTIVITY_TYPES: Record<string, ActivityTypeConfig>;
   QUOTA_TARGETS: Record<string, number>;
   ADMIN_ROLE_ID: string | null;
   TAXES_ROLE_ID: string | null;
   /** $ par unité, par catégorie de quota — voir `/config salaire` et `computeSalaire` dans quotas.ts. Catégorie absente = aucune paie pour elle. */
   SALARY_RATES: Record<string, number>;
+  /** $ par unité, par item vendu — remplace `SALARY_RATES.vente` pour cet item précis (voir `/config salaire ... item:`). Vide pour la grande majorité des guildes : ne JAMAIS relire `Transaction` en détail par item si cette map est vide (voir `quotas.getVenteByItemMap`). */
+  ITEM_SALARY_RATES: Record<string, number>;
+  /** Points de classement (entiers), par catégorie de quota — voir `/config classement` et `computeClassement` dans quotas.ts. Totalement indépendant de SALARY_RATES : un item/activité peut avoir un taux de paie, des points, les deux, ou aucun. */
+  CLASSEMENT_RATES: Record<string, number>;
+  /** Points de classement par activité de la catégorie "actions" — remplace `CLASSEMENT_RATES.actions` pour cette activité précise (voir `/config classement ... activite:`). */
+  ACTIVITY_CLASSEMENT_RATES: Record<string, number>;
   /** Tier courant — voir `/config type-groupe` et {@link DEFAULT_GROUP_TIER}. */
   TYPE_GROUPE: GroupTier;
 }
@@ -215,19 +229,25 @@ export async function reload(guildId: string): Promise<BotConfig> {
   const ALLOWED_ITEMS: string[] = [];
   const VENTE_ITEMS: string[] = [];
   const LABO_ITEMS: string[] = [];
+  const MATERIAL_ITEMS: string[] = [];
   for (const it of items) {
-    ITEMS_BY_NAME[it.name] = it;
+    ITEMS_BY_NAME[it.name] = it as ItemConfig;
     ALLOWED_ITEMS.push(it.name);
     if (it.stockGroup) (STOCK_GROUPS[it.stockGroup] ??= []).push(it.name);
     // Un item lié à un labo (`laboLie`) n'est vendable en PNJ que si CE tier
     // ne peut pas produire cette drogue lui-même — voir LABO_TIERS. Un item
     // sans lien reste vendable dès que `vente` est vrai, quel que soit le tier.
     // `produitParLabo` et l'exclusion de VENTE_ITEMS sont l'exact complément
-    // l'un de l'autre : une drogue est soit vendable en PNJ, soit en
-    // production interne pour ce tier, jamais les deux à la fois.
-    const produitParLabo = !!it.laboLie && (LABO_TIERS[it.laboLie]?.includes(TYPE_GROUPE) ?? false);
+    // l'un de l'autre pour un item de rôle 'produit' : une drogue est soit
+    // vendable en PNJ, soit en production interne pour ce tier, jamais les
+    // deux à la fois. Un item de rôle 'materiau' n'affecte jamais la vente
+    // PNJ (il sert juste à catégoriser l'affichage du stock).
+    const laboActif = !!it.laboLie && (LABO_TIERS[it.laboLie]?.includes(TYPE_GROUPE) ?? false);
+    const produitParLabo = laboActif && it.laboLieRole === 'produit';
+    const materiauActif = laboActif && it.laboLieRole === 'materiau';
     if (it.vente && !produitParLabo) VENTE_ITEMS.push(it.name);
     if (produitParLabo) LABO_ITEMS.push(it.name);
+    if (materiauActif) MATERIAL_ITEMS.push(it.name);
   }
 
   const ACTIVITY_TYPES: Record<string, ActivityTypeConfig> = {};
@@ -256,6 +276,15 @@ export async function reload(guildId: string): Promise<BotConfig> {
   const SALARY_RATES: Record<string, number> = {};
   for (const row of await db.getAllSalaryRates(guildId)) SALARY_RATES[row.quotaType] = row.amount;
 
+  const ITEM_SALARY_RATES: Record<string, number> = {};
+  for (const row of await db.getAllItemSalaryRates(guildId)) ITEM_SALARY_RATES[row.item] = row.amount;
+
+  const CLASSEMENT_RATES: Record<string, number> = {};
+  for (const row of await db.getAllClassementRates(guildId)) CLASSEMENT_RATES[row.quotaType] = row.amount;
+
+  const ACTIVITY_CLASSEMENT_RATES: Record<string, number> = {};
+  for (const row of await db.getAllActivityClassementRates(guildId)) ACTIVITY_CLASSEMENT_RATES[row.activityKey] = row.amount;
+
   const rolesByTarget: Record<string, string> = {};
   for (const r of await db.getAllDiscordRoles(guildId)) rolesByTarget[r.target] = r.roleId;
 
@@ -266,11 +295,15 @@ export async function reload(guildId: string): Promise<BotConfig> {
     STOCK_GROUPS,
     VENTE_ITEMS,
     LABO_ITEMS,
+    MATERIAL_ITEMS,
     ACTIVITY_TYPES,
     QUOTA_TARGETS,
     ADMIN_ROLE_ID: rolesByTarget.admin ?? null,
     TAXES_ROLE_ID: rolesByTarget.taxes ?? null,
     SALARY_RATES,
+    ITEM_SALARY_RATES,
+    CLASSEMENT_RATES,
+    ACTIVITY_CLASSEMENT_RATES,
     TYPE_GROUPE,
   };
   cache.set(guildId, config);

@@ -70,18 +70,30 @@ export async function setChannelRole(guildId: string, role: string, channelId: s
   await prisma.channel.create({ data: { guildId, role, channelId } });
 }
 
-/** Ajoute un salon à un rôle à valeurs multiples (ex. 'logs_coffres'), sans toucher aux autres. */
-export async function addChannelToRole(guildId: string, role: string, channelId: string): Promise<void> {
+/**
+ * Ajoute un salon à un rôle à valeurs multiples (ex. 'logs_coffres'), sans
+ * toucher aux autres. `label` optionnel (ex. "Coffre principal") — ré-ajouter
+ * un salon déjà présent avec un nouveau `label` met juste à jour son nom
+ * (jamais de doublon, upsert sur la clé composite) ; omis, le label existant
+ * n'est pas touché.
+ */
+export async function addChannelToRole(guildId: string, role: string, channelId: string, label?: string | null): Promise<void> {
   await prisma.channel.upsert({
     where: { guildId_role_channelId: { guildId, role, channelId } },
-    create: { guildId, role, channelId },
-    update: {},
+    create: { guildId, role, channelId, label: label ?? null },
+    update: label !== undefined ? { label } : {},
   });
 }
 
 /** Retire un salon d'un rôle à valeurs multiples (ex. 'logs_coffres'). */
 export async function removeChannelFromRole(guildId: string, role: string, channelId: string): Promise<void> {
   await prisma.channel.deleteMany({ where: { guildId, role, channelId } });
+}
+
+/** Salons d'un rôle à valeurs multiples, avec leur `label` éventuel (voir `/config channel list`). */
+export async function getChannelsWithLabel(guildId: string, role: string): Promise<Array<{ channelId: string; label: string | null }>> {
+  const rows = await prisma.channel.findMany({ where: { guildId, role } });
+  return rows.map(r => ({ channelId: r.channelId, label: r.label }));
 }
 
 // ─── RÔLES DISCORD (config) ──────────────────────────────────────────────────
@@ -109,13 +121,25 @@ export interface ItemInput {
   display_order?: number;
   /** Défaut `true` (contrairement aux autres flags, défaut `false`) : omettre cette option ne doit pas faire disparaître un item du Stock Général. */
   visible_stock?: boolean;
-  /** Clé d'activité labo (ex. "labo_cocaine") si cet item est LA drogue que ce labo produit — voir docstring du modèle Item. */
+  /** Clé d'activité labo (ex. "labo_cocaine") si cet item est LA drogue que ce labo produit, ou un matériau qu'il consomme (voir `labo_lie_role`) — voir docstring du modèle Item. */
   labo_lie?: string | null;
+  /** 'produit' (défaut si `labo_lie` fourni sans précision) ou 'materiau'. Ignoré si `labo_lie` est `null`. */
+  labo_lie_role?: 'produit' | 'materiau' | null;
   /** Unités de base représentées par une unité de cet item (ex. 24 pour une boîte de munitions) — voir docstring du modèle Item et `armurerie.weightedStockSum`. Défaut 1 (pas de conversion). */
   stock_multiplier?: number;
 }
 
-/** Ajoute ou remplace entièrement la configuration d'un item suivi (upsert complet, voir docstring de `/config item add`). */
+/**
+ * Ajoute ou remplace la configuration d'un item suivi (upsert, voir docstring
+ * de `/config item add`) — remplacement complet à chaque appel pour tous les
+ * champs SAUF `stockGroup` : `/config item add` ne l'expose plus (trop
+ * générique pour son seul usage réel, la pondération munitions — voir
+ * `default-items.ts`), donc `data.stock_group` vaut toujours `undefined`
+ * quand l'appel vient de cette commande. `undefined` signifie ici "ne pas
+ * toucher au champ existant", jamais "l'effacer" — sinon changer juste le
+ * multiplicateur de "Munition de pistolet" effacerait silencieusement son
+ * groupe. Ne pas généraliser ce pattern aux autres champs.
+ */
 export async function upsertItem(guildId: string, data: ItemInput): Promise<void> {
   await prisma.item.upsert({
     where: { guildId_name: { guildId, name: data.name } },
@@ -127,14 +151,16 @@ export async function upsertItem(guildId: string, data: ItemInput): Promise<void
       displayOrder: data.display_order ?? 0,
       visibleStock: data.visible_stock !== false,
       laboLie: data.labo_lie ?? null,
+      laboLieRole: data.labo_lie ? (data.labo_lie_role ?? 'produit') : null,
       stockMultiplier: data.stock_multiplier ?? 1,
     },
     update: {
-      stockGroup: data.stock_group ?? null,
+      ...(data.stock_group !== undefined ? { stockGroup: data.stock_group } : {}),
       vente: !!data.vente,
       displayOrder: data.display_order ?? 0,
       visibleStock: data.visible_stock !== false,
       laboLie: data.labo_lie ?? null,
+      laboLieRole: data.labo_lie ? (data.labo_lie_role ?? 'produit') : null,
       stockMultiplier: data.stock_multiplier ?? 1,
     },
   });
@@ -190,6 +216,67 @@ export async function deleteSalaryRate(guildId: string, quotaType: string): Prom
 /** Tous les taux de paie configurés pour une guilde. */
 export async function getAllSalaryRates(guildId: string) {
   return prisma.salaryRate.findMany({ where: { guildId } });
+}
+
+// ─── TAUX DE PAIE PAR ITEM (config) ──────────────────────────────────────────
+
+/** Fixe (upsert) le taux de paie ($ par unité) d'UN item vendu, remplaçant le taux général "vente" pour cet item précis. */
+export async function setItemSalaryRate(guildId: string, item: string, amount: number): Promise<void> {
+  await prisma.itemSalaryRate.upsert({
+    where: { guildId_item: { guildId, item } },
+    create: { guildId, item, amount },
+    update: { amount },
+  });
+}
+
+/** Retire le taux de paie spécifique d'un item (il retombe sur le taux général "vente"). */
+export async function deleteItemSalaryRate(guildId: string, item: string): Promise<void> {
+  await prisma.itemSalaryRate.deleteMany({ where: { guildId, item } });
+}
+
+/** Tous les taux de paie par item configurés pour une guilde. */
+export async function getAllItemSalaryRates(guildId: string) {
+  return prisma.itemSalaryRate.findMany({ where: { guildId } });
+}
+
+// ─── CLASSEMENT (config) ──────────────────────────────────────────────────────
+
+/** Fixe (upsert) les points de classement d'une catégorie de quota. */
+export async function setClassementRate(guildId: string, quotaType: string, amount: number): Promise<void> {
+  await prisma.classementRate.upsert({
+    where: { guildId_quotaType: { guildId, quotaType } },
+    create: { guildId, quotaType, amount },
+    update: { amount },
+  });
+}
+
+/** Retire les points de classement d'une catégorie de quota. */
+export async function deleteClassementRate(guildId: string, quotaType: string): Promise<void> {
+  await prisma.classementRate.deleteMany({ where: { guildId, quotaType } });
+}
+
+/** Tous les points de classement par catégorie configurés pour une guilde. */
+export async function getAllClassementRates(guildId: string) {
+  return prisma.classementRate.findMany({ where: { guildId } });
+}
+
+/** Fixe (upsert) les points de classement d'UNE activité de la catégorie "actions", remplaçant le nombre général de cette catégorie pour cette activité précise. */
+export async function setActivityClassementRate(guildId: string, activityKey: string, amount: number): Promise<void> {
+  await prisma.activityClassementRate.upsert({
+    where: { guildId_activityKey: { guildId, activityKey } },
+    create: { guildId, activityKey, amount },
+    update: { amount },
+  });
+}
+
+/** Retire les points de classement spécifiques d'une activité (elle retombe sur le nombre général "actions"). */
+export async function deleteActivityClassementRate(guildId: string, activityKey: string): Promise<void> {
+  await prisma.activityClassementRate.deleteMany({ where: { guildId, activityKey } });
+}
+
+/** Tous les points de classement par activité configurés pour une guilde. */
+export async function getAllActivityClassementRates(guildId: string) {
+  return prisma.activityClassementRate.findMany({ where: { guildId } });
 }
 
 // ─── STOCKS ─────────────────────────────────────────────────────────────────
@@ -277,6 +364,29 @@ export async function applyCoffreStockDelta(guildId: string, channelId: string, 
     ), upserted AS (
       INSERT INTO coffre_stocks (guild_id, channel_id, item, quantite) VALUES (${guildId}, ${channelId}, ${key}, GREATEST(${delta}, 0))
       ON CONFLICT (guild_id, channel_id, item) DO UPDATE SET quantite = GREATEST(coffre_stocks.quantite + ${delta}, 0)
+      RETURNING quantite
+    )
+    SELECT COALESCE((SELECT quantite FROM prev), 0)::int AS avant, (SELECT quantite FROM upserted)::int AS apres
+  `;
+  return { avant: rows[0]?.avant ?? 0, apres: rows[0]?.apres ?? 0 };
+}
+
+/**
+ * Force la valeur du stock d'un item POUR UN COFFRE DONNÉ (correction
+ * manuelle, `/set-stock ... coffre:`) — SET absolu, pas un delta (contraste
+ * avec `applyCoffreStockDelta`, additive). Même pattern atomique (upsert +
+ * valeur précédente en une seule requête) pour ne pas écraser un mouvement
+ * réel concurrent sur ce même coffre/item.
+ */
+export async function setCoffreStock(guildId: string, channelId: string, item: string, quantite: number): Promise<{ avant: number; apres: number }> {
+  const key = item.toLowerCase();
+  const qty = Math.max(0, quantite);
+  const rows = await prisma.$queryRaw<Array<{ avant: number; apres: number }>>`
+    WITH prev AS (
+      SELECT quantite FROM coffre_stocks WHERE guild_id = ${guildId} AND channel_id = ${channelId} AND item = ${key}
+    ), upserted AS (
+      INSERT INTO coffre_stocks (guild_id, channel_id, item, quantite) VALUES (${guildId}, ${channelId}, ${key}, ${qty})
+      ON CONFLICT (guild_id, channel_id, item) DO UPDATE SET quantite = ${qty}
       RETURNING quantite
     )
     SELECT COALESCE((SELECT quantite FROM prev), 0)::int AS avant, (SELECT quantite FROM upserted)::int AS apres
@@ -905,6 +1015,21 @@ export async function getPendingSaleForAccumulation(guildId: string, joueur: str
   return row ? mapPendingSale(row) : undefined;
 }
 
+/**
+ * Vente active (statut `en_attente` OU `declare`, pas encore confirmée) la
+ * plus récente pour ce joueur/item depuis `since` — utilisée par un redépôt
+ * pour retrouver la vente à réduire/annuler, y compris après que le joueur a
+ * déjà cliqué "Déclarer" (contrairement à {@link getPendingSaleForAccumulation},
+ * qui reste `en_attente` seule pour l'accumulation d'un nouveau retrait).
+ */
+export async function getPendingSaleForReduction(guildId: string, joueur: string, item: string, since: number) {
+  const row = await prisma.pendingSale.findFirst({
+    where: { guildId, joueur, item, statut: { in: ['en_attente', 'declare'] }, confirmed: false, timestamp: { gte: new Date(since) } },
+    orderBy: { timestamp: 'desc' },
+  });
+  return row ? mapPendingSale(row) : undefined;
+}
+
 /** Cumule une nouvelle quantité sur une vente en attente existante et rafraîchit son timestamp. */
 export async function accumulatePendingSale(guildId: string, id: number, quantite: number, timestamp: number): Promise<void> {
   await prisma.pendingSale.updateMany({ where: { id, guildId }, data: { quantite, timestamp: new Date(timestamp) } });
@@ -990,6 +1115,23 @@ export async function getVenteDetailForUser(guildId: string, userId: string, sin
     _sum: { quantite: true },
   });
   return rows.map(r => ({ item: r.type ?? 'inconnu', quantite: r._sum.quantite ?? 0 }));
+}
+
+/**
+ * Détail par item vendu (`Transaction.type`) pour TOUS les joueurs sur une
+ * plage — comme `getVenteDetailForUser` mais sans filtrer un joueur précis.
+ * N'a de sens d'être appelée que si au moins un taux de paie par item est
+ * configuré pour la guilde (voir `quotas.getVenteByItemMap`), jamais par
+ * défaut : c'est une lecture `Transaction` supplémentaire que le panneau
+ * Discord live n'a normalement jamais besoin de faire.
+ */
+export async function getVenteDetailAllUsers(guildId: string, sinceTs: number, untilTs: number): Promise<Array<{ userId: string; item: string; quantite: number }>> {
+  const rows = await prisma.transaction.groupBy({
+    by: ['userId', 'type'],
+    where: { guildId, deleted: false, action: 'vente', timestamp: { gte: new Date(sinceTs), lt: new Date(untilTs) } },
+    _sum: { quantite: true },
+  });
+  return rows.map(r => ({ userId: r.userId, item: r.type ?? 'inconnu', quantite: r._sum.quantite ?? 0 }));
 }
 
 // ─── VÉHICULES / FOURRIÈRE ────────────────────────────────────────────────────

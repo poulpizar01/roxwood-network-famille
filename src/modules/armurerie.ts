@@ -142,6 +142,29 @@ async function getMunitionsStock(guildId: string): Promise<number> {
 export const MUNITIONS_SMG_ITEM = 'Munition de SMG';
 
 /**
+ * Calibre que le tier courant peut FABRIQUER (déclaration indicative avec
+ * quota hebdomadaire) — `null` si aucun. Le stock des deux calibres reste
+ * toujours affiché (voir {@link MUNITIONS_STOCK_GROUP}/{@link MUNITIONS_SMG_ITEM}),
+ * seule la fabrication/vente est limitée à un type à la fois par tier.
+ */
+export type MunitionsFabricationType = 'pistolet' | 'smg';
+
+const MUNITIONS_FABRICATION_TIER: Record<configStore.GroupTier, MunitionsFabricationType | null> = {
+  independant: null,
+  petite_frappe: 'pistolet',
+  gang: 'smg',
+  organisation: null,
+};
+
+export function getMunitionsFabricationType(guildId: string): MunitionsFabricationType | null {
+  return MUNITIONS_FABRICATION_TIER[configStore.get(guildId).TYPE_GROUPE];
+}
+
+function munitionsTypeLabel(type: MunitionsFabricationType): string {
+  return type === 'pistolet' ? 'Pistolet' : 'SMG';
+}
+
+/**
  * Résumé munitions (stock réel + compteurs hebdomadaires indicatifs) —
  * données brutes, pas d'embed. Exportée pour être réutilisée par l'API en
  * lecture seule (voir src/api/routes/armurerie.ts) sans dupliquer cette
@@ -221,9 +244,16 @@ async function buildArmurierieEmbed(guildId: string, armes: Arme[]): Promise<Emb
   const embed = new EmbedBuilder().setTitle('🔫 Armurerie').setColor(0xFEE75C).setTimestamp().setFooter({ text: 'Mis à jour' });
 
   const { stock, fabriqueesCetteSemaine, vendusCetteSemaine, stockSmg } = await getMunitionsSummary(guildId);
+  const fabricationType = getMunitionsFabricationType(guildId);
+  // Le calibre fabricable par le tier courant affiche stock + compteurs
+  // hebdomadaires ; l'autre reste visible mais avec juste le stock brut (pas
+  // de quota fabrication/vente pour un calibre que ce tier ne fabrique pas).
+  const quotaLines = (type: MunitionsFabricationType) => fabricationType === type
+    ? `\n🛠️ ${fabriqueesCetteSemaine} / ${MUNITIONS_FABRICATION_QUOTA_HEBDO} fabriquées cette semaine\n💰 ${vendusCetteSemaine} vendues cette semaine`
+    : '';
   const blocs = [
-    `__Munition de pistolet__\n🧰 ${stock} balles en stock\n🛠️ ${fabriqueesCetteSemaine} / ${MUNITIONS_FABRICATION_QUOTA_HEBDO} fabriquées cette semaine\n💰 ${vendusCetteSemaine} vendues cette semaine`,
-    `__Munition de SMG__\n🧰 ${stockSmg} balles en stock`,
+    `__Munition de pistolet__\n🧰 ${stock} balles en stock${quotaLines('pistolet')}`,
+    `__Munition de SMG__\n🧰 ${stockSmg} balles en stock${quotaLines('smg')}`,
   ];
 
   if (!armes.length) {
@@ -262,9 +292,9 @@ async function buildArmurierieEmbed(guildId: string, armes: Arme[]): Promise<Emb
 
 // ─── BOUTONS PRINCIPAUX ───────────────────────────────────────────────────────
 
-/** Construit les deux rangées de boutons du message permanent (actions armes, puis munitions). */
-function buildArmurierieButtons(): ActionRowBuilder<ButtonBuilder>[] {
-  return [
+/** Construit les rangées de boutons du message permanent (actions armes, puis munitions — cette dernière absente si le tier courant n'a aucun calibre fabricable, voir {@link getMunitionsFabricationType}). */
+function buildArmurierieButtons(guildId: string): ActionRowBuilder<ButtonBuilder>[] {
+  const rows = [
     new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder().setCustomId('arm_ajouter').setLabel('Ajouter').setStyle(ButtonStyle.Success).setEmoji('➕'),
       new ButtonBuilder().setCustomId('arm_retirer').setLabel('Perdu').setStyle(ButtonStyle.Danger).setEmoji('🗑️'),
@@ -272,12 +302,15 @@ function buildArmurierieButtons(): ActionRowBuilder<ButtonBuilder>[] {
       new ButtonBuilder().setCustomId('arm_rendu').setLabel('Rendu').setStyle(ButtonStyle.Success).setEmoji('✅'),
       new ButtonBuilder().setCustomId('arm_pertes').setLabel('Liste des Pertes').setStyle(ButtonStyle.Secondary).setEmoji('📋'),
     ),
-    new ActionRowBuilder<ButtonBuilder>().addComponents(
+  ];
+  if (getMunitionsFabricationType(guildId)) {
+    rows.push(new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder().setCustomId('arm_fabrication').setLabel('Fabrication').setStyle(ButtonStyle.Secondary).setEmoji('🛠️'),
       new ButtonBuilder().setCustomId('arm_vente_munitions').setLabel('Vente').setStyle(ButtonStyle.Secondary).setEmoji('💰'),
       new ButtonBuilder().setCustomId('arm_historique_munitions').setLabel('Historique').setStyle(ButtonStyle.Secondary).setEmoji('📜'),
-    ),
-  ];
+    ));
+  }
+  return rows;
 }
 
 // ─── MESSAGE PERMANENT ────────────────────────────────────────────────────────
@@ -292,7 +325,7 @@ export async function updatePermanentMessage(client: Client, guildId: string): P
 
     const armes = (await db.getAllArmes(guildId)).filter(a => a.statut !== 'perdue');
     const embed = await buildArmurierieEmbed(guildId, armes);
-    const rows = buildArmurierieButtons();
+    const rows = buildArmurierieButtons(guildId);
 
     const storedId = await db.getSetting(guildId, 'armurerie_message_id');
     if (storedId) {
@@ -352,9 +385,11 @@ export async function handleButton(interaction: ButtonInteraction): Promise<void
   }
 
   if (id === 'arm_fabrication') {
+    const type = getMunitionsFabricationType(guildId);
+    if (!type) return replyAutoDelete(interaction, "❌ Aucune fabrication de munitions pour ce type d'organisation.");
     const modal = new ModalBuilder()
       .setCustomId('modal_arm_fabrication')
-      .setTitle('Fabrication de munitions')
+      .setTitle(`Fabrication de munitions (${munitionsTypeLabel(type)})`)
       .addComponents(
         new ActionRowBuilder<TextInputBuilder>().addComponents(
           new TextInputBuilder().setCustomId('quantite').setLabel('Nombre de munitions fabriquées')
@@ -365,9 +400,11 @@ export async function handleButton(interaction: ButtonInteraction): Promise<void
   }
 
   if (id === 'arm_vente_munitions') {
+    const type = getMunitionsFabricationType(guildId);
+    if (!type) return replyAutoDelete(interaction, "❌ Aucune vente de munitions pour ce type d'organisation.");
     const modal = new ModalBuilder()
       .setCustomId('modal_arm_vente_munitions')
-      .setTitle('Vente de munitions')
+      .setTitle(`Vente de munitions (${munitionsTypeLabel(type)})`)
       .addComponents(
         new ActionRowBuilder<TextInputBuilder>().addComponents(
           new TextInputBuilder().setCustomId('quantite').setLabel('Nombre de munitions vendues')
