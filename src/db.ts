@@ -840,6 +840,20 @@ function mapTaxe<T extends { echeance: Date }>(t: T) {
   return { ...t, echeance: toMs(t.echeance) };
 }
 
+/**
+ * Comme {@link mapTaxe}, mais retire `telephone`/`motDePasse` — utilisée
+ * UNIQUEMENT par `findTaxes` (liste/recherche, voir `src/api/routes/taxes.ts`
+ * `GET /api/taxes`/`GET /api/taxes/search`), jamais par `getTaxe` (détail
+ * d'UNE taxe, `GET /api/taxes/:id`, qui a besoin de tout pour l'usage
+ * Discord — fiche de taxe, renouvellement...). `id` reste présent : sans
+ * lui, impossible pour un client de savoir quel id appeler ensuite sur
+ * `/:id` pour obtenir le détail complet.
+ */
+function mapTaxeSummary<T extends { echeance: Date; telephone: string | null; motDePasse: string | null }>(t: T) {
+  const { telephone, motDePasse, ...rest } = mapTaxe(t);
+  return rest;
+}
+
 /** Crée une taxe et retourne son ID. */
 export async function addTaxe(guildId: string, data: TaxeInput): Promise<number> {
   const row = await prisma.taxe.create({
@@ -926,7 +940,7 @@ export async function findTaxes(guildId: string, opts: FindTaxesOptions = {}) {
     orderBy: { echeance: 'asc' },
     take: opts.limit,
   });
-  return rows.map(mapTaxe);
+  return rows.map(mapTaxeSummary);
 }
 
 /** Ajoute `days` jours à l'échéance d'une taxe (au moins depuis maintenant) et retourne la nouvelle échéance, ou `null` si introuvable. */

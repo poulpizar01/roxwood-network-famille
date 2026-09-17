@@ -185,8 +185,9 @@ Deux niveaux d'accès : **membre du serveur Discord** (suffit pour `/api/stocks`
 | `GET /api/armurerie/ammo/history` | Membre | Ventes de munitions depuis le dernier reset hebdomadaire (dimanche 19h) |
 | `GET /api/ventes?week=` | Membre | Total vendu par joueur sur la plage (trié décroissant) + total du groupe |
 | `GET /api/ventes/:userId?week=` | Soi-même/Admin | Ventes d'un joueur précis : total + détail par drogue vendue |
-| `GET /api/taxes?type=&status=` | Taxes/Admin | Taxes filtrables par type (fixe, `zone` = toutes les zones groupées, ou la clé d'une zone précise) et statut (`active`/`expired`, défaut `active`) |
-| `GET /api/taxes/search?type=&q=` | Taxes/Admin | Recherche par nom dans un type donné (`type` requis) |
+| `GET /api/taxes?type=&status=` | Taxes/Admin | Taxes filtrables par type (fixe, `zone` = toutes les zones groupées, ou la clé d'une zone précise) et statut (`active`/`expired`, défaut `active`) — infos générales seulement, jamais téléphone/mot de passe |
+| `GET /api/taxes/search?type=&q=` | Taxes/Admin | Recherche par nom dans un type donné (`type` requis) — infos générales seulement, jamais téléphone/mot de passe |
+| `GET /api/taxes/:id` | Taxes/Admin | Détail complet d'UNE taxe précise, téléphone/mot de passe inclus |
 
 Lecture seule pour l'instant — pas d'écriture depuis l'extérieur (voir docstring de `src/api/server.ts` pour pourquoi).
 

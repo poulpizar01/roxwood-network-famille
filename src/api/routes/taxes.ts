@@ -12,6 +12,14 @@
  * la clé d'UNE zone précise (ex. `roxwood_village` — voir
  * `/config channel list` côté Discord, ou `/api/taxes?type=zone` pour lister
  * les zones existantes, n'a pas besoin d'être connue à l'avance).
+ *
+ * `/` et `/search` ne renvoient que les infos générales d'une taxe
+ * (`db.findTaxes`/`mapTaxeSummary` dans db.ts, sans `telephone`/
+ * `motDePasse`) — seul `/:id` (détail d'UNE taxe précise, `db.getTaxe`)
+ * renvoie tout. Route dynamique `/:id` déclarée en DERNIER, après `/search`
+ * — même principe que `/api/quotas`/`/api/ventes` (`:userId` toujours en
+ * dernier), sinon Express l'interpréterait comme un paramètre plutôt qu'une
+ * route statique.
  */
 import { Router } from 'express';
 import * as db from '../../db';
@@ -79,6 +87,27 @@ router.get('/search', async (req, res) => {
 
   const query = typeof req.query.q === 'string' ? req.query.q : undefined;
   res.json(await db.findTaxes(req.apiUser!.guildId, { types, query, limit: 25 }));
+});
+
+/**
+ * GET /api/taxes/:id — détail complet d'UNE taxe précise (téléphone/mot de
+ * passe inclus, contrairement à `/` et `/search` — voir `db.getTaxe` vs
+ * `db.findTaxes`/`mapTaxeSummary`). Toujours en dernier : route dynamique du
+ * groupe, sinon Express l'interpréterait comme une recherche du type
+ * "search".
+ */
+router.get('/:id', async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) {
+    res.status(400).json({ error: 'id invalide' });
+    return;
+  }
+  const taxe = await db.getTaxe(req.apiUser!.guildId, id);
+  if (!taxe) {
+    res.status(404).json({ error: 'Taxe introuvable' });
+    return;
+  }
+  res.json(taxe);
 });
 
 export default router;
