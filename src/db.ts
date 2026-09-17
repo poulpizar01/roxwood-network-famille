@@ -996,6 +996,47 @@ export async function deleteUserMapping(guildId: string, gameName: string, disco
   }
 }
 
+/**
+ * Comptes Discord connus de cette guilde, pour peupler un sélecteur de
+ * joueur côté site externe (voir `GET /api/users`) — union des déclarants de
+ * `Transaction` (jamais purgée) et des joueurs mappés (`UserMapping`).
+ * Purement DB, pas d'appel au client Discord : le nom affiché privilégie le
+ * dernier tag Discord connu (`Transaction.username`, posé à chaque
+ * déclaration d'activité) ; à défaut (jamais rien déclaré, seulement mappé
+ * via `/adduser`), retombe sur le(s) nom(s) en jeu associés. Un compte qui ne
+ * figure plus dans aucune des deux sources (mapping supprimé, jamais
+ * déclaré) disparaît simplement de la liste — pas une erreur, voir les
+ * autres fonctions `getVente*`/`getUserActionTotals` qui gèrent déjà un
+ * `userId` sans aucune donnée en renvoyant un résultat vide.
+ */
+export async function getKnownUsers(guildId: string): Promise<Array<{ userId: string; username: string }>> {
+  const [transactions, mappings] = await Promise.all([
+    prisma.transaction.findMany({
+      where: { guildId, username: { not: '' } },
+      select: { userId: true, username: true },
+      orderBy: { timestamp: 'desc' },
+    }),
+    prisma.userMapping.findMany({ where: { guildId }, select: { discordId: true, gameName: true } }),
+  ]);
+
+  const latestUsername = new Map<string, string>();
+  for (const t of transactions) {
+    if (!latestUsername.has(t.userId)) latestUsername.set(t.userId, t.username);
+  }
+
+  const gameNamesByUser = new Map<string, string[]>();
+  for (const m of mappings) {
+    const arr = gameNamesByUser.get(m.discordId) ?? [];
+    arr.push(m.gameName);
+    gameNamesByUser.set(m.discordId, arr);
+  }
+
+  const allIds = new Set<string>([...latestUsername.keys(), ...gameNamesByUser.keys()]);
+  return [...allIds]
+    .map(userId => ({ userId, username: latestUsername.get(userId) ?? gameNamesByUser.get(userId)!.join(', ') }))
+    .sort((a, b) => a.username.localeCompare(b.username));
+}
+
 // ─── PENDING SALES (ventes en attente de confirmation) ───────────────────────
 
 export interface PendingSaleInput {

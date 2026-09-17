@@ -14,10 +14,15 @@
  *
  * Chaque route filtre par `req.apiUser.guildId` (posé par `requireAuth`,
  * voir src/api/auth.ts) — jamais les données d'une autre guilde.
+ *
+ * `/:userId` exige en plus `requireSelfOrAdmin` : un membre normal ne peut
+ * consulter que SES PROPRES ventes, jamais celles d'un autre (voir
+ * `../auth.ts`). `/` (total du groupe) reste ouvert à tout membre.
  */
 import { Router } from 'express';
 import * as db from '../../db';
 import { resolveWeekRange } from '../week';
+import { requireSelfOrAdmin } from '../auth';
 
 const router = Router();
 
@@ -35,15 +40,16 @@ router.get('/', async (req, res) => {
   res.json({ players, groupTotal });
 });
 
-/** GET /api/ventes/:userId?week= — ventes d'un joueur précis : total + détail par drogue vendue. */
-router.get('/:userId', async (req, res) => {
+/** GET /api/ventes/:userId?week= — ventes d'un joueur précis : total + détail par drogue vendue. Réservé à ce joueur lui-même (ou un admin). */
+router.get('/:userId', requireSelfOrAdmin, async (req, res) => {
   const guildId = req.apiUser!.guildId;
   const range = await resolveWeekRange(req, res, guildId);
   if (!range) return;
 
-  const detail = await db.getVenteDetailForUser(guildId, req.params.userId, range.since, range.until);
+  const userId = String(req.params.userId);
+  const detail = await db.getVenteDetailForUser(guildId, userId, range.since, range.until);
   const total = detail.reduce((sum, d) => sum + d.quantite, 0);
-  res.json({ userId: req.params.userId, total, detail });
+  res.json({ userId, total, detail });
 });
 
 export default router;

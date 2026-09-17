@@ -14,10 +14,17 @@
  *
  * Chaque route filtre par `req.apiUser.guildId` (posé par `requireAuth`,
  * voir src/api/auth.ts) — jamais les données d'une autre guilde.
+ *
+ * `/:userId` et `/pay/:userId` exigent en plus `requireSelfOrAdmin` : un
+ * membre normal ne peut consulter que SES PROPRES quota/paie, jamais ceux
+ * d'un autre (voir `../auth.ts`). Les routes de groupe (`/`, `/pay`,
+ * `/ranking`, `/summary`) restent ouvertes à tout membre, comme les vues
+ * équivalentes du panneau Discord (classement/bilan visibles par tous).
  */
 import { Router } from 'express';
 import * as quotas from '../../modules/quotas';
 import { resolveWeekRange } from '../week';
+import { requireSelfOrAdmin } from '../auth';
 
 const router = Router();
 
@@ -53,20 +60,20 @@ router.get('/pay', async (req, res) => {
   res.json(await quotas.getAllUserPayForRange(guildId, range));
 });
 
-/** GET /api/quotas/pay/:userId?week= — paie d'un joueur précis. */
-router.get('/pay/:userId', async (req, res) => {
+/** GET /api/quotas/pay/:userId?week= — paie d'un joueur précis. Réservé à ce joueur lui-même (ou un admin), voir `requireSelfOrAdmin`. */
+router.get('/pay/:userId', requireSelfOrAdmin, async (req, res) => {
   const guildId = req.apiUser!.guildId;
   const range = await resolveWeekRange(req, res, guildId);
   if (!range) return;
-  res.json(await quotas.getUserPayForRange(guildId, req.params.userId, range));
+  res.json(await quotas.getUserPayForRange(guildId, String(req.params.userId), range));
 });
 
-/** GET /api/quotas/:userId?week= — quota d'un joueur précis. Toujours en dernier : c'est le paramètre dynamique du groupe. */
-router.get('/:userId', async (req, res) => {
+/** GET /api/quotas/:userId?week= — quota d'un joueur précis. Réservé à ce joueur lui-même (ou un admin). Toujours en dernier : c'est le paramètre dynamique du groupe. */
+router.get('/:userId', requireSelfOrAdmin, async (req, res) => {
   const guildId = req.apiUser!.guildId;
   const range = await resolveWeekRange(req, res, guildId);
   if (!range) return;
-  res.json(await quotas.getUserQuotaSummaryForRange(guildId, req.params.userId, range));
+  res.json(await quotas.getUserQuotaSummaryForRange(guildId, String(req.params.userId), range));
 });
 
 export default router;

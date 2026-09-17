@@ -41,6 +41,7 @@ import quotasRouter from './routes/quotas';
 import taxesRouter from './routes/taxes';
 import armurerieRouter from './routes/armurerie';
 import ventesRouter from './routes/ventes';
+import usersRouter from './routes/users';
 
 /** Démarre l'API REST. N'a d'effet que si `API_PORT` est défini dans `.env` — absent = API désactivée, déploiement existant inchangé. */
 export function startApiServer(client: Client): void {
@@ -79,6 +80,7 @@ export function startApiServer(client: Client): void {
   api.use(apiLimiter);
   api.use(requireAuth);
   api.get('/me', (req, res) => res.json(req.apiUser));
+  api.use('/users', usersRouter);
   api.use('/stocks', stocksRouter);
   api.use('/quotas', quotasRouter);
   api.use('/taxes', requireTaxesAccess, taxesRouter);

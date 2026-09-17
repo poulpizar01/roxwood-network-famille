@@ -159,20 +159,24 @@ Pas de clé API statique : l'utilisateur se connecte avec son compte Discord, et
 2. Après connexion Discord, l'utilisateur revient sur `<url_du_site>#token=<jwt>` (l'URL configurée via `/config site-externe set` PAR CE SERVEUR) — le site récupère ce token côté client (fragment d'URL, jamais envoyé à un serveur) et le stocke.
 3. Chaque appel à `/api/*` doit inclure `Authorization: Bearer <jwt>`. Le token expire au bout de 7 jours (pas de refresh token — se reconnecter via `/auth/login`) et reste scopé au serveur choisi à l'étape 1 : impossible de l'utiliser pour lire les données d'un autre serveur.
 
-Deux niveaux d'accès : **membre du serveur Discord** (suffit pour `/api/stocks`, `/api/quotas`, `/api/armurerie`, `/api/ventes`) et **rôle taxes ou admin** (requis en plus pour `/api/taxes` — le rôle `TAXES_ROLE_ID` de `/config role`, jusqu'ici sans utilisateur réel, sert enfin à ça).
+Deux niveaux d'accès : **membre du serveur Discord** (suffit pour `/api/stocks`, `/api/quotas`, `/api/armurerie`, `/api/ventes`) et **rôle taxes ou admin** (requis en plus pour `/api/taxes` — le rôle `TAXES_ROLE_ID` de `/config role`, jusqu'ici sans utilisateur réel, sert enfin à ça). Deux restrictions supplémentaires, plus fines qu'un simple accès admin/non-admin :
+- **Soi-même ou admin** (`requireSelfOrAdmin`) sur toute route `:userId` (`/api/quotas/:userId`, `/api/quotas/pay/:userId`, `/api/ventes/:userId`) : un membre normal ne peut consulter que ses propres données, jamais celles d'un autre joueur.
+- **Coffres admin réservés aux admins** sur `/api/stocks/channels` et `/api/stocks/:channelId` : un coffre `logs_coffres_admin` n'apparaît dans la liste, ni n'est interrogeable en détail, que pour un admin. `/api/stocks` (le total global) reste inchangé pour tout le monde — l'exclure casserait le total affiché.
 
 ### Endpoints disponibles
 
 | Endpoint | Accès | Retourne |
 |----------|-------|----------|
 | `GET /api/me` | Membre | Identité résolue (id, username, isAdmin, isTaxes) |
-| `GET /api/stocks` | Membre | Stock actuel de chaque item suivi, tous coffres confondus |
-| `GET /api/stocks/:channelId` | Membre | Stock actuel de chaque item pour UN coffre précis |
+| `GET /api/users` | Membre | Comptes Discord connus de la guilde (userId + dernier nom connu) — un non-admin ne reçoit que lui-même |
+| `GET /api/stocks` | Membre | Stock actuel de chaque item suivi, tous coffres confondus (admin inclus, pour tout le monde) |
+| `GET /api/stocks/channels` | Membre/Admin | Liste des coffres surveillés (`logs_coffres` + `logs_coffres_admin` avec leur label) — coffres admin réservés aux admins |
+| `GET /api/stocks/:channelId` | Membre/Admin | Stock actuel de chaque item pour UN coffre précis — 403 sur un coffre admin pour un non-admin |
 | `GET /api/stocks/history?item=&channelId=&limit=` | Membre | Derniers mouvements, filtrables par item et/ou coffre (défaut 20, max 200) |
 | `GET /api/quotas?week=` | Membre | Quota (somme par catégorie + détail brut) de tous les joueurs suivis |
-| `GET /api/quotas/:userId?week=` | Membre | Quota d'un joueur précis |
+| `GET /api/quotas/:userId?week=` | Soi-même/Admin | Quota d'un joueur précis |
 | `GET /api/quotas/pay?week=` | Membre | Paie de tous les joueurs suivis, y compris à 0$ |
-| `GET /api/quotas/pay/:userId?week=` | Membre | Paie d'un joueur précis |
+| `GET /api/quotas/pay/:userId?week=` | Soi-même/Admin | Paie d'un joueur précis |
 | `GET /api/quotas/ranking?week=` | Membre | Classement groupe par points (`/config classement`), trié décroissant, uniquement > 0 pt |
 | `GET /api/quotas/summary?week=` | Membre | Bilan groupe : total par activité |
 | `GET /api/armurerie?status=` | Membre | Armes, filtrables par statut (`in_stock`/`loaned`/`lost` — sans filtre : tout sauf perdues) |
@@ -180,7 +184,7 @@ Deux niveaux d'accès : **membre du serveur Discord** (suffit pour `/api/stocks`
 | `GET /api/armurerie/ammo` | Membre | Stock + compteurs hebdomadaires munitions |
 | `GET /api/armurerie/ammo/history` | Membre | Ventes de munitions depuis le dernier reset hebdomadaire (dimanche 19h) |
 | `GET /api/ventes?week=` | Membre | Total vendu par joueur sur la plage (trié décroissant) + total du groupe |
-| `GET /api/ventes/:userId?week=` | Membre | Ventes d'un joueur précis : total + détail par drogue vendue |
+| `GET /api/ventes/:userId?week=` | Soi-même/Admin | Ventes d'un joueur précis : total + détail par drogue vendue |
 | `GET /api/taxes?type=&status=` | Taxes/Admin | Taxes filtrables par type (fixe, `zone` = toutes les zones groupées, ou la clé d'une zone précise) et statut (`active`/`expired`, défaut `active`) |
 | `GET /api/taxes/search?type=&q=` | Taxes/Admin | Recherche par nom dans un type donné (`type` requis) |
 

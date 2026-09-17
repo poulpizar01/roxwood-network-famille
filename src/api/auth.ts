@@ -251,3 +251,19 @@ export function requireTaxesAccess(req: Request, res: Response, next: NextFuncti
   }
   next();
 }
+
+/**
+ * Middleware à chaîner après `requireAuth` sur une route `/:userId` : un
+ * membre normal ne peut consulter que SES PROPRES données (quotas, paie,
+ * ventes) — pas celles d'un autre joueur, même s'il connaît son ID Discord.
+ * Un admin passe toujours (même règle que pour les coffres admin, voir
+ * `src/api/routes/stocks.ts`).
+ */
+export function requireSelfOrAdmin(req: Request, res: Response, next: NextFunction): void {
+  const user = req.apiUser!;
+  if (!user.isAdmin && req.params.userId !== user.id) {
+    res.status(403).json({ error: 'Accès réservé à tes propres données (ou à un administrateur).' });
+    return;
+  }
+  next();
+}
