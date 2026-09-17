@@ -173,7 +173,7 @@ Deux niveaux d'accès : **membre du serveur Discord** (suffit pour `/api/stocks`
 | `GET /api/quotas/:userId?week=` | Membre | Quota d'un joueur précis |
 | `GET /api/quotas/pay?week=` | Membre | Paie de tous les joueurs suivis, y compris à 0$ |
 | `GET /api/quotas/pay/:userId?week=` | Membre | Paie d'un joueur précis |
-| `GET /api/quotas/ranking?week=` | Membre | Classement groupe : paie triée décroissante, uniquement > 0$ |
+| `GET /api/quotas/ranking?week=` | Membre | Classement groupe par points (`/config classement`), trié décroissant, uniquement > 0 pt |
 | `GET /api/quotas/summary?week=` | Membre | Bilan groupe : total par activité |
 | `GET /api/armurerie?status=` | Membre | Armes, filtrables par statut (`in_stock`/`loaned`/`lost` — sans filtre : tout sauf perdues) |
 | `GET /api/armurerie/search?q=` | Membre | Recherche par nom ou référence (sous-chaîne) |

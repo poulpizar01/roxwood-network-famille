@@ -356,7 +356,7 @@ export async function getUserPayForRange(guildId: string, userId: string, range:
   return { salaire: computeSalaire(byQuotaType, rates), byQuotaType };
 }
 
-/** Paie de tous les joueurs suivis sur la plage, y compris à 0$ (contrairement à `getSalaryRankingForRange`) — pas triée. */
+/** Paie de tous les joueurs suivis sur la plage, y compris à 0$ — pas triée. */
 export async function getAllUserPayForRange(guildId: string, range: QuotaRange): Promise<Array<{ userId: string; salaire: number; byQuotaType: Record<string, number> }>> {
   const rates = configStore.get(guildId).SALARY_RATES;
   const itemRates = configStore.get(guildId).ITEM_SALARY_RATES;
@@ -368,10 +368,17 @@ export async function getAllUserPayForRange(guildId: string, range: QuotaRange):
   return summaries.map(({ userId, byQuotaType }) => ({ userId, salaire: computeSalaire(byQuotaType, rates), byQuotaType }));
 }
 
-/** Comme `getSalaryRanking`, mais sur une plage arbitraire — mêmes règles (triée décroissant, uniquement salaire > 0). */
-export async function getSalaryRankingForRange(guildId: string, range: QuotaRange): Promise<Array<{ userId: string; salaire: number; byQuotaType: Record<string, number> }>> {
-  const all = await getAllUserPayForRange(guildId, range);
-  return all.filter(r => r.salaire > 0).sort((a, b) => b.salaire - a.salaire);
+/** Comme `getClassementRanking`, mais sur une plage arbitraire — mêmes règles (triée décroissant, uniquement points > 0). */
+export async function getClassementRankingForRange(guildId: string, range: QuotaRange): Promise<Array<{ userId: string; points: number }>> {
+  const classementRates = configStore.get(guildId).CLASSEMENT_RATES;
+  const activityClassementRates = configStore.get(guildId).ACTIVITY_CLASSEMENT_RATES;
+  const summaries = await getAllUserQuotaSummariesForRange(guildId, range);
+  const results: Array<{ userId: string; points: number }> = [];
+  for (const { userId, map } of summaries) {
+    const points = computeClassement(guildId, map, classementRates, activityClassementRates);
+    if (points > 0) results.push({ userId, points });
+  }
+  return results.sort((a, b) => b.points - a.points);
 }
 
 /** Comme `buildBilanEmbed`, mais les données brutes (pas un embed), sur une plage arbitraire — inclut toute action ayant un total, sans filtrer sur `enabled` (le tier actuel ne reflète pas forcément celui d'une semaine passée). */

@@ -37,15 +37,15 @@ router.get('/summary', async (req, res) => {
   res.json(await quotas.getGroupSummaryForRange(guildId, range));
 });
 
-/** GET /api/quotas/ranking?week= — classement groupe : paie triée décroissante, uniquement > 0$ (mêmes règles que le bouton Discord). */
+/** GET /api/quotas/ranking?week= — classement groupe par points (voir /config classement), trié décroissant, uniquement > 0 pt (mêmes règles que le bouton Discord "Classement Groupe"). */
 router.get('/ranking', async (req, res) => {
   const guildId = req.apiUser!.guildId;
   const range = await resolveWeekRange(req, res, guildId);
   if (!range) return;
-  res.json(await quotas.getSalaryRankingForRange(guildId, range));
+  res.json(await quotas.getClassementRankingForRange(guildId, range));
 });
 
-/** GET /api/quotas/pay?week= — paie de tous les joueurs suivis, y compris à 0$ (contrairement à `/ranking`). */
+/** GET /api/quotas/pay?week= — paie de tous les joueurs suivis, y compris à 0$. */
 router.get('/pay', async (req, res) => {
   const guildId = req.apiUser!.guildId;
   const range = await resolveWeekRange(req, res, guildId);
