@@ -115,6 +115,18 @@ model DiscordRole {
 /// STOCK_GROUP (voir armurerie.weightedStockSum). `1` = pas de conversion.
 model Item {
   guildId         String  @map("guild_id")
+  /// Auto-incrémenté, jamais réglable via `/config item` — capture l'ordre
+  /// d'INSERTION réel (les items par défaut, ajoutés au tout premier
+  /// démarrage, obtiennent les valeurs les plus basses). Départage
+  /// `displayOrder` (toujours 0 en pratique, aucune commande ne le règle
+  /// actuellement) dans `db.getAllItems` : sans lui, le tri retombait sur le
+  /// nom par ordre alphabétique, pas l'ordre d'ajout attendu par le Stock
+  /// Général (voir `stocks.buildStockEmbed`). `@unique`, pas `@id` : la clé
+  /// primaire de cette table reste `@@id([guildId, name])` (voir plus bas),
+  /// pas cet `id` — convention différente des autres tables de ce schéma
+  /// (Braquage, Taxe, Arme, PendingSale…) qui, elles, n'ont pas de clé
+  /// primaire naturelle composite et utilisent `id` comme `@id`.
+  id              Int     @unique @default(autoincrement())
   name            String
   stockGroup      String? @map("stock_group")
   vente           Boolean @default(false)

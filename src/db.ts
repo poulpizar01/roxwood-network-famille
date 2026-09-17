@@ -171,9 +171,9 @@ export async function deleteItem(guildId: string, name: string): Promise<void> {
   await prisma.item.deleteMany({ where: { guildId, name } });
 }
 
-/** Tous les items suivis d'une guilde, triés par ordre d'affichage puis par nom. */
+/** Tous les items suivis d'une guilde, triés par ordre d'affichage puis par ordre d'insertion (jamais par nom — voir `Item.id` dans schema.prisma). */
 export async function getAllItems(guildId: string) {
-  return prisma.item.findMany({ where: { guildId }, orderBy: [{ displayOrder: 'asc' }, { name: 'asc' }] });
+  return prisma.item.findMany({ where: { guildId }, orderBy: [{ displayOrder: 'asc' }, { id: 'asc' }] });
 }
 
 // ─── QUOTA TARGETS (config) ──────────────────────────────────────────────────
