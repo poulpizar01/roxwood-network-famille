@@ -158,6 +158,7 @@ Pas de clé API statique : l'utilisateur se connecte avec son compte Discord, et
 1. Le site externe redirige le navigateur vers `<API_BASE_URL>/auth/login?guild=<ID_DU_SERVEUR>` (l'ID du serveur Discord concerné — refusé si ce serveur n'a jamais invité le bot, ou si aucun site n'y est configuré via `/config site-externe`).
 2. Après connexion Discord, l'utilisateur revient sur `<url_du_site>#token=<jwt>` (l'URL configurée via `/config site-externe set` PAR CE SERVEUR) — le site récupère ce token côté client (fragment d'URL, jamais envoyé à un serveur) et le stocke.
 3. Chaque appel à `/api/*` doit inclure `Authorization: Bearer <jwt>`. Le token expire au bout de 7 jours (pas de refresh token — se reconnecter via `/auth/login`) et reste scopé au serveur choisi à l'étape 1 : impossible de l'utiliser pour lire les données d'un autre serveur.
+4. Les **rôles ne sont pas figés dans le token** : à chaque requête, l'API revérifie via le client du bot que l'utilisateur est toujours membre du serveur et recalcule `isAdmin`/`isTaxes` depuis ses rôles actuels. Un rôle retiré (ou une expulsion) prend effet immédiatement, pas à l'expiration du token. `/api/me` renvoie donc toujours les droits du moment.
 
 Deux niveaux d'accès : **membre du serveur Discord** (suffit pour `/api/stocks`, `/api/quotas`, `/api/armurerie`, `/api/ventes`) et **rôle taxes ou admin** (requis en plus pour `/api/taxes` — le rôle `TAXES_ROLE_ID` de `/config role`, jusqu'ici sans utilisateur réel, sert enfin à ça). Deux restrictions supplémentaires, plus fines qu'un simple accès admin/non-admin :
 - **Soi-même ou admin** (`requireSelfOrAdmin`) sur toute route `:userId` (`/api/quotas/:userId`, `/api/quotas/pay/:userId`, `/api/ventes/:userId`) : un membre normal ne peut consulter que ses propres données, jamais celles d'un autre joueur.
@@ -172,8 +173,9 @@ Deux niveaux d'accès : **membre du serveur Discord** (suffit pour `/api/stocks`
 | `GET /api/stocks` | Membre | Stock actuel de chaque item suivi, tous coffres confondus (admin inclus, pour tout le monde) |
 | `GET /api/stocks/channels` | Membre/Admin | Liste des coffres surveillés (`logs_coffres` + `logs_coffres_admin` avec leur label) — coffres admin réservés aux admins |
 | `GET /api/stocks/:channelId` | Membre/Admin | Stock actuel de chaque item pour UN coffre précis — 403 sur un coffre admin pour un non-admin |
-| `GET /api/stocks/history?item=&channelId=&limit=` | Membre | Derniers mouvements, filtrables par item et/ou coffre (défaut 20, max 200) |
+| `GET /api/stocks/history?item=&channelId=&limit=` | Membre/Admin | Derniers mouvements, filtrables par item et/ou coffre (défaut 20, max 200) — les mouvements des coffres admin n'apparaissent que pour un admin (403 si un non-admin les demande explicitement) |
 | `GET /api/quotas?week=` | Membre | Quota (somme par catégorie + détail brut) de tous les joueurs suivis |
+| `GET /api/quotas/config?week=` | Membre | De quoi interpréter les autres réponses : plage `[since, until)` résolue, objectifs (`/config quota`) et taux (`/config salaire`, `/config classement`) **actuels**, libellés des activités |
 | `GET /api/quotas/:userId?week=` | Soi-même/Admin | Quota d'un joueur précis |
 | `GET /api/quotas/pay?week=` | Membre | Paie de tous les joueurs suivis, y compris à 0$ |
 | `GET /api/quotas/pay/:userId?week=` | Soi-même/Admin | Paie d'un joueur précis |

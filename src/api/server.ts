@@ -9,6 +9,9 @@
  * membre de LA guilde portée par le JWT (`req.apiUser.guildId`, résolu au
  * login via `?guild=`), et `/api/taxes` exige en plus le rôle taxes (ou
  * admin) de cette guilde — voir `requireAuth`/`requireTaxesAccess`.
+ * L'appartenance et les rôles sont revérifiés à chaque requête via le client
+ * du bot (d'où `requireAuth(client)`), pas seulement au login — un retrait
+ * de rôle ou une expulsion prend effet immédiatement, pas 7 jours plus tard.
  *
  * Le CORS est décidé sur "cet `Origin` correspond-il au site d'AU MOINS une
  * guilde active connue" (voir `guild-registry.isKnownCorsOrigin`) — grossier
@@ -78,7 +81,7 @@ export function startApiServer(client: Client): void {
 
   const api = express.Router();
   api.use(apiLimiter);
-  api.use(requireAuth);
+  api.use(requireAuth(client));
   api.get('/me', (req, res) => res.json(req.apiUser));
   api.use('/users', usersRouter);
   api.use('/stocks', stocksRouter);

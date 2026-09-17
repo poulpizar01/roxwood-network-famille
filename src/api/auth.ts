@@ -217,30 +217,58 @@ export function handleCallback(client: Client): (req: Request, res: Response) =>
  * la guilde est toujours active — sans ça, un token émis avant un
  * `/config site-externe remove` ou un retrait du bot resterait valable
  * jusqu'à expiration (7 jours), à l'encontre du message affiché à l'admin.
+ *
+ * Les droits (`isAdmin`/`isTaxes`) et l'appartenance à la guilde sont
+ * RE-RÉSOLUS À CHAQUE REQUÊTE depuis le client du bot (`guild.members`,
+ * tenu à jour par l'intent `GuildMembers`) plutôt que lus tels quels dans le
+ * token : sans ça, un membre dont on retire le rôle taxes/admin (ou qui est
+ * expulsé du serveur) garderait ses accès jusqu'à l'expiration du token, 7
+ * jours plus tard. Le token ne sert donc plus que de preuve d'identité
+ * (id + guilde) ; les rôles qu'il embarque ne sont qu'un instantané
+ * informatif, jamais une autorité. Coût : un `members.fetch` uniquement
+ * quand le membre n'est pas déjà en cache (une fois par membre, ensuite le
+ * cache suit les événements Discord).
  */
-export async function requireAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
-  const header = req.headers.authorization;
-  const token = header?.startsWith('Bearer ') ? header.slice('Bearer '.length) : null;
-  if (!token) {
-    res.status(401).json({ error: 'Authentification requise (voir /auth/login).' });
-    return;
-  }
-  let user: ApiUser;
-  try {
-    // `algorithms` explicite : durcissement défensif contre une confusion
-    // d'algorithme (même si non exploitable ici, secret purement symétrique
-    // et jsonwebtoken v9 refuse déjà `alg: none` avec un secret fourni).
-    user = jwt.verify(token, API_JWT_SECRET!, { algorithms: ['HS256'] }) as ApiUser;
-  } catch {
-    res.status(401).json({ error: 'Token invalide ou expiré — reconnecte-toi via /auth/login.' });
-    return;
-  }
-  if (!(await guildRegistry.isAuthorizedGuild(user.guildId))) {
-    res.status(401).json({ error: 'Accès révoqué pour cette guilde — reconnecte-toi via /auth/login.' });
-    return;
-  }
-  req.apiUser = user;
-  next();
+export function requireAuth(client: Client): (req: Request, res: Response, next: NextFunction) => Promise<void> {
+  return async (req, res, next) => {
+    const header = req.headers.authorization;
+    const token = header?.startsWith('Bearer ') ? header.slice('Bearer '.length) : null;
+    if (!token) {
+      res.status(401).json({ error: 'Authentification requise (voir /auth/login).' });
+      return;
+    }
+    let claims: ApiUser;
+    try {
+      // `algorithms` explicite : durcissement défensif contre une confusion
+      // d'algorithme (même si non exploitable ici, secret purement symétrique
+      // et jsonwebtoken v9 refuse déjà `alg: none` avec un secret fourni).
+      claims = jwt.verify(token, API_JWT_SECRET!, { algorithms: ['HS256'] }) as ApiUser;
+    } catch {
+      res.status(401).json({ error: 'Token invalide ou expiré — reconnecte-toi via /auth/login.' });
+      return;
+    }
+    if (!(await guildRegistry.isAuthorizedGuild(claims.guildId))) {
+      res.status(401).json({ error: 'Accès révoqué pour cette guilde — reconnecte-toi via /auth/login.' });
+      return;
+    }
+
+    const guild = client.guilds.cache.get(claims.guildId);
+    if (!guild) {
+      res.status(503).json({ error: "Le bot Discord n'est pas prêt sur cette guilde — réessaie dans quelques secondes." });
+      return;
+    }
+    const member = guild.members.cache.get(claims.id) ?? await guild.members.fetch(claims.id).catch(() => null);
+    if (!member) {
+      res.status(403).json({ error: "Tu n'es plus membre du serveur Discord de cette organisation." });
+      return;
+    }
+    const admin = isAdmin(claims.guildId, member);
+    const taxesRoleId = configStore.get(claims.guildId).TAXES_ROLE_ID;
+    const taxes = admin || (!!taxesRoleId && member.roles.cache.has(taxesRoleId));
+
+    req.apiUser = { id: claims.id, username: member.user.username, isAdmin: admin, isTaxes: taxes, guildId: claims.guildId };
+    next();
+  };
 }
 
 /** Middleware à chaîner après `requireAuth` : exige en plus l'accès "taxes" (rôle `TAXES_ROLE_ID` ou admin — même règle que `isAdmin()` partout ailleurs dans le bot). */

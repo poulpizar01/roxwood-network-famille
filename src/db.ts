@@ -453,12 +453,15 @@ export async function addStockHistory(guildId: string, data: StockHistoryInput):
  * suivi (voir `channelId` dans le modèle StockHistory — `null` sur les
  * lignes plus anciennes, jamais retournées par ce filtre).
  */
-export async function getRecentStockHistory(guildId: string, item: string | null = null, limit = 20, channelId: string | null = null) {
+export async function getRecentStockHistory(guildId: string, item: string | null = null, limit = 20, channelId: string | null = null, excludeChannelIds: string[] = []) {
   const rows = await prisma.stockHistory.findMany({
     where: {
       guildId,
       ...(item ? { item: item.toLowerCase() } : {}),
       ...(channelId ? { channelId } : {}),
+      // `OR` avec `null` : les lignes antérieures au suivi par coffre (channelId
+      // jamais backfillé) ne sont pas des mouvements de coffre admin, on les garde.
+      ...(excludeChannelIds.length ? { OR: [{ channelId: null }, { channelId: { notIn: excludeChannelIds } }] } : {}),
     },
     orderBy: { id: 'desc' },
     take: limit,

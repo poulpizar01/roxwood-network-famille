@@ -15,11 +15,11 @@
  * voir src/api/auth.ts) — jamais les données d'une autre guilde.
  *
  * Un coffre `logs_coffres_admin` n'est visible (dans `/channels`) ou
- * interrogeable en détail (`/:channelId`) que par un admin — mais `/` (le
- * total global, tous coffres confondus) reste inchangé pour tout le monde :
- * exclure les coffres admin de CE total casserait le stock affiché (il ne
- * reflèterait plus la réalité), voir `db.getAllStocks`, jamais filtré par
- * rôle de salon.
+ * interrogeable en détail (`/:channelId`) que par un admin, et `/history`
+ * exclut leurs mouvements — mais `/` (le total global, tous coffres
+ * confondus) reste inchangé pour tout le monde : exclure les coffres admin
+ * de CE total casserait le stock affiché (il ne reflèterait plus la
+ * réalité), voir `db.getAllStocks`, jamais filtré par rôle de salon.
  */
 import { Router } from 'express';
 import * as db from '../../db';
@@ -32,12 +32,25 @@ router.get('/', async (req, res) => {
   res.json(await db.getAllStocks(req.apiUser!.guildId));
 });
 
-/** GET /api/stocks/history?item=&channelId=&limit= — derniers mouvements, filtrables par item (nom exact) et/ou par coffre. */
+/**
+ * GET /api/stocks/history?item=&channelId=&limit= — derniers mouvements,
+ * filtrables par item (nom exact) et/ou par coffre. Même règle que
+ * `/:channelId` pour les coffres admin : un non-admin ne voit pas leurs
+ * mouvements (exclus de la liste, 403 s'il les demande explicitement) —
+ * sinon l'historique global contournait la restriction du détail par coffre.
+ */
 router.get('/history', async (req, res) => {
+  const apiUser = req.apiUser!;
   const item = typeof req.query.item === 'string' ? req.query.item : null;
   const channelId = typeof req.query.channelId === 'string' ? req.query.channelId : null;
   const limit = Math.min(Number(req.query.limit) || 20, 200);
-  res.json(await db.getRecentStockHistory(req.apiUser!.guildId, item, limit, channelId));
+  const adminChannels = configStore.get(apiUser.guildId).CHANNELS.logs_coffres_admin;
+  if (!apiUser.isAdmin && channelId && adminChannels.includes(channelId)) {
+    res.status(403).json({ error: 'Accès réservé aux administrateurs pour ce coffre.' });
+    return;
+  }
+  const excludeChannelIds = apiUser.isAdmin ? [] : adminChannels;
+  res.json(await db.getRecentStockHistory(apiUser.guildId, item, limit, channelId, excludeChannelIds));
 });
 
 /**
