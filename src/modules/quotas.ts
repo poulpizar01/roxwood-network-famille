@@ -87,16 +87,17 @@ function formatTime(ms: number): string {
   return [d && `${d}j`, h && `${h}h`, m && `${m}m`, s && `${s}s`].filter(Boolean).join(' ') || '0s';
 }
 
-/** Formate un timestamp (ms) en date courte française (JJ/MM/AAAA). */
+/** Formate un timestamp (ms) en date courte française (JJ/MM/AAAA), en heure de Paris (voir `taxes.formatDate` pour le risque de décalage sur un VPS en UTC). */
 function formatDate(ts: number): string {
-  return new Date(ts).toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric' });
+  return new Date(ts).toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', timeZone: 'Europe/Paris' });
 }
 
-/** Formate un timestamp (ms) en date + heure françaises complètes. */
+/** Formate un timestamp (ms) en date + heure françaises complètes, en heure de Paris. */
 function formatDateTime(ts: number): string {
   return new Date(ts).toLocaleString('fr-FR', {
     day: '2-digit', month: '2-digit', year: 'numeric',
     hour: '2-digit', minute: '2-digit', second: '2-digit',
+    timeZone: 'Europe/Paris',
   });
 }
 

@@ -189,14 +189,14 @@ export function isZoneType(type: string): boolean {
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
 
-/** Formate un timestamp (ms) en date courte française (JJ/MM/AAAA). */
+/** Formate un timestamp (ms) en date courte française (JJ/MM/AAAA), en heure de Paris — sans ça, un VPS en UTC afficherait une échéance de taxe décalée d'1-2h (voire un jour différent près de minuit). */
 function formatDate(ts: number): string {
-  return new Date(ts).toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric' });
+  return new Date(ts).toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', timeZone: 'Europe/Paris' });
 }
 
-/** Formate un timestamp (ms) en date + heure françaises. */
+/** Formate un timestamp (ms) en date + heure françaises, en heure de Paris (voir `formatDate`). */
 function formatDateFull(ts: number): string {
-  return new Date(ts).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+  return new Date(ts).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Paris' });
 }
 
 /** Vrai si l'échéance (ms) est passée. */

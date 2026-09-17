@@ -500,7 +500,7 @@ export async function handleHistoriqueCommand(interaction: ChatInputCommandInter
   }
 
   const lines = rows.map(r => {
-    const d = new Date(r.timestamp).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    const d = new Date(r.timestamp).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Paris' });
     const icon = r.action === 'retire' ? '🔴' : '🟢';
     const sign = r.action === 'retire' ? '−' : '+';
     const avant = r.stockAvant.toLocaleString('fr-FR');
