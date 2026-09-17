@@ -196,7 +196,7 @@ export function handleCallback(client: Client): (req: Request, res: Response) =>
       const taxes = admin || (!!taxesRoleId && member.roles.cache.has(taxesRoleId));
 
       const user: ApiUser = { id: me.id, username: me.username, isAdmin: admin, isTaxes: taxes, guildId };
-      const token = jwt.sign(user, API_JWT_SECRET!, { expiresIn: API_TOKEN_TTL });
+      const token = jwt.sign(user, API_JWT_SECRET!, { expiresIn: API_TOKEN_TTL, algorithm: 'HS256' });
 
       const frontendUrl = await guildRegistry.getGuildFrontendUrl(guildId);
       if (!frontendUrl) {
@@ -227,7 +227,10 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
   }
   let user: ApiUser;
   try {
-    user = jwt.verify(token, API_JWT_SECRET!) as ApiUser;
+    // `algorithms` explicite : durcissement défensif contre une confusion
+    // d'algorithme (même si non exploitable ici, secret purement symétrique
+    // et jsonwebtoken v9 refuse déjà `alg: none` avec un secret fourni).
+    user = jwt.verify(token, API_JWT_SECRET!, { algorithms: ['HS256'] }) as ApiUser;
   } catch {
     res.status(401).json({ error: 'Token invalide ou expiré — reconnecte-toi via /auth/login.' });
     return;

@@ -32,6 +32,7 @@
  */
 import express from 'express';
 import cors from 'cors';
+import rateLimit from 'express-rate-limit';
 import type { Client } from 'discord.js';
 import { assertAuthEnv, handleLogin, handleCallback, requireAuth, requireTaxesAccess } from './auth';
 import * as guildRegistry from '../guild-registry';
@@ -64,10 +65,18 @@ export function startApiServer(client: Client): void {
 
   app.get('/health', (_req, res) => res.json({ ok: true }));
 
-  app.get('/auth/login', handleLogin);
-  app.get('/auth/callback', handleCallback(client));
+  // Par IP, pas par guilde (le JWT n'existe pas encore à ce stade). Une
+  // limite dédiée et plus stricte sur /auth/login, séparée de l'API : pas de
+  // brute-force utile ici (même message d'erreur guilde inconnue/inactive),
+  // mais évite un DoS applicatif par répétition de requêtes.
+  const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 20, standardHeaders: true, legacyHeaders: false });
+  const apiLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 300, standardHeaders: true, legacyHeaders: false });
+
+  app.get('/auth/login', authLimiter, handleLogin);
+  app.get('/auth/callback', authLimiter, handleCallback(client));
 
   const api = express.Router();
+  api.use(apiLimiter);
   api.use(requireAuth);
   api.get('/me', (req, res) => res.json(req.apiUser));
   api.use('/stocks', stocksRouter);

@@ -78,6 +78,12 @@ const client = new Client({
   sweepers: {
     messages: { interval: 3600, lifetime: 3600 },
   },
+  // 'users' seul : un `<@id>` posé par le bot lui-même (participant, auteur
+  // d'une suppression, rappel de quota…) reste un vrai ping, mais @everyone/
+  // @here/@role — qui peuvent apparaître tels quels dans un champ de modal en
+  // texte libre (nom de taxe, "type" d'une vente) — ne pingent jamais, quel
+  // que soit le salon où le bot a la permission de le faire.
+  allowedMentions: { parse: ['users'] },
 });
 
 // ─── DÉPLOIEMENT DES COMMANDES SLASH ─────────────────────────────────────────
