@@ -188,7 +188,14 @@ async function tryConfirmMoneyDeposit(client: Client, guildId: string, entry: St
   if (!sales.length) return;
 
   for (const sale of sales) {
-    await db.confirmPendingSale(guildId, sale.id);
+    // Confirmation + crédit du quota en une seule transaction DB quand le
+    // joueur est mappé — voir docstring de `db.confirmSaleAndCredit`. Sans
+    // discordId, rien à créditer : `sendLogVente` alertera à la place.
+    if (sale.discordId) {
+      await db.confirmSaleAndCredit(guildId, sale.id, sale.discordId, sale.joueur, sale.item, sale.quantite);
+    } else {
+      await db.confirmPendingSale(guildId, sale.id);
+    }
     await editAlertMessage(client, sale, '✅ Vente confirmée — argent déposé', 0x57F287);
   }
   await sendLogVente(client, guildId, sales, entry.quantite);
@@ -235,7 +242,7 @@ async function tryConfirmRedeposit(client: Client, guildId: string, entry: Stock
 
 // ─── LOG FINAL DANS log_ventes ────────────────────────────────────────────────
 
-/** Poste le log final dans `log_ventes` pour une ou plusieurs ventes confirmées ensemble, puis met à jour stats/quota (ou alerte si le joueur n'est pas mappé). */
+/** Poste le log final dans `log_ventes` pour une ou plusieurs ventes confirmées ensemble (le crédit de quota lui-même a déjà été fait de façon atomique avec la confirmation, voir `tryConfirmMoneyDeposit`/`db.confirmSaleAndCredit`) — alerte seulement si un joueur n'est pas mappé. */
 async function sendLogVente(client: Client, guildId: string, sales: Array<NonNullable<PendingSale>>, montantDepose: number): Promise<void> {
   const channelId = configStore.get(guildId).CHANNELS.log_ventes;
   if (!channelId) return;
@@ -259,10 +266,7 @@ async function sendLogVente(client: Client, guildId: string, sales: Array<NonNul
   await channel.send({ embeds: [embed] });
 
   for (const sale of sales) {
-    if (sale.discordId) {
-      await db.addTransaction(guildId, { user_id: sale.discordId, username: sale.joueur, action: 'vente', quantite: sale.quantite, type: sale.item, timestamp: Date.now() });
-      await db.incrementStat(guildId, sale.discordId, 'vente', sale.quantite, 0);
-    } else {
+    if (!sale.discordId) {
       await alertMissingMapping(client, guildId, sale.joueur, `Vente confirmée — quota de ${sale.quantite.toLocaleString('fr-FR')} × ${sale.item} non attribué`);
     }
   }
@@ -433,12 +437,27 @@ export async function handleModal(interaction: ModalSubmitInteraction): Promise<
 
 // ─── NETTOYAGE DES VENTES EXPIRÉES (cron) ────────────────────────────────────
 
+/**
+ * Verrou par guilde contre le chevauchement `node-cron` (même pattern que
+ * `alertes.checkExpiredCooldowns`) : le corps boucle sur un `editAlertMessage`
+ * Discord + un marquage DB par vente expirée — sans lui, un batch qui dépasse
+ * les 10 minutes de l'intervalle ferait démarrer un 2ᵉ passage sur des lignes
+ * pas encore marquées `expire`, éditant deux fois la même alerte.
+ */
+const cleanupRunning = new Set<string>();
+
 /** Cron (toutes les 10 min) : marque expirées les ventes sans action depuis plus de {@link WINDOW_MS}. */
 export async function cleanupExpiredSales(client: Client, guildId: string): Promise<void> {
-  const expired = await db.getExpiredPendingSales(guildId, Date.now() - WINDOW_MS);
-  for (const sale of expired) {
-    await db.updatePendingSaleStatut(guildId, sale.id, 'expire');
-    await editAlertMessage(client, sale, '⏰ Vente expirée — aucune action', 0x95A5A6);
+  if (cleanupRunning.has(guildId)) return;
+  cleanupRunning.add(guildId);
+  try {
+    const expired = await db.getExpiredPendingSales(guildId, Date.now() - WINDOW_MS);
+    for (const sale of expired) {
+      await db.updatePendingSaleStatut(guildId, sale.id, 'expire');
+      await editAlertMessage(client, sale, '⏰ Vente expirée — aucune action', 0x95A5A6);
+    }
+  } finally {
+    cleanupRunning.delete(guildId);
   }
 }
 

@@ -433,19 +433,27 @@ export async function addStockHistory(guildId: string, data: StockHistoryInput):
       channelId: data.channel_id ?? null,
     },
   });
-  // Plafonne l'historique de CETTE guilde à 500 entrées (les plus anciennes
+  // Plafonne l'historique de CETTE guilde à ~500 entrées (les plus anciennes
   // sont purgées) — le `where: { guildId }` est indispensable ici : sans lui,
   // le tri global par `id` autoincrémenté purgerait les plus vieilles lignes
   // d'une AUTRE guilde selon l'ordre d'insertion, pas celles de `guildId`.
-  const excess = await prisma.stockHistory.findMany({
-    where: { guildId },
-    orderBy: { id: 'desc' },
-    skip: 500,
-    select: { id: true },
-    take: 1000,
-  });
-  if (excess.length) {
-    await prisma.stockHistory.deleteMany({ where: { id: { in: excess.map(r => r.id) } } });
+  // `addStockHistory` est le point d'entrée le plus fréquent du bot (chaque
+  // mouvement de coffre en jeu) : vérifier le dépassement à CHAQUE appel,
+  // alors qu'il est presque toujours nul (skip:500 renvoie vide tant qu'on
+  // n'a pas dépassé 500), gaspille une requête. Le plafond est indicatif
+  // (rien ne dépend d'un total exact) — un tirage 1/20 suffit à le maintenir
+  // proche de 500 en moyenne sans requête de nettoyage à chaque insertion.
+  if (Math.random() < 0.05) {
+    const excess = await prisma.stockHistory.findMany({
+      where: { guildId },
+      orderBy: { id: 'desc' },
+      skip: 500,
+      select: { id: true },
+      take: 1000,
+    });
+    if (excess.length) {
+      await prisma.stockHistory.deleteMany({ where: { id: { in: excess.map(r => r.id) } } });
+    }
   }
 }
 
@@ -583,19 +591,41 @@ export async function getGroupActionTotals(guildId: string, sinceTs = 0, quantit
  * `modules/quotas.ts`, fonctions `*ForRange`, et `src/api/routes/quotas.ts`).
  * `userId` optionnel filtre sur un seul joueur (évite de tout charger puis
  * filtrer en mémoire pour une vue "un seul joueur").
+ *
+ * Un événement labo/braquage crédite le déclarant ET chaque `partenaires`
+ * (même règle que `incrementStat` côté `Stat` live, voir `modules/quotas.ts`
+ * `handleModal`/`handleSelect`) — sans ça, un partenaire apparaîtrait dans
+ * son quota/sa paie du panneau Discord live mais disparaîtrait de l'API pour
+ * une semaine passée, alors que `Transaction` est censée reconstruire
+ * exactement ce que `Stat` donnerait. `partenaires` n'inclut jamais le
+ * déclarant lui-même (déjà filtré à la création, voir `quotas.ts`), donc pas
+ * de double-crédit.
  */
 export async function getUserActionTotals(guildId: string, sinceTs: number, untilTs: number, quantityActions: string[] = [], userId?: string): Promise<Array<{ userId: string; action: string; total: number }>> {
   const rows = await prisma.transaction.findMany({
-    where: { guildId, deleted: false, timestamp: { gte: new Date(sinceTs), lt: new Date(untilTs) }, ...(userId ? { userId } : {}) },
-    select: { userId: true, action: true, quantite: true },
+    where: {
+      guildId, deleted: false, timestamp: { gte: new Date(sinceTs), lt: new Date(untilTs) },
+      // Substring sur le JSON stocké, entre guillemets pour éviter qu'un ID
+      // soit un faux positif de sous-chaîne d'un autre — un `contains` évite
+      // de charger toute la guilde juste pour retrouver les transactions où
+      // ce joueur n'est que partenaire (pas déclarant).
+      ...(userId ? { OR: [{ userId }, { partenaires: { contains: `"${userId}"` } }] } : {}),
+    },
+    select: { userId: true, action: true, quantite: true, partenaires: true },
   });
   const totals = new Map<string, { userId: string; action: string; total: number }>();
-  for (const r of rows) {
-    const key = `${r.userId}|${r.action}`;
-    const add = quantityActions.includes(r.action) ? r.quantite : 1;
+  const credit = (uid: string, action: string, add: number) => {
+    const key = `${uid}|${action}`;
     const existing = totals.get(key);
     if (existing) existing.total += add;
-    else totals.set(key, { userId: r.userId, action: r.action, total: add });
+    else totals.set(key, { userId: uid, action, total: add });
+  };
+  for (const r of rows) {
+    const add = quantityActions.includes(r.action) ? r.quantite : 1;
+    let partenaires: string[] = [];
+    try { partenaires = JSON.parse(r.partenaires); } catch { /* ignore */ }
+    const participants = userId ? [userId] : [r.userId, ...partenaires];
+    for (const uid of participants) credit(uid, r.action, add);
   }
   return [...totals.values()];
 }
@@ -756,6 +786,27 @@ export async function addBraquage(guildId: string, userId: string, action: strin
 /** Nombre de braquages d'un type donné dans les 7 derniers jours, pour une guilde. */
 export async function getBraquageCount(guildId: string, action: string): Promise<number> {
   return prisma.braquage.count({ where: { guildId, action, timestamp: { gte: new Date(Date.now() - SEVEN_DAYS_MS) } } });
+}
+
+/**
+ * Comme {@link getBraquageCount}, mais pour plusieurs actions en une seule
+ * requête (`groupBy`) — utilisé partout où le panneau affiche TOUTES les
+ * activités de braquage à la fois (`quotas.buildMainEmbed`/`handleMinuterie`),
+ * plutôt qu'un `getBraquageCount` par activité à chaque rafraîchissement
+ * (déclenché après chaque déclaration/vente/`/supp`, un hot path). Une action
+ * sans aucun braquage dans la fenêtre est simplement absente de l'objet
+ * retourné (0 implicite pour l'appelant).
+ */
+export async function getBraquageCounts(guildId: string, actions: string[]): Promise<Record<string, number>> {
+  if (!actions.length) return {};
+  const rows = await prisma.braquage.groupBy({
+    by: ['action'],
+    where: { guildId, action: { in: actions }, timestamp: { gte: new Date(Date.now() - SEVEN_DAYS_MS) } },
+    _count: { _all: true },
+  });
+  const counts: Record<string, number> = {};
+  for (const r of rows) counts[r.action] = r._count._all;
+  return counts;
 }
 
 /** Purge les entrées de braquage sorties de la fenêtre glissante de 7 jours, toutes guildes confondues — la fenêtre glissante rend le filtrage par guilde inutile ici (une entrée hors fenêtre l'est pour toutes). */
@@ -1001,9 +1052,33 @@ export async function updatePendingSaleDiscordId(guildId: string, id: number, di
   await prisma.pendingSale.updateMany({ where: { id, guildId }, data: { discordId } });
 }
 
-/** Marque une vente en attente comme confirmée. */
+/** Marque une vente en attente comme confirmée — sans crédit de quota, utilisé seulement quand le joueur n'est pas mappé à un compte Discord (voir `confirmSaleAndCredit` sinon). */
 export async function confirmPendingSale(guildId: string, id: number): Promise<void> {
   await prisma.pendingSale.updateMany({ where: { id, guildId }, data: { confirmed: true, statut: 'confirme' } });
+}
+
+/**
+ * Confirme une vente en attente ET crédite le quota/la paie du joueur
+ * (catégorie `vente`) en une seule transaction DB — sans ça, un crash entre
+ * les deux écritures laisserait une `PendingSale` marquée "confirmée" sans
+ * que le quota du joueur n'ait jamais été crédité, silencieusement (le flux
+ * de confirmation de vente est le plus fréquent du bot). Voir
+ * `modules/ventes.ts` `tryConfirmMoneyDeposit` — appelée uniquement quand la
+ * vente a un `discordId` mappé, sinon `confirmPendingSale` seule suffit (rien
+ * à créditer, une alerte est postée à la place).
+ */
+export async function confirmSaleAndCredit(guildId: string, saleId: number, userId: string, username: string, item: string, quantite: number): Promise<void> {
+  await prisma.$transaction(async tx => {
+    await tx.pendingSale.updateMany({ where: { id: saleId, guildId }, data: { confirmed: true, statut: 'confirme' } });
+    await tx.transaction.create({
+      data: { guildId, userId, username, action: 'vente', quantite, type: item, partenaires: '[]', timestamp: new Date() },
+    });
+    await tx.stat.upsert({
+      where: { guildId_userId_action: { guildId, userId, action: 'vente' } },
+      create: { guildId, userId, action: 'vente', count: quantite, points: 0 },
+      update: { count: { increment: quantite } },
+    });
+  });
 }
 
 /** Vente en attente accumulable (même joueur/item, pas encore confirmée) depuis `since`, la plus récente. */

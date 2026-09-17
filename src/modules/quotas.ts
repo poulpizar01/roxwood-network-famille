@@ -167,12 +167,12 @@ async function buildMainEmbed(guildId: string): Promise<EmbedBuilder> {
     .filter(([, cfg]) => cfg.enabled && cfg.braquageWeeklyLimit != null)
     .sort((a, b) => a[1].displayOrder - b[1].displayOrder);
 
-  const slotLines = await Promise.all(braquageEntries.map(async ([key, cfg]) => {
-    const used = await db.getBraquageCount(guildId, key);
-    const dispo = Math.max(0, cfg.braquageWeeklyLimit! - used);
+  const braquageCounts = await db.getBraquageCounts(guildId, braquageEntries.map(([key]) => key));
+  const slotLines = braquageEntries.map(([key, cfg]) => {
+    const dispo = Math.max(0, cfg.braquageWeeklyLimit! - (braquageCounts[key] ?? 0));
     const icon = dispo > 0 ? '🟢' : '🔴';
     return `${icon} ${activityDisplayLabel(cfg)} : **${dispo}/${cfg.braquageWeeklyLimit}**`;
-  }));
+  });
 
   const embed = new EmbedBuilder()
     .setTitle('🎮 Gestion des Activités')
@@ -845,10 +845,12 @@ async function handleMinuterie(interaction: ButtonInteraction, guildId: string):
     }),
   );
 
+  const braquageEntries = entries.filter(([, cfg]) => cfg.enabled && cfg.braquageWeeklyLimit != null);
+  const braquageCounts = await db.getBraquageCounts(guildId, braquageEntries.map(([key]) => key));
   const braquageLines = await Promise.all(
-    entries.filter(([, cfg]) => cfg.enabled && cfg.braquageWeeklyLimit != null).map(async ([key, cfg]) => {
+    braquageEntries.map(async ([key, cfg]) => {
       const limit = cfg.braquageWeeklyLimit!;
-      const dispo = Math.max(0, limit - (await db.getBraquageCount(guildId, key)));
+      const dispo = Math.max(0, limit - (braquageCounts[key] ?? 0));
       let line = `${dispo > 0 ? '🟢' : '🔴'} **${activityDisplayLabel(cfg)}** : ${dispo}/${limit}`;
       if (dispo === 0) {
         const oldest = await db.getOldestBraquage(guildId, key);
