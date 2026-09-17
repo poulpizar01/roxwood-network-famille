@@ -322,17 +322,6 @@ export async function updateStock(guildId: string, item: string, delta: number):
   return (await applyStockDelta(guildId, item, delta)).apres;
 }
 
-/** Force la valeur du stock d'un item (correction manuelle) — jamais négative. */
-export async function setStock(guildId: string, item: string, qty: number): Promise<void> {
-  const key = item.toLowerCase();
-  const quantite = Math.max(0, qty);
-  await prisma.stock.upsert({
-    where: { guildId_item: { guildId, item: key } },
-    create: { guildId, item: key, quantite },
-    update: { quantite },
-  });
-}
-
 /** Le stock de tous les items d'une guilde, trié par nom. */
 export async function getAllStocks(guildId: string) {
   return prisma.stock.findMany({ where: { guildId }, orderBy: { item: 'asc' } });

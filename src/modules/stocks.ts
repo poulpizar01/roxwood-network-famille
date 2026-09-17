@@ -411,7 +411,7 @@ function capitalize(str: string): string {
 
 // ─── SLASH COMMANDS ───────────────────────────────────────────────────────────
 
-/** Déclare les commandes `/set-stock`, `/historique-stock`, `/sync-stock`, `/drogues-a-vendre`. */
+/** Déclare les commandes `/set-stock`, `/coffre-stock`, `/historique-stock`, `/sync-stock`, `/drogues-a-vendre`. */
 export function getCommands() {
   return [
     {
@@ -420,7 +420,14 @@ export function getCommands() {
         .setDescription("Force la valeur du stock d'un item (correction manuelle, admin)")
         .addStringOption(opt => opt.setName('item').setDescription("L'item à corriger").setRequired(true).setAutocomplete(true))
         .addIntegerOption(opt => opt.setName('quantite').setDescription('Nouvelle valeur du stock').setRequired(true).setMinValue(0))
-        .addChannelOption(opt => opt.setName('coffre').setDescription('Optionnel — corrige ce coffre précis (répercuté sur le total global) plutôt que le total directement').setRequired(false)
+        .addChannelOption(opt => opt.setName('coffre').setDescription('Le coffre à corriger (le total global suit le même delta)').setRequired(true)
+          .addChannelTypes(ChannelType.GuildText)),
+    },
+    {
+      data: new SlashCommandBuilder()
+        .setName('coffre-stock')
+        .setDescription("Affiche le détail du stock d'un coffre précis (admin)")
+        .addChannelOption(opt => opt.setName('coffre').setDescription('Le salon coffre à consulter').setRequired(true)
           .addChannelTypes(ChannelType.GuildText)),
     },
     {
@@ -459,32 +466,55 @@ export async function handleSetStockCommand(interaction: ChatInputCommandInterac
 
   const item = interaction.options.getString('item', true);
   const quantite = interaction.options.getInteger('quantite', true);
-  const coffre = interaction.options.getChannel('coffre');
+  const coffre = interaction.options.getChannel('coffre', true);
   const itemLabel = configStore.get(guildId).ALLOWED_ITEMS.find(i => i.toLowerCase() === item) || item;
 
-  if (coffre) {
-    // Corrige CE coffre précis (SET absolu) et répercute le même delta sur
-    // le total global — cohérent avec le fait qu'un mouvement réel met à
-    // jour les deux compteurs en parallèle du même delta (voir parseAndApply).
-    const { avant, apres } = await db.setCoffreStock(guildId, coffre.id, item, quantite);
-    const delta = apres - avant;
-    if (delta !== 0) await db.applyStockDelta(guildId, item, delta);
-    await updateStockMessage(interaction.client, guildId);
-    await interaction.reply({
-      content: `✅ Stock de **${itemLabel}** corrigé pour <#${coffre.id}> : \`${avant.toLocaleString('fr-FR')}\` → \`${apres.toLocaleString('fr-FR')}\` (total global ajusté du même delta).`,
-      flags: MessageFlags.Ephemeral,
-    });
+  // Corrige CE coffre précis (SET absolu) et répercute le même delta sur le
+  // total global — cohérent avec le fait qu'un mouvement réel met à jour les
+  // deux compteurs en parallèle du même delta (voir parseAndApply). `coffre`
+  // obligatoire : un ancien chemin "sans coffre" écrasait directement le
+  // total global (db.setStock) sans jamais le rattacher à un CoffreStock,
+  // faisant diverger le total de la somme des coffres connus dès qu'on
+  // mélangeait les deux usages sur un même item.
+  const { avant, apres } = await db.setCoffreStock(guildId, coffre.id, item, quantite);
+  const delta = apres - avant;
+  if (delta !== 0) await db.applyStockDelta(guildId, item, delta);
+  await updateStockMessage(interaction.client, guildId);
+  await interaction.reply({
+    content: `✅ Stock de **${itemLabel}** corrigé pour <#${coffre.id}> : \`${avant.toLocaleString('fr-FR')}\` → \`${apres.toLocaleString('fr-FR')}\` (total global ajusté du même delta).`,
+    flags: MessageFlags.Ephemeral,
+  });
+}
+
+/** `/coffre-stock` (admin) : détail du stock d'un coffre précis — liste vide (pas d'erreur) si ce salon n'a encore aucun mouvement enregistré. */
+export async function handleCoffreStockCommand(interaction: ChatInputCommandInteraction): Promise<void> {
+  const guildId = interaction.guildId!;
+  if (!isAdmin(guildId, interaction.member)) {
+    await interaction.reply({ content: '❌ Commande réservée aux administrateurs.', flags: MessageFlags.Ephemeral });
     return;
   }
 
-  const avant = await db.getStock(guildId, item);
-  await db.setStock(guildId, item, quantite);
-  await updateStockMessage(interaction.client, guildId);
+  const coffre = interaction.options.getChannel('coffre', true);
+  const c = configStore.get(guildId).CHANNELS;
+  const suivi = c.logs_coffres.includes(coffre.id) || c.logs_coffres_admin.includes(coffre.id);
 
-  await interaction.reply({
-    content: `✅ Stock de **${itemLabel}** corrigé : \`${avant.toLocaleString('fr-FR')}\` → \`${quantite.toLocaleString('fr-FR')}\``,
-    flags: MessageFlags.Ephemeral,
-  });
+  const rows = await db.getCoffreStocks(guildId, coffre.id);
+  const embed = new EmbedBuilder()
+    .setTitle(`📦 Stock — ${coffre.name}`)
+    .setColor(0x2b2d31);
+
+  if (!suivi) {
+    embed.setDescription(`⚠️ Ce salon n'est pas configuré comme coffre suivi (\`/config channel add-log-coffre\`/\`add-log-coffre-admin\`)${rows.length ? ' — figures ci-dessous issues de mouvements passés :' : ', aucune donnée.'}`);
+  }
+
+  if (rows.length) {
+    const lines = rows.map(r => `**${capitalize(r.item)}** : \`${r.quantite.toLocaleString('fr-FR')}\``);
+    embed.addFields({ name: suivi ? 'Détail' : '​', value: lines.join('\n') });
+  } else if (suivi) {
+    embed.setDescription('Aucun mouvement enregistré pour ce coffre pour le moment.');
+  }
+
+  await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
 }
 
 /** `/historique-stock` : affiche les derniers mouvements de stock, filtrés par item si fourni. */
