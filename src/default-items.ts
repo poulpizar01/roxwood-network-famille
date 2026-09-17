@@ -25,20 +25,31 @@ import * as configStore from './config-store';
 import { MUNITIONS_STOCK_GROUP, MUNITIONS_SMG_ITEM } from './modules/armurerie';
 import { CONFIRME_VENTE_ITEM } from './modules/ventes';
 
+// Les 5 premiers items reçoivent un `display_order` négatif explicite, dans
+// l'ordre où ils sont déclarés ci-dessous — ce sont les seuls à apparaître
+// individuellement dans le corps principal du Stock Général (les items de
+// labo plus bas sont masqués, visibles seulement via les champs dynamiques
+// Drogues de production/Matériaux, voir stocks.buildStockEmbed). Négatif,
+// pas juste 1-5 : garantit qu'ils restent TOUJOURS avant un item ajouté par
+// un admin (qui reste au défaut 0), même après une correction manuelle de
+// display_order sur un de ces 5 (voir db.upsertItem, qui ne touche plus
+// display_order si `display_order` est omis — un simple 1-5 se ferait
+// dépasser par le premier item admin qui recevrait un jour un display_order
+// positif bas).
 const DEFAULT_ITEMS: db.ItemInput[] = [
-  { name: 'Munition de pistolet', stock_group: MUNITIONS_STOCK_GROUP },
+  { name: 'Munition de pistolet', stock_group: MUNITIONS_STOCK_GROUP, display_order: -5 },
   // Vaut 24x "Munition de pistolet" (stock_multiplier) — même groupe, comptée
   // en conséquence dans le total munitions pondéré (voir armurerie.weightedStockSum).
-  { name: 'Boîte mun. pistolet', stock_group: MUNITIONS_STOCK_GROUP, stock_multiplier: 24 },
+  { name: 'Boîte mun. pistolet', stock_group: MUNITIONS_STOCK_GROUP, stock_multiplier: 24, display_order: -4 },
   // CONFIRME_VENTE_ITEM (voir ventes.ts) — simple item de stock ici, son rôle
   // de confirmation de vente est fixe dans le code, pas un flag à poser.
-  { name: CONFIRME_VENTE_ITEM },
+  { name: CONFIRME_VENTE_ITEM, display_order: -3 },
   // Distinct de CONFIRME_VENTE_ITEM ("Argent Sale") : simple item de stock,
   // ne joue aucun rôle dans le cycle de vente.
-  { name: 'Argent' },
+  { name: 'Argent', display_order: -2 },
   // Simple item de stock, sans groupe : affiché dans l'armurerie via
   // MUNITIONS_SMG_ITEM (stock brut uniquement, pas de quota fabrication/vente).
-  { name: MUNITIONS_SMG_ITEM },
+  { name: MUNITIONS_SMG_ITEM, display_order: -1 },
   // Labo Salvia (Indépendant uniquement) — Salvia, contrairement aux autres
   // drogues de labo, n'est volontairement PAS liée à son labo (pas de
   // labo_lie) : elle reste vendable au PNJ même quand ce labo est actif.

@@ -157,7 +157,7 @@ export async function upsertItem(guildId: string, data: ItemInput): Promise<void
     update: {
       ...(data.stock_group !== undefined ? { stockGroup: data.stock_group } : {}),
       vente: !!data.vente,
-      displayOrder: data.display_order ?? 0,
+      ...(data.display_order !== undefined ? { displayOrder: data.display_order } : {}),
       visibleStock: data.visible_stock !== false,
       laboLie: data.labo_lie ?? null,
       laboLieRole: data.labo_lie ? (data.labo_lie_role ?? 'produit') : null,
