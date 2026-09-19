@@ -50,6 +50,28 @@ const DEFAULT_ITEMS: db.ItemInput[] = [
   // Simple item de stock, sans groupe : affiché dans l'armurerie via
   // MUNITIONS_SMG_ITEM (stock brut uniquement, pas de quota fabrication/vente).
   { name: MUNITIONS_SMG_ITEM, display_order: -1 },
+  // Drogues vendables aux PNJ sans lien avec un labo particulier (variantes
+  // de pureté/formes commerciales) — noms vérifiés avec l'utilisateur avant
+  // ajout (piège n°1).
+  { name: 'Mexicana Pure À 99', vente: true },
+  { name: 'Mexicana Pure À 90', vente: true },
+  { name: 'Mexicana Pure À 70', vente: true },
+  { name: 'Mexicana Pure À 50', vente: true },
+  { name: 'Cocaine Pure À 99', vente: true },
+  { name: 'Cocaine Pure À 90', vente: true },
+  { name: 'Cocaine Pure À 70', vente: true },
+  { name: 'Cocaine Pure À 50', vente: true },
+  { name: 'Weed Pure À 99', vente: true },
+  { name: 'Weed Pure À 90', vente: true },
+  { name: 'Weed Pure À 70', vente: true },
+  { name: 'Weed Pure À 50', vente: true },
+  { name: 'Carte Prépayée', vente: true },
+  { name: 'B-magic', vente: true },
+  { name: 'Ecstasy', vente: true },
+  { name: 'Tranq', vente: true },
+  { name: 'Meth bleue', vente: true },
+  { name: 'Lean', vente: true },
+  { name: 'H-47', vente: true },
   // Labo Salvia (Indépendant uniquement) — Salvia, contrairement aux autres
   // drogues de labo, n'est volontairement PAS liée à son labo (pas de
   // labo_lie) : elle reste vendable au PNJ même quand ce labo est actif.
@@ -62,15 +84,25 @@ const DEFAULT_ITEMS: db.ItemInput[] = [
   { name: 'Graine de strawberry', labo_lie: 'labo_branche_cannabis', labo_lie_role: 'materiau' },
   { name: 'Pot de plantation', labo_lie: 'labo_branche_cannabis', labo_lie_role: 'materiau' },
   { name: 'Fertilisant', labo_lie: 'labo_branche_cannabis', labo_lie_role: 'materiau' },
-  // Matériaux du labo Spore X (déjà existant).
+  // Labo Spore X (Petite Frappe) — produit + matériaux.
+  { name: 'Pochon De SporeX', labo_lie: 'labo_sporex', labo_lie_role: 'produit' },
   { name: 'Psilocybe Rouge', labo_lie: 'labo_sporex', labo_lie_role: 'materiau' },
   { name: 'Psilocybe Vert', labo_lie: 'labo_sporex', labo_lie_role: 'materiau' },
   { name: 'Psilocybe Violet', labo_lie: 'labo_sporex', labo_lie_role: 'materiau' },
   { name: 'Poudre à canon', labo_lie: 'labo_sporex', labo_lie_role: 'materiau' },
   { name: 'Fragment de métal', labo_lie: 'labo_sporex', labo_lie_role: 'materiau' },
-  // Matériaux du labo Héroïne (déjà existant).
+  // Labo Héroïne (Petite Frappe) — produit + matériaux.
+  { name: 'Héroïne', labo_lie: 'labo_heroine', labo_lie_role: 'produit' },
   { name: 'Datura', labo_lie: 'labo_heroine', labo_lie_role: 'materiau' },
   { name: 'Morphine', labo_lie: 'labo_heroine', labo_lie_role: 'materiau' },
+  // Labo Cannabis (Gang) — produit seul, aucun matériau vérifié pour
+  // l'instant. vente:true : reste vendable au PNJ pour un tier qui n'a pas
+  // ce labo actif (voir config-store.ts, laboLieRole).
+  { name: 'Cannabis', vente: true, labo_lie: 'labo_cannabis', labo_lie_role: 'produit' },
+  // Labo Cocaïne (Organisation) — produit seul, même remarque que Cannabis.
+  { name: 'Cocaïne', vente: true, labo_lie: 'labo_cocaine', labo_lie_role: 'produit' },
+  // Labo Mexicana (Gang · Organisation) — produit seul, même remarque.
+  { name: 'Pochon De Mexicana', vente: true, labo_lie: 'labo_mexicana', labo_lie_role: 'produit' },
 ];
 
 /**
