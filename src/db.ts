@@ -361,6 +361,39 @@ export async function applyCoffreStockDelta(guildId: string, channelId: string, 
 }
 
 /**
+ * Comme `applyStockDelta` + `applyCoffreStockDelta` appelées à la suite,
+ * mais dans une seule transaction DB (`prisma.$transaction`) — utilisée par
+ * `stocks.parseAndApply` (le point d'entrée temps réel, un mouvement de
+ * coffre en jeu = un appel). Sans ça, un crash entre les deux écritures
+ * (ex. redémarrage du bot pendant le traitement d'un lot de mouvements)
+ * laisse le total global (`Stock`) et le détail par coffre (`CoffreStock`)
+ * désynchronisés — CLAUDE.md documente explicitement que les deux DOIVENT
+ * être mis à jour ensemble. Retourne avant/après du total GLOBAL uniquement
+ * (ce dont l'appelant a besoin pour construire son `StockEntry`) — le
+ * détail par coffre n'est jamais relu dans la foulée.
+ */
+export async function applyStockAndCoffreDelta(guildId: string, channelId: string, item: string, delta: number): Promise<{ avant: number; apres: number }> {
+  const key = item.toLowerCase();
+  return prisma.$transaction(async tx => {
+    const globalRows = await tx.$queryRaw<Array<{ avant: number; apres: number }>>`
+      WITH prev AS (
+        SELECT quantite FROM stocks WHERE guild_id = ${guildId} AND item = ${key}
+      ), upserted AS (
+        INSERT INTO stocks (guild_id, item, quantite) VALUES (${guildId}, ${key}, GREATEST(${delta}, 0))
+        ON CONFLICT (guild_id, item) DO UPDATE SET quantite = GREATEST(stocks.quantite + ${delta}, 0)
+        RETURNING quantite
+      )
+      SELECT COALESCE((SELECT quantite FROM prev), 0)::int AS avant, (SELECT quantite FROM upserted)::int AS apres
+    `;
+    await tx.$executeRaw`
+      INSERT INTO coffre_stocks (guild_id, channel_id, item, quantite) VALUES (${guildId}, ${channelId}, ${key}, GREATEST(${delta}, 0))
+      ON CONFLICT (guild_id, channel_id, item) DO UPDATE SET quantite = GREATEST(coffre_stocks.quantite + ${delta}, 0)
+    `;
+    return { avant: globalRows[0]?.avant ?? 0, apres: globalRows[0]?.apres ?? 0 };
+  });
+}
+
+/**
  * Force la valeur du stock d'un item POUR UN COFFRE DONNÉ (correction
  * manuelle, `/set-stock ... coffre:`) — SET absolu, pas un delta (contraste
  * avec `applyCoffreStockDelta`, additive). Même pattern atomique (upsert +

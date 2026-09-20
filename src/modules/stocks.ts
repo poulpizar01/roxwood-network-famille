@@ -196,8 +196,9 @@ function extractText(msg: Message): string {
  * l'item est inconnu (voir piège n°1 du projet : orthographe exacte).
  * `channelId` : salon `logs_coffres` d'origine — le delta est appliqué à la
  * fois au total global (`Stock`, inchangé) ET au détail par coffre
- * (`CoffreStock`, voir README section Interopérabilité), jamais l'un sans
- * l'autre.
+ * (`CoffreStock`, voir README section Interopérabilité), dans une seule
+ * transaction DB (voir `db.applyStockAndCoffreDelta`) — jamais l'un sans
+ * l'autre, y compris en cas de crash entre les deux écritures.
  */
 async function parseAndApply(guildId: string, line: string, channelId: string, log = false): Promise<StockEntry | false> {
   const retireMatch = line.match(RE_RETIRE);
@@ -214,8 +215,7 @@ async function parseAndApply(guildId: string, line: string, channelId: string, l
 
   const action: 'retire' | 'depose' = retireMatch ? 'retire' : 'depose';
   const delta = retireMatch ? -quantite : quantite;
-  const { avant: stockAvant, apres: stockApres } = await db.applyStockDelta(guildId, item, delta);
-  await db.applyCoffreStockDelta(guildId, channelId, item, delta);
+  const { avant: stockAvant, apres: stockApres } = await db.applyStockAndCoffreDelta(guildId, channelId, item, delta);
 
   const entry: StockEntry = { joueur, action, item, quantite, stock_avant: stockAvant, stock_apres: stockApres };
 
