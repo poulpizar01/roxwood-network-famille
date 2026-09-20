@@ -58,6 +58,7 @@ import * as alertes from './modules/alertes';
 import * as ventes from './modules/ventes';
 import * as garages from './modules/garages';
 import { startApiServer } from './api/server';
+import { assertAuthEnv } from './api/auth';
 
 // ─── CLIENT ───────────────────────────────────────────────────────────────────
 const client = new Client({
@@ -393,6 +394,20 @@ if (!process.env.TOKEN) {
 if (!process.env.CLIENT_ID) {
   console.error('❌ CLIENT_ID manquant dans le fichier .env');
   process.exit(1);
+}
+// Vérifié ICI plutôt que seulement au moment de startApiServer() (appelée
+// depuis clientReady, sans try/catch) : un throw synchrone à ce stade-là
+// devient un unhandled promise rejection (le listener clientReady est async,
+// son retour n'est jamais await), ce qui plante TOUT le process Node — pas
+// seulement l'API — après que le bot Discord se soit déjà connecté, en
+// boucle de crash si une variable manque durablement.
+if (process.env.API_PORT) {
+  try {
+    assertAuthEnv();
+  } catch (err) {
+    console.error(`❌ ${(err as Error).message}`);
+    process.exit(1);
+  }
 }
 
 client.login(process.env.TOKEN).catch(err => {

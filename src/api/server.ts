@@ -56,6 +56,16 @@ export function startApiServer(client: Client): void {
   const API_PORT = Number(process.env.API_PORT) || 3001;
 
   const app = express();
+  // `1` = un seul saut de confiance (le reverse proxy HTTPS en frontal sur la
+  // même machine, voir README section API REST) : Express lit `req.ip` depuis
+  // `X-Forwarded-For` posé par CE proxy plutôt que l'adresse de connexion TCP
+  // brute (celle du proxy pour TOUTES les requêtes). Sans ça, express-rate-limit
+  // (voir plus bas) bucket sur une seule IP partagée par tous les visiteurs —
+  // dégradation silencieuse, pas d'erreur. `1`, pas `true` : `true` ferait
+  // confiance à un `X-Forwarded-For` fourni par n'importe quel client direct
+  // si jamais `<API_PORT>` était accidentellement exposé malgré la consigne
+  // pare-feu du README.
+  app.set('trust proxy', 1);
   // Origine acceptée si elle correspond au site d'au moins une guilde active
   // connue (voir docstring de fichier) — pas de credentials (le JWT voyage en
   // en-tête Authorization, jamais en cookie cross-site).
