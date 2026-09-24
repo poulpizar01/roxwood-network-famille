@@ -30,7 +30,6 @@ model Guild {
   guildId     String    @id @map("guild_id")
   name        String?
   active      Boolean   @default(true)
-  addedAt     DateTime  @default(now()) @map("added_at")
   removedAt   DateTime? @map("removed_at")
   frontendUrl String?   @map("frontend_url")
   corsOrigin  String?   @map("cors_origin")
@@ -357,7 +356,6 @@ model PendingSale {
   timestamp  DateTime @default(now())
   statut     String   @default("en_attente")
   montant    Int?
-  prixPochon Float?   @map("prix_pochon")
   messageId  String?  @map("message_id")
   channelId  String?  @map("channel_id")
   confirmed  Boolean  @default(false)

@@ -59,11 +59,6 @@ export async function getAllChannels(guildId: string) {
   return prisma.channel.findMany({ where: { guildId } });
 }
 
-/** Retourne les salons assignés à un rôle (généralement un seul, sauf 'logs_coffres'). */
-export async function getChannelsByRole(guildId: string, role: string): Promise<string[]> {
-  return (await prisma.channel.findMany({ where: { guildId, role } })).map(r => r.channelId);
-}
-
 /** Remplace le(s) salon(s) d'un rôle à valeur unique (stock_general, quotas, ...) par un seul. */
 export async function setChannelRole(guildId: string, role: string, channelId: string): Promise<void> {
   await prisma.channel.deleteMany({ where: { guildId, role } });
@@ -317,11 +312,6 @@ export async function applyStockDelta(guildId: string, item: string, delta: numb
   return { avant: rows[0]?.avant ?? 0, apres: rows[0]?.apres ?? 0 };
 }
 
-/** Applique un delta au stock d'un item et retourne uniquement la quantité résultante (voir `applyStockDelta`). */
-export async function updateStock(guildId: string, item: string, delta: number): Promise<number> {
-  return (await applyStockDelta(guildId, item, delta)).apres;
-}
-
 /** Le stock de tous les items d'une guilde, trié par nom. */
 export async function getAllStocks(guildId: string) {
   return prisma.stock.findMany({ where: { guildId }, orderBy: { item: 'asc' } });
@@ -340,29 +330,9 @@ export async function resetAllStocks(guildId: string): Promise<void> {
 // mouvement, avec le même identifiant de salon que celui d'où vient le log.
 
 /**
- * Applique un delta au stock d'un item POUR UN COFFRE DONNÉ, atomiquement —
- * même pattern que `applyStockDelta` (upsert + valeur précédente en une
- * seule requête, contre une course entre deux mouvements concurrents sur le
- * même coffre/item).
- */
-export async function applyCoffreStockDelta(guildId: string, channelId: string, item: string, delta: number): Promise<{ avant: number; apres: number }> {
-  const key = item.toLowerCase();
-  const rows = await prisma.$queryRaw<Array<{ avant: number; apres: number }>>`
-    WITH prev AS (
-      SELECT quantite FROM coffre_stocks WHERE guild_id = ${guildId} AND channel_id = ${channelId} AND item = ${key}
-    ), upserted AS (
-      INSERT INTO coffre_stocks (guild_id, channel_id, item, quantite) VALUES (${guildId}, ${channelId}, ${key}, GREATEST(${delta}, 0))
-      ON CONFLICT (guild_id, channel_id, item) DO UPDATE SET quantite = GREATEST(coffre_stocks.quantite + ${delta}, 0)
-      RETURNING quantite
-    )
-    SELECT COALESCE((SELECT quantite FROM prev), 0)::int AS avant, (SELECT quantite FROM upserted)::int AS apres
-  `;
-  return { avant: rows[0]?.avant ?? 0, apres: rows[0]?.apres ?? 0 };
-}
-
-/**
- * Comme `applyStockDelta` + `applyCoffreStockDelta` appelées à la suite,
- * mais dans une seule transaction DB (`prisma.$transaction`) — utilisée par
+ * Applique un delta au total global (`Stock`, même pattern atomique que
+ * `applyStockDelta`) PUIS au détail par coffre (table `CoffreStock`), dans
+ * la même transaction DB (`prisma.$transaction`) — utilisée par
  * `stocks.parseAndApply` (le point d'entrée temps réel, un mouvement de
  * coffre en jeu = un appel). Sans ça, un crash entre les deux écritures
  * (ex. redémarrage du bot pendant le traitement d'un lot de mouvements)
@@ -396,7 +366,7 @@ export async function applyStockAndCoffreDelta(guildId: string, channelId: strin
 /**
  * Force la valeur du stock d'un item POUR UN COFFRE DONNÉ (correction
  * manuelle, `/set-stock ... coffre:`) — SET absolu, pas un delta (contraste
- * avec `applyCoffreStockDelta`, additive). Même pattern atomique (upsert +
+ * avec `applyStockAndCoffreDelta`, additive). Même pattern atomique (upsert +
  * valeur précédente en une seule requête) pour ne pas écraser un mouvement
  * réel concurrent sur ce même coffre/item.
  */
@@ -578,14 +548,6 @@ export async function getUserStatMap(guildId: string, userId: string): Promise<R
   const map: Record<string, { count: number; points: number }> = {};
   for (const r of rows) map[r.action] = { count: r.count, points: r.points };
   return map;
-}
-
-/** Total de points par joueur d'une guilde, tous suivis, trié décroissant. */
-export async function getAllUserTotals(guildId: string): Promise<Array<{ user_id: string; total_points: number }>> {
-  const rows = await prisma.stat.groupBy({ by: ['userId'], where: { guildId }, _sum: { points: true } });
-  return rows
-    .map(r => ({ user_id: r.userId, total_points: r._sum.points ?? 0 }))
-    .sort((a, b) => b.total_points - a.total_points);
 }
 
 /**
@@ -1046,12 +1008,18 @@ export async function deleteUserMapping(guildId: string, gameName: string, disco
  * figure plus dans aucune des deux sources (mapping supprimé, jamais
  * déclaré) disparaît simplement de la liste — pas une erreur, voir les
  * autres fonctions `getVente*`/`getUserActionTotals` qui gèrent déjà un
- * `userId` sans aucune donnée en renvoyant un résultat vide.
+ * `userId` sans aucune donnée en renvoyant un résultat vide. `deleted: false`
+ * — même filtre que toutes les autres lectures de `Transaction` (voir
+ * `getAllTransactions`/`getGroupActionTotals`/`getUserActionTotals`/
+ * `getVenteTotalsForRange`) : un joueur dont l'unique déclaration a été
+ * supprimée (`/supp`) ne doit pas rester "connu" ici alors que toutes les
+ * autres routes API (`/api/quotas/:userId`, `/api/ventes/:userId`) le
+ * traitent déjà comme n'ayant jamais rien déclaré.
  */
 export async function getKnownUsers(guildId: string): Promise<Array<{ userId: string; username: string }>> {
   const [transactions, mappings] = await Promise.all([
     prisma.transaction.findMany({
-      where: { guildId, username: { not: '' } },
+      where: { guildId, deleted: false, username: { not: '' } },
       select: { userId: true, username: true },
       orderBy: { timestamp: 'desc' },
     }),
@@ -1359,11 +1327,6 @@ export async function clearFourrieres(guildId: string): Promise<void> {
 export async function addArme(guildId: string, nom: string, reference: string, type: string): Promise<number> {
   const row = await prisma.arme.create({ data: { guildId, nom, reference, type } });
   return row.id;
-}
-
-/** Change le type (clé de `ARME_TYPES`) d'une arme existante. */
-export async function updateArmeType(guildId: string, id: number, type: string): Promise<void> {
-  await prisma.arme.updateMany({ where: { id, guildId }, data: { type } });
 }
 
 /** Toutes les armes d'une guilde, triées par nom. */
