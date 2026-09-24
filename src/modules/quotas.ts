@@ -19,7 +19,7 @@
  * seule partie de ce système qui peut changer sans toucher au code.
  *
  * Une catégorie de quota n'apparaît dans AUCUN affichage (panneau perso,
- * `/listquota`, paie hebdomadaire) tant qu'elle n'a pas d'objectif défini via
+ * `/quotas`, paie hebdomadaire) tant qu'elle n'a pas d'objectif défini via
  * `/config quota set <quota_type> <valeur>` — une activité rattachée à une
  * catégorie sans objectif compte quand même dans le détail par activité, mais
  * la catégorie elle-même reste invisible tant qu'elle n'est pas "paramétrée".
@@ -136,7 +136,7 @@ async function getUserQuotaSummary(guildId: string, userId: string): Promise<Quo
 /**
  * Même résumé que `getUserQuotaSummary`, mais pour tous les joueurs suivis en
  * une seule requête DB (`db.getAllStats()`, groupée en mémoire) — utilisé par
- * `/listquota`, le classement de groupe et la paie hebdomadaire pour éviter
+ * `/quotas`, le classement de groupe et la paie hebdomadaire pour éviter
  * une requête par joueur (N+1).
  */
 async function getAllUserQuotaSummaries(guildId: string): Promise<Map<string, QuotaSummary>> {
@@ -521,7 +521,7 @@ async function buildBilanEmbed(guildId: string, sinceTs?: number): Promise<Embed
     .map(([key, cfg]) => {
       const total = map[key] || 0;
       const value = cfg.quantity ? `${total.toLocaleString('fr-FR')} unités` : `${total}`;
-      return `${activityDisplayLabel(cfg)} : **${value}**`;
+      return `${cfg.label} : **${value}**`;
     });
 
   return new EmbedBuilder()
@@ -622,7 +622,9 @@ function buildButtonRows(guildId: string) {
     for (const [key, cfg] of rowEntries) {
       // Pas d'emoji sur le bouton (cfg.label brut, pas activityDisplayLabel) : cohérent avec
       // les boutons ATM/Cambu/Supérette/Go Fast/Récolte/Labo, qui n'en ont pas non plus.
-      // L'emoji reste utilisé ailleurs (slots braquages, minuterie, select de repli — voir activityDisplayLabel).
+      // L'emoji reste utilisé pour les slots braquages disponibles et le select de
+      // repli (voir activityDisplayLabel) — pas pour le Bilan ni la Minuterie, qui
+      // utilisent cfg.label brut comme les boutons.
       row.addComponents(new ButtonBuilder().setCustomId(`act_${key}`).setLabel(cfg.label.slice(0, 80)).setStyle(styleFor(cfg)));
     }
     rows.push(row as ActionRowBuilder<ButtonBuilder | UserSelectMenuBuilder>);
@@ -842,7 +844,7 @@ async function handleMinuterie(interaction: ButtonInteraction, guildId: string):
     entries.filter(([, cfg]) => cfg.cooldownMs && !cfg.labo && !cfg.braquageWeeklyLimit).map(async ([key, cfg]) => {
       const remaining = await checkCooldown(guildId, userId, key);
       const status = remaining ? `⏳ ${formatTime(remaining)}` : '✅ Dispo';
-      return `**${activityDisplayLabel(cfg)}** : ${status}`;
+      return `**${cfg.label}** : ${status}`;
     }),
   );
 
@@ -852,7 +854,7 @@ async function handleMinuterie(interaction: ButtonInteraction, guildId: string):
     braquageEntries.map(async ([key, cfg]) => {
       const limit = cfg.braquageWeeklyLimit!;
       const dispo = Math.max(0, limit - (braquageCounts[key] ?? 0));
-      let line = `${dispo > 0 ? '🟢' : '🔴'} **${activityDisplayLabel(cfg)}** : ${dispo}/${limit}`;
+      let line = `${dispo > 0 ? '🟢' : '🔴'} **${cfg.label}** : ${dispo}/${limit}`;
       if (dispo === 0) {
         const oldest = await db.getOldestBraquage(guildId, key);
         if (oldest) {
@@ -874,7 +876,7 @@ async function handleMinuterie(interaction: ButtonInteraction, guildId: string):
       const endsAt = parseInt((await db.getSetting(guildId, `labo_end_${key}`)) || '0', 10);
       const remaining = endsAt > 0 ? endsAt - Date.now() : 0;
       if (!cfg.enabled && remaining <= 0) return null;
-      return remaining > 0 ? `🔴 **${activityDisplayLabel(cfg)}** : ${formatTime(remaining)}` : `🟢 **${activityDisplayLabel(cfg)}** : Disponible`;
+      return remaining > 0 ? `🔴 **${cfg.label}** : ${formatTime(remaining)}` : `🟢 **${cfg.label}** : Disponible`;
     }),
   )).filter((line): line is string => line !== null);
 
@@ -1295,9 +1297,9 @@ export async function weeklyReset(client: Client, guildId: string, sinceTs?: num
   }
 }
 
-// ─── COMMANDE /listquota ──────────────────────────────────────────────────────
+// ─── COMMANDE /quotas ─────────────────────────────────────────────────────────
 
-/** `/listquota` (admin) : liste tous les membres suivis avec leur progression par catégorie de quota, complets en premier. */
+/** `/quotas` (admin) : liste tous les membres suivis avec leur progression par catégorie de quota, complets en premier. */
 export async function handleListQuotaCommand(interaction: ChatInputCommandInteraction): Promise<void> {
   const guildId = interaction.guildId!;
   if (!isAdmin(guildId, interaction.member)) {
@@ -1350,7 +1352,7 @@ export async function handleListQuotaCommand(interaction: ChatInputCommandIntera
 
 // ─── SLASH COMMANDS ───────────────────────────────────────────────────────────
 
-/** Déclare les commandes `/supp` et `/listquota`. */
+/** Déclare les commandes `/supp` et `/quotas`. */
 export function getCommands() {
   return [
     {
@@ -1361,7 +1363,7 @@ export function getCommands() {
     },
     {
       data: new SlashCommandBuilder()
-        .setName('listquota')
+        .setName('quotas')
         .setDescription('Liste les quotas de tous les membres suivis (admin)'),
     },
   ];

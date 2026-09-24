@@ -252,7 +252,7 @@ Le déploiement passe par 4 tiers — **Indépendant / Petite Frappe / Gang / Or
 Tant qu'aucun tier n'a jamais été choisi, le bot se comporte comme `Petite Frappe` par défaut.
 
 ### `/config quota`
-Objectif hebdomadaire par catégorie de quota (`actions`, `vente`, `recolte`, `labos` — celles utilisées par le registre d'activités décrit dans "Modules" plus bas). C'est la seule partie du système de quotas qui reste pilotable depuis Discord, parce que les objectifs peuvent être renégociés. **Une catégorie sans objectif défini n'apparaît dans aucun affichage de quota** (panneau perso, `/listquota`, paie hebdomadaire) même si des activités lui sont rattachées — seul le détail par activité la montre encore.
+Objectif hebdomadaire par catégorie de quota (`actions`, `vente`, `recolte`, `labos` — celles utilisées par le registre d'activités décrit dans "Modules" plus bas). C'est la seule partie du système de quotas qui reste pilotable depuis Discord, parce que les objectifs peuvent être renégociés. **Une catégorie sans objectif défini n'apparaît dans aucun affichage de quota** (panneau perso, `/quotas`, paie hebdomadaire) même si des activités lui sont rattachées — seul le détail par activité la montre encore.
 - `/config quota set <quota_type> <valeur>` / `remove` / `list`
 
 ### `/config salaire`

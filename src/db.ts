@@ -567,7 +567,7 @@ export async function getUserStats(guildId: string, userId: string) {
   return prisma.stat.findMany({ where: { guildId, userId } });
 }
 
-/** Toutes les lignes de stats d'une guilde, tous joueurs confondus, en une seule requête — voir quotas.getAllUserQuotaSummaries (évite un N+1 sur /listquota, le classement et la paie hebdomadaire). */
+/** Toutes les lignes de stats d'une guilde, tous joueurs confondus, en une seule requête — voir quotas.getAllUserQuotaSummaries (évite un N+1 sur /quotas, le classement et la paie hebdomadaire). */
 export async function getAllStats(guildId: string) {
   return prisma.stat.findMany({ where: { guildId } });
 }

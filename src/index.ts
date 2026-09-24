@@ -317,7 +317,7 @@ client.on('interactionCreate', async (interaction) => {
     if (interaction.isChatInputCommand()) {
       if (interaction.commandName === 'config') return await configModule.handleCommand(interaction);
       if (interaction.commandName === 'supp') return await quotas.handleSuppCommand(interaction);
-      if (interaction.commandName === 'listquota') return await quotas.handleListQuotaCommand(interaction);
+      if (interaction.commandName === 'quotas') return await quotas.handleListQuotaCommand(interaction);
       if (interaction.commandName === 'historique-stock') return await stocks.handleHistoriqueCommand(interaction);
       if (interaction.commandName === 'set-stock') return await stocks.handleSetStockCommand(interaction);
       if (interaction.commandName === 'coffre-stock') return await stocks.handleCoffreStockCommand(interaction);
