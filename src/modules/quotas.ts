@@ -57,6 +57,7 @@ import * as alertes from './alertes';
 import * as garages from './garages';
 import { isAdmin } from '../permissions';
 import { replyAutoDelete, updateAutoDelete } from '../interaction-helpers';
+import { buildChunkedEmbeds } from '../embed-chunks';
 
 /**
  * Un labo passe par un select de participants PUIS un modal (temps restant) —
@@ -1332,20 +1333,10 @@ export async function handleListQuotaCommand(interaction: ChatInputCommandIntera
     return `${r.complete ? '✅' : '❌'} **${r.name}** — ${detail}`;
   });
 
-  const chunks: string[][] = [];
-  let current: string[] = [];
-  let length = 0;
-  for (const line of lines) {
-    if (length + line.length + 1 > 3900) { chunks.push(current); current = []; length = 0; }
-    current.push(line);
-    length += line.length + 1;
-  }
-  if (current.length) chunks.push(current);
-
-  const embeds = chunks.map((chunk, i) => new EmbedBuilder()
-    .setTitle(i === 0 ? '📋 Suivi des quotas — tous les membres' : null)
-    .setColor(0x5865F2)
-    .setDescription(chunk.join('\n')));
+  const embeds = buildChunkedEmbeds([{ lines }], {
+    title: '📋 Suivi des quotas — tous les membres',
+    color: 0x5865F2,
+  });
 
   await interaction.reply({ embeds, flags: MessageFlags.Ephemeral });
 }

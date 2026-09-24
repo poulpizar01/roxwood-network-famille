@@ -31,6 +31,7 @@ import {
 import * as db from '../db';
 import * as configStore from '../config-store';
 import { isAdmin } from '../permissions';
+import { buildChunkedEmbeds } from '../embed-chunks';
 import * as quotas from './quotas';
 import type { StockEntry } from './stocks';
 
@@ -547,6 +548,9 @@ export async function handleListUsersCommand(interaction: ChatInputCommandIntera
     return;
   }
   const lines = mappings.map(m => `**${m.gameName}** → <@${m.discordId}>`);
-  const embed = new EmbedBuilder().setTitle('🔗 Associations nom en jeu ↔ Discord').setColor(0x2b2d31).setDescription(lines.join('\n'));
-  await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+  const embeds = buildChunkedEmbeds([{ lines }], {
+    title: '🔗 Associations nom en jeu ↔ Discord',
+    color: 0x2b2d31,
+  });
+  await interaction.reply({ embeds, flags: MessageFlags.Ephemeral });
 }

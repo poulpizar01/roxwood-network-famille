@@ -26,6 +26,7 @@ import { EmbedBuilder, SlashCommandBuilder, MessageFlags, type Client, type Mess
 import * as db from '../db';
 import * as configStore from '../config-store';
 import { isAdmin } from '../permissions';
+import { buildChunkedEmbeds } from '../embed-chunks';
 
 /** Amende indicative par mise en fourrière — valeur fixe, ne bouge jamais. */
 const MONTANT_FOURRIERE = 350;
@@ -212,11 +213,16 @@ async function notifierFourriere(client: Client, guildId: string, facturation: F
 const CLASSEMENT_TITLE = '🚗 Classement des fourrières';
 
 /**
- * Construit l'embed du classement : nombre de fourrières par personne, du
- * plus élevé au moins élevé. Purement informatif — personne n'est facturé,
- * le montant configuré n'est affiché qu'à titre indicatif (footer).
+ * Construit le(s) embed(s) du classement : nombre de fourrières par
+ * personne, du plus élevé au moins élevé. Purement informatif — personne
+ * n'est facturé, le montant configuré n'est affiché qu'à titre indicatif
+ * (footer). `title` distinct entre l'usage à la demande (`/fourrieres`) et
+ * l'archive hebdomadaire postée dans `bilan` (voir `resetFourrieresHebdo`).
+ * Un joueur = une ligne, jamais purgé : sur un serveur actif de longue date,
+ * ça peut dépasser le seuil de rendu Discord (voir src/embed-chunks.ts),
+ * d'où le découpage en plusieurs embeds plutôt qu'un seul `setDescription`.
  */
-async function buildClassementEmbed(guildId: string): Promise<EmbedBuilder> {
+async function buildClassementEmbeds(guildId: string, title: string): Promise<EmbedBuilder[]> {
   const montant = MONTANT_FOURRIERE;
   const classement = await db.getFourriereClassement(guildId);
 
@@ -226,12 +232,12 @@ async function buildClassementEmbed(guildId: string): Promise<EmbedBuilder> {
     return `${medal} ${qui} — **${c.total}** fourrière${c.total > 1 ? 's' : ''}`;
   });
 
-  return new EmbedBuilder()
-    .setTitle(CLASSEMENT_TITLE)
-    .setColor(0xED4245)
-    .setDescription(lignes.length ? lignes.join('\n') : '*Aucune fourrière enregistrée pour le moment.*')
-    .setFooter({ text: `Coût indicatif : ${montant.toLocaleString('fr-FR')}$ par fourrière — aucune facturation automatique` })
-    .setTimestamp();
+  return buildChunkedEmbeds([{ lines: lignes }], {
+    title,
+    color: 0xED4245,
+    emptyDescription: '*Aucune fourrière enregistrée pour le moment.*',
+    footer: (i, total) => i === total - 1 ? `Coût indicatif : ${montant.toLocaleString('fr-FR')}$ par fourrière — aucune facturation automatique` : null,
+  });
 }
 
 /** Déclare la commande `/fourrieres`. */
@@ -248,7 +254,7 @@ export async function handleClassementCommand(interaction: ChatInputCommandInter
     await interaction.reply({ content: '❌ Commande réservée aux administrateurs.', flags: MessageFlags.Ephemeral });
     return;
   }
-  await interaction.reply({ embeds: [await buildClassementEmbed(guildId)], flags: MessageFlags.Ephemeral });
+  await interaction.reply({ embeds: await buildClassementEmbeds(guildId, CLASSEMENT_TITLE), flags: MessageFlags.Ephemeral });
 }
 
 /**
@@ -263,8 +269,8 @@ export async function resetFourrieresHebdo(client: Client, guildId: string, ente
     if (c.CHANNELS.bilan) {
       const channel = await client.channels.fetch(c.CHANNELS.bilan).catch(() => null);
       if (channel && channel.isSendable()) {
-        const embed = (await buildClassementEmbed(guildId)).setTitle(`📊 Bilan fourrières — ${entete}`);
-        await channel.send({ embeds: [embed] }).catch(() => null);
+        const embeds = await buildClassementEmbeds(guildId, `📊 Bilan fourrières — ${entete}`);
+        await channel.send({ embeds }).catch(() => null);
       }
     }
 

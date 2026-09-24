@@ -9,13 +9,21 @@
  * libellé affiché.
  *
  * Un message permanent dans le salon `armurerie` expose : Ajouter, Perdu,
- * Prêter, Rendu, Liste des Pertes, et deux déclarations indicatives de
- * munitions — Fabrication (plafond hebdomadaire fixe ci-dessous) et Vente
- * (juste un total suivi, sans plafond) — Historique.
+ * Prêter, Rendu, Liste des Pertes, Détail par type, et deux déclarations
+ * indicatives de munitions — Fabrication (plafond hebdomadaire fixe
+ * ci-dessous) et Vente (juste un total suivi, sans plafond) — Historique.
  *
  * Le stock réel de munitions affiché en tête de ce message vient de
  * `/config item add` comme n'importe quel item de coffre — voir
  * {@link MUNITIONS_STOCK_GROUP} pour l'associer au bon libellé de groupe.
+ *
+ * Le panneau permanent n'affiche que des COMPTES par type d'arme (voir
+ * `buildArmurierieEmbed`), pas le détail arme par arme — sorti dans une vue
+ * éphémère (bouton "🗂️ Détail par type", `buildArmesDetailEmbeds`) car une
+ * liste qui grossit sans borne (une arme = une ligne, jamais purgée) finit
+ * par dépasser le seuil de rendu d'un embed Discord — voir
+ * src/embed-chunks.ts pour le détail de cette limite (pas seulement les
+ * 4096 caractères documentés officiellement).
  */
 import {
   EmbedBuilder,
@@ -34,6 +42,7 @@ import {
 import * as db from '../db';
 import * as configStore from '../config-store';
 import { replyAutoDelete, updateAutoDelete } from '../interaction-helpers';
+import { buildChunkedEmbeds } from '../embed-chunks';
 
 /**
  * Types d'armes proposés à l'ajout — liste fixe (voir docstring de fichier).
@@ -239,7 +248,36 @@ function comparerNomsNaturel(a: { nom: string }, b: { nom: string }): number {
 
 type Arme = Awaited<ReturnType<typeof db.getAllArmes>>[number];
 
-/** Construit l'embed de l'armurerie : bloc munitions (stock + quotas indicatifs), puis les armes groupées par type (voir ARME_TYPES). */
+/** Groupe des armes par type (voir ARME_TYPES), triées naturellement au sein de chaque groupe — partagé par le résumé du panneau et le détail par type. */
+function groupArmesByType(armes: Arme[]): { groupes: Map<string, Arme[]>; sansType: Arme[] } {
+  const groupes = new Map<string, Arme[]>();
+  for (const t of ARME_TYPES) groupes.set(t.key, []);
+  const sansType: Arme[] = [];
+
+  for (const a of armes) {
+    if (a.type && groupes.has(a.type)) {
+      groupes.get(a.type)!.push(a);
+    } else {
+      sansType.push(a);
+    }
+  }
+  for (const liste of groupes.values()) liste.sort(comparerNomsNaturel);
+  sansType.sort(comparerNomsNaturel);
+
+  return { groupes, sansType };
+}
+
+/**
+ * Construit l'embed du panneau permanent : bloc munitions (stock + quotas
+ * indicatifs), puis un COMPTE par type d'arme (pas le détail arme par arme —
+ * voir {@link buildArmesDetailEmbeds}, sorti du panneau via le bouton
+ * "🗂️ Détail par type"). Une description d'embed est plafonnée à 4096
+ * caractères ET, moins connu, à un nombre de lignes avant troncature
+ * silencieuse côté client (~80 lignes constatées empiriquement, aucun seuil
+ * documenté par Discord — voir src/embed-chunks.ts) : un panneau PERMANENT
+ * (édité en place, jamais reposté) ne peut pas se permettre de dépendre du
+ * nombre d'armes enregistrées, qui grossit sans borne avec le temps.
+ */
 async function buildArmurierieEmbed(guildId: string, armes: Arme[]): Promise<EmbedBuilder> {
   const embed = new EmbedBuilder().setTitle('🔫 Armurerie').setColor(0xFEE75C).setTimestamp().setFooter({ text: 'Mis à jour' });
 
@@ -261,33 +299,42 @@ async function buildArmurierieEmbed(guildId: string, armes: Arme[]): Promise<Emb
     return embed;
   }
 
-  const groupes = new Map<string, Arme[]>();
-  for (const t of ARME_TYPES) groupes.set(t.key, []);
-  const sansType: Arme[] = [];
-
-  for (const a of armes) {
-    if (a.type && groupes.has(a.type)) {
-      groupes.get(a.type)!.push(a);
-    } else {
-      sansType.push(a);
-    }
-  }
-
-  const ligneArme = (a: Arme) => `**${a.nom}** \`${a.reference}\` — ${statutLabel(a)}`;
-
+  const { groupes, sansType } = groupArmesByType(armes);
+  const countLines: string[] = [];
   for (const t of ARME_TYPES) {
     const liste = groupes.get(t.key)!;
-    if (!liste.length) continue;
-    liste.sort(comparerNomsNaturel);
-    blocs.push(`__${t.label}__\n${liste.map(ligneArme).join('\n')}`);
+    if (liste.length) countLines.push(`**${t.label}** : ${liste.length}`);
   }
-  if (sansType.length) {
-    sansType.sort(comparerNomsNaturel);
-    blocs.push(`__Sans type__\n${sansType.map(ligneArme).join('\n')}`);
-  }
+  if (sansType.length) countLines.push(`**Sans type** : ${sansType.length}`);
+
+  blocs.push(`__Armes en stock (${armes.length}) — voir 🗂️ Détail par type__\n${countLines.join('\n')}`);
 
   embed.setDescription(blocs.join('\n\n'));
   return embed;
+}
+
+/**
+ * Détail complet des armes, groupées par type, en réponse au bouton
+ * "🗂️ Détail par type" — voir docstring de {@link buildArmurierieEmbed} pour
+ * pourquoi ce détail est sorti du panneau permanent plutôt que d'y grossir
+ * sans borne.
+ */
+function buildArmesDetailEmbeds(armes: Arme[]): EmbedBuilder[] {
+  const { groupes, sansType } = groupArmesByType(armes);
+  const ligneArme = (a: Arme) => `**${a.nom}** \`${a.reference}\` — ${statutLabel(a)}`;
+
+  const sections = [];
+  for (const t of ARME_TYPES) {
+    const liste = groupes.get(t.key)!;
+    if (liste.length) sections.push({ header: `__${t.label}__`, lines: liste.map(ligneArme) });
+  }
+  if (sansType.length) sections.push({ header: '__Sans type__', lines: sansType.map(ligneArme) });
+
+  return buildChunkedEmbeds(sections, {
+    title: '🗂️ Détail des armes par type',
+    color: 0xFEE75C,
+    emptyDescription: '*Aucune arme enregistrée*',
+  });
 }
 
 // ─── BOUTONS PRINCIPAUX ───────────────────────────────────────────────────────
@@ -301,6 +348,9 @@ function buildArmurierieButtons(guildId: string): ActionRowBuilder<ButtonBuilder
       new ButtonBuilder().setCustomId('arm_preter').setLabel('Prêter').setStyle(ButtonStyle.Primary).setEmoji('🤝'),
       new ButtonBuilder().setCustomId('arm_rendu').setLabel('Rendu').setStyle(ButtonStyle.Success).setEmoji('✅'),
       new ButtonBuilder().setCustomId('arm_pertes').setLabel('Liste des Pertes').setStyle(ButtonStyle.Secondary).setEmoji('📋'),
+    ),
+    new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder().setCustomId('arm_detail').setLabel('Détail par type').setStyle(ButtonStyle.Secondary).setEmoji('🗂️'),
     ),
   ];
   if (getMunitionsFabricationType(guildId)) {
@@ -423,12 +473,20 @@ export async function handleButton(interaction: ButtonInteraction): Promise<void
   }
 
   if (id === 'arm_pertes') {
+    // Jamais purgée : sur un serveur actif de longue date, la liste des
+    // pertes peut dépasser le seuil de rendu Discord (voir buildArmurierieEmbed).
     const pertes = await db.getArmesPerdue(guildId);
-    const embed = new EmbedBuilder()
-      .setTitle('📋 Armes perdues')
-      .setColor(0xED4245)
-      .setDescription(pertes.length ? pertes.map(a => `**${a.nom}** \`${a.reference}\``).join('\n') : '*Aucune arme perdue*');
-    return replyAutoDelete(interaction, { embeds: [embed] });
+    const embeds = buildChunkedEmbeds([{ lines: pertes.map(a => `**${a.nom}** \`${a.reference}\``) }], {
+      title: '📋 Armes perdues',
+      color: 0xED4245,
+      emptyDescription: '*Aucune arme perdue*',
+    });
+    return replyAutoDelete(interaction, { embeds });
+  }
+
+  if (id === 'arm_detail') {
+    const armes = (await db.getAllArmes(guildId)).filter(a => a.statut !== 'perdue');
+    return replyAutoDelete(interaction, { embeds: buildArmesDetailEmbeds(armes) });
   }
 
   if (id === 'arm_historique_munitions') {
