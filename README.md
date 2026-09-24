@@ -150,7 +150,18 @@ Une petite API REST **en lecture seule**, dans le même process que le bot (`src
 1. Dans le [Discord Developer Portal](https://discord.com/developers/applications), onglet **OAuth2** de l'application du bot : noter le **Client Secret**, et ajouter une **Redirect URI** = `<API_BASE_URL>/auth/callback` (ex. `http://localhost:3001/auth/callback` en dev, l'URL publique réelle en prod).
 2. Renseigner dans `.env` : `API_PORT`, `DISCORD_CLIENT_SECRET`, `API_JWT_SECRET` (une longue chaîne aléatoire, à générer une fois), `API_BASE_URL` — voir `.env.example`. Rien à renseigner de plus par site externe : chaque **serveur Discord** configure le sien directement depuis Discord, voir `/config site-externe set` (chapitre "Plusieurs guildes" ci-dessus).
 3. Démarrer/redémarrer le bot : `✅ API REST en écoute sur le port <API_PORT>` dans les logs confirme que c'est actif.
-4. Le serveur Express écoute sur toutes les interfaces (`0.0.0.0:<API_PORT>`, pas seulement en local) — en prod, choisir un sous-domaine (ex. `bot.exemple.fr`) et pointer son enregistrement DNS **A**/**AAAA** vers l'IP publique du serveur (préalable indispensable : sans DNS déjà propagé, le certificat automatique ci-dessous échoue silencieusement). Une fois le DNS actif, mettre un reverse proxy HTTPS devant l'API (ex. Caddy : `bot.exemple.fr { reverse_proxy 127.0.0.1:3001 }`, certificat Let's Encrypt émis automatiquement — aucune configuration TLS manuelle) et **restreindre `<API_PORT>` par pare-feu** pour qu'il ne soit joignable que depuis la machine elle-même (n'ouvrir que le port 443 au pare-feu — même logique que le port `5432` de PostgreSQL en Docker, voir `docker-compose.yml`) ; `API_BASE_URL` doit alors pointer vers ce domaine public, pas vers `localhost`. Vérifier : `curl https://<API_BASE_URL>/health` doit répondre `{"ok":true}`. Le code fait déjà confiance à UN SEUL reverse proxy en amont (`app.set('trust proxy', 1)`, voir `src/api/server.ts`) pour que le rate-limiting fonctionne par visiteur — si tu chaînes plusieurs proxys avant l'API, ajuster ce nombre en conséquence.
+4. Le serveur Express écoute sur toutes les interfaces (`0.0.0.0:<API_PORT>`, pas seulement en local) — en prod, choisir un sous-domaine (ex. `bot.exemple.fr`) et pointer son enregistrement DNS **A**/**AAAA** vers l'IP publique du serveur (préalable indispensable : sans DNS déjà propagé, l'émission du certificat ci-dessous échoue). Une fois le DNS actif, mettre un reverse proxy HTTPS devant l'API et **restreindre `<API_PORT>` par pare-feu** pour qu'il ne soit joignable que depuis la machine elle-même (n'ouvrir que le port 443 au pare-feu — même logique que le port `5432` de PostgreSQL en Docker, voir `docker-compose.yml`) ; `API_BASE_URL` doit alors pointer vers ce domaine public, pas vers `localhost`. Vérifier : `curl https://<API_BASE_URL>/health` doit répondre `{"ok":true}`. Le code fait déjà confiance à UN SEUL reverse proxy en amont (`app.set('trust proxy', 1)`, voir `src/api/server.ts`) pour que le rate-limiting fonctionne par visiteur — si tu chaînes plusieurs proxys avant l'API, ajuster ce nombre en conséquence.
+
+   Un modèle de config est fourni dans `deploy/nginx-roxwood-network-famille.conf` (reverse proxy nginx — c'est ce que la prod de ce projet utilise réellement) :
+   ```bash
+   sudo apt install -y nginx certbot python3-certbot-nginx
+   sudo cp deploy/nginx-roxwood-network-famille.conf /etc/nginx/sites-available/roxwood-network-famille
+   sudo nano /etc/nginx/sites-available/roxwood-network-famille   # remplacer server_name par le vrai sous-domaine
+   sudo ln -s /etc/nginx/sites-available/roxwood-network-famille /etc/nginx/sites-enabled/
+   sudo nginx -t && sudo systemctl reload nginx
+   sudo certbot --nginx -d bot.exemple.fr   # obtient le certificat ET modifie le fichier pour ajouter le bloc HTTPS
+   ```
+   nginx n'ayant pas de renouvellement/émission de certificat intégré (contrairement à Caddy, une alternative valable si tu préfères une config plus courte — `bot.exemple.fr { reverse_proxy 127.0.0.1:3001 }` suffit, certificat automatique), `certbot` installe normalement un timer systemd de renouvellement automatique — vérifier avec `sudo certbot renew --dry-run`.
 
 ### Authentification — connexion via Discord
 
@@ -361,7 +372,8 @@ roxwood-network-famille/
 │   ├── backfill-guild-id.ts             # One-off migration multi-tenant (voir historique du projet)
 │   └── check-description-lengths.ts     # Vérifie la limite Discord de 100 caractères sur les descriptions de commande/option
 ├── deploy/
-│   └── roxwood-network-famille.service  # Modèle de service systemd (voir "Via systemd")
+│   ├── roxwood-network-famille.service       # Modèle de service systemd (voir "Via systemd")
+│   └── nginx-roxwood-network-famille.conf    # Modèle de reverse proxy nginx (voir "Interopérabilité — API REST")
 ├── Dockerfile
 ├── docker-compose.yml
 ├── docker-entrypoint.sh        # Applique les migrations puis démarre le bot (voir "Via Docker")
