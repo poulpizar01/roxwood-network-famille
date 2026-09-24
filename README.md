@@ -103,7 +103,7 @@ cp .env.example .env
 docker compose up -d --build
 docker compose logs -f roxwood-network-famille
 ```
-Mise à jour après un `git pull` : `docker compose up -d --build`. Le port `5432` du service `db` est publié sur l'hôte par défaut (pratique pour `prisma studio`/`psql` en local) — à retirer ou restreindre par pare-feu sur un déploiement exposé publiquement.
+Mise à jour après un `git pull` : `docker compose up -d --build`. Le port `5432` du service `db` (et `<API_PORT>` du service bot si l'API REST est activée) est publié sur l'hôte **en loopback uniquement** (`127.0.0.1:...`, pratique pour `prisma studio`/`psql` en local) — volontairement pas un simple `5432:5432`/`<API_PORT>:<API_PORT>`, qui publierait sur toutes les interfaces : Docker manipule directement les chaînes iptables et **contourne un pare-feu ufw/iptables classique**, un port publié ainsi resterait joignable depuis l'extérieur même pare-feu actif.
 
 Les deux services ont une rotation de logs (`max-size: 10m`, `max-file: 3` — sinon le driver `json-file` par défaut grossit indéfiniment sur le disque de l'hôte) ; le service `roxwood-network-famille` a en plus une limite mémoire (`mem_limit: 512m`, large pour un bot Discord + petite API — à ajuster si `docker stats` montre un dépassement). Nommé ainsi (pas juste `bot`) pour rester identifiable sans ambiguïté si un second bot tourne sur le même hôte.
 
@@ -122,6 +122,17 @@ Un seul déploiement (un process, une base Postgres) peut servir **plusieurs ser
 3. Le bot s'enregistre automatiquement (`guildCreate`) : commandes slash déployées sur ce serveur en quelques secondes, panneaux prêts à être mis en place via `/config category set` ou `/config channel set`.
 
 Si le bot était hors ligne au moment de l'invitation, il rattrape au démarrage suivant (boucle sur tous les serveurs dans lesquels il se trouve).
+
+### Premiers pas après l'invitation
+
+Ordre recommandé pour un serveur tout juste invité (chaque commande est détaillée dans sa section dédiée plus bas) :
+
+1. `/config category set <catégorie>` — crée en une fois tous les salons manquants (stock, quotas, armurerie, taxes, documentation, labos...) dans une catégorie Discord de ton choix. Voir "`/config category`".
+2. `/config type-groupe set tier:<...>` — choisit le tier de l'organisation (`Petite Frappe` par défaut tant que non réglé) ; fait varier les labos/braquages/taxes accessibles. Voir "`/config type-groupe`".
+3. `/config item list` — vérifie les items pré-remplis par défaut (drogues, munitions...). Leur orthographe doit correspondre **EXACTEMENT** à ce qu'écrit le bot de jeu FiveM de CE serveur dans les logs de coffre — jamais supposer, toujours vérifier contre les vrais logs (piège n°1 du projet, voir `CLAUDE.md`). Voir "`/config item`".
+4. `/config channel add-log-coffre <#salon>` (et `add-log-coffre-admin` pour les coffres admin) — pointe vers les VRAIS salons où le bot de jeu FiveM poste ses logs de coffre, pas les salons auto-créés à l'étape 1 (qui restent vides tant que rien n'y écrit). Voir "`/config channel`".
+5. `/adduser nom_jeu:<...> membre:@...` pour chaque joueur — sans ce lien, ses mouvements de coffre sont bien suivis en stock mais son quota part dans le vide.
+6. Optionnel : `/config site-externe set <url>` si un site web externe doit lire les données via l'API REST (voir "Interopérabilité" plus bas).
 
 ### Ce qui est isolé par serveur
 
@@ -150,7 +161,7 @@ Une petite API REST **en lecture seule**, dans le même process que le bot (`src
 1. Dans le [Discord Developer Portal](https://discord.com/developers/applications), onglet **OAuth2** de l'application du bot : noter le **Client Secret**, et ajouter une **Redirect URI** = `<API_BASE_URL>/auth/callback` (ex. `http://localhost:3001/auth/callback` en dev, l'URL publique réelle en prod).
 2. Renseigner dans `.env` : `API_PORT`, `DISCORD_CLIENT_SECRET`, `API_JWT_SECRET` (une longue chaîne aléatoire, à générer une fois), `API_BASE_URL` — voir `.env.example`. Rien à renseigner de plus par site externe : chaque **serveur Discord** configure le sien directement depuis Discord, voir `/config site-externe set` (chapitre "Plusieurs guildes" ci-dessus).
 3. Démarrer/redémarrer le bot : `✅ API REST en écoute sur le port <API_PORT>` dans les logs confirme que c'est actif.
-4. Le serveur Express écoute sur toutes les interfaces (`0.0.0.0:<API_PORT>`, pas seulement en local) — en prod, choisir un sous-domaine (ex. `bot.exemple.fr`) et pointer son enregistrement DNS **A**/**AAAA** vers l'IP publique du serveur (préalable indispensable : sans DNS déjà propagé, l'émission du certificat ci-dessous échoue). Une fois le DNS actif, mettre un reverse proxy HTTPS devant l'API et **restreindre `<API_PORT>` par pare-feu** pour qu'il ne soit joignable que depuis la machine elle-même (n'ouvrir que le port 443 au pare-feu — même logique que le port `5432` de PostgreSQL en Docker, voir `docker-compose.yml`) ; `API_BASE_URL` doit alors pointer vers ce domaine public, pas vers `localhost`. Vérifier : `curl https://<API_BASE_URL>/health` doit répondre `{"ok":true}`. Le code fait déjà confiance à UN SEUL reverse proxy en amont (`app.set('trust proxy', 1)`, voir `src/api/server.ts`) pour que le rate-limiting fonctionne par visiteur — si tu chaînes plusieurs proxys avant l'API, ajuster ce nombre en conséquence.
+4. Le serveur Express écoute sur toutes les interfaces (`0.0.0.0:<API_PORT>`, pas seulement en local) — en prod, choisir un sous-domaine (ex. `bot.exemple.fr`) et pointer son enregistrement DNS **A**/**AAAA** vers l'IP publique du serveur (préalable indispensable : sans DNS déjà propagé, l'émission du certificat ci-dessous échoue). Une fois le DNS actif, mettre un reverse proxy HTTPS devant l'API et **restreindre `<API_PORT>`** pour qu'il ne soit joignable que depuis la machine elle-même, seul le port 443 exposé publiquement (n'ouvrir que 443 au pare-feu en systemd/bare-metal ; en Docker, le pare-feu ne suffit PAS — Docker contourne `ufw`/iptables classique en publiant un port, `docker-compose.yml` bind déjà `<API_PORT>` sur `127.0.0.1` par défaut ici, à garder tel quel) ; `API_BASE_URL` doit alors pointer vers ce domaine public, pas vers `localhost`. Vérifier : `curl https://<API_BASE_URL>/health` doit répondre `{"ok":true}`. Le code fait déjà confiance à UN SEUL reverse proxy en amont (`app.set('trust proxy', 1)`, voir `src/api/server.ts`) pour que le rate-limiting fonctionne par visiteur — si tu chaînes plusieurs proxys avant l'API, ajuster ce nombre en conséquence.
 
    Un modèle de config est fourni dans `deploy/nginx-roxwood-network-famille.conf` (reverse proxy nginx — c'est ce que la prod de ce projet utilise réellement) :
    ```bash
@@ -255,7 +266,7 @@ Dix-sept items sont pré-remplis s'ils sont absents (`src/default-items.ts`) : l
 ### `/config type-groupe` — type d'organisation
 Le déploiement passe par 4 tiers — **Indépendant / Petite Frappe / Gang / Organisation** — qui font varier plusieurs choses sans toucher au code :
 - Les limites hebdomadaires de braquage (Fleeca, Armurerie, Bijouterie, Pinebank, Human Labs) : plus le tier est élevé, plus la limite est haute (`0` pour un tier sans accès à l'activité).
-- Les labos accessibles (Indépendant : Salvia + Branche De Cannabis ; Petite Frappe : Héroïne + Spore X ; Gang : Mexicana + Cannabis ; Organisation : Mexicana + Cocaïne) — un labo hors barème du tier disparaît du panneau, et toute drogue liée (`labo_associe`, rôle `produit`) devient indisponible en vente PNJ mais apparaît dans la section "🧪 Drogues de production" du Stock Général (voir plus bas).
+- Les labos accessibles (Indépendant : Salvia + Branche De Cannabis ; Petite Frappe : Héroïne + Spore X ; Gang : Mexicana + Cannabis ; Organisation : Mexicana + Cocaïne) — un labo hors barème du tier disparaît du panneau, et toute drogue liée (`labo_associe`, rôle `produit`) **redevient vendable aux PNJ** (si `vente:true`) et **disparaît** de la section "🧪 Drogues de production" du Stock Général (voir plus bas) — l'inverse de quand ce labo est actif pour le tier courant.
 - Les taxes fixes et zones proposées à la création (voir `modules/taxes.ts` dans "Modules").
 - **Les salons de labo** : ceux qui ne sont plus valides pour le nouveau tier sont supprimés (jamais si la suppression Discord échoue — l'association en base est alors conservée plutôt que perdue), ceux qui le deviennent sont créés dans la même catégorie que les autres salons de labo. Un labo commun à deux tiers (ex. Mexicana, Gang et Organisation) garde son salon d'un tier à l'autre.
 - `/config type-groupe set <tier>` / `list` (affiche le barème complet des 4 tiers)
