@@ -50,12 +50,17 @@
  * zone n'a **aucune** alerte automatique (voir plus bas) — sans ce
  * complément, ce serait le seul moyen de la retrouver.
  *
- * Une seule taxe active à la fois par type (voir `db.getActiveTaxeByType`,
- * qui ignore les taxes expirées — seule une taxe encore dans les temps
- * bloque) — vérifié avant l'ouverture du formulaire ET à sa soumission
- * (contre une double soumission concurrente entre les deux étapes). Chaque
- * zone comptant comme un type à part entière, ceci revient à une seule taxe
- * active par zone.
+ * Une seule taxe active à la fois par GROUPE (nom, comparé insensible à la
+ * casse) ET par type (voir `db.getActiveTaxeByTypeAndNom`, qui ignore les
+ * taxes expirées — seule une taxe encore dans les temps bloque) — vérifié à
+ * la soumission du formulaire (le seul moment où le nom du groupe est
+ * connu ; le clic sur le bouton/la zone en amont ouvre directement le
+ * formulaire, sans vérification). Chaque zone comptant comme un type à part
+ * entière, ceci revient à une seule taxe active par groupe et par zone :
+ * deux groupes différents peuvent chacun avoir leur taxe active sur le même
+ * type/la même zone en parallèle. **Exception : `vente` n'a aucune limite**
+ * — un même groupe peut cumuler plusieurs taxes Vente actives (elle se paie
+ * par vente, pas par groupe).
  *
  * Toute taxe est payée par défaut à sa création ; le cron quotidien
  * `checkExpiredTaxes` alerte pour chaque taxe expirée hors zones (une seule
@@ -409,10 +414,8 @@ export async function handleButton(interaction: ButtonInteraction): Promise<void
     if (type !== 'vente' && !currentTaxesFixes(guildId).includes(type)) {
       return replyAutoDelete(interaction, `❌ **${typeLabel(type)}** n'est pas disponible pour le type d'organisation actuel.`);
     }
-    const existing = await db.getActiveTaxeByType(guildId, type);
-    if (existing) {
-      return replyAutoDelete(interaction, `🚫 **${typeLabel(type)}** a déjà une taxe active : **${existing.nom}** (expire le ${formatDate(existing.echeance)}). Supprime-la ou attends son expiration avant d'en créer une nouvelle.`);
-    }
+    // Le nom du groupe (donc l'unicité par groupe+type) n'est connu qu'à la
+    // soumission du formulaire — voir `handleCreationModal`.
     return interaction.showModal(buildCreationModal(type));
   }
 
@@ -486,13 +489,17 @@ export async function handleButton(interaction: ButtonInteraction): Promise<void
 
 // ─── HANDLER MODALS ───────────────────────────────────────────────────────────
 
-/** Traite la soumission du modal de création (`modal_tax_create_<type>`) — revérifie l'absence de taxe active pour ce type avant d'insérer (contre une double soumission concurrente). */
+/** Traite la soumission du modal de création (`modal_tax_create_<type>`) — vérifie l'absence de taxe active pour CE GROUPE sur ce type (sauf `vente`, sans limite) avant d'insérer. */
 async function handleCreationModal(interaction: ModalSubmitInteraction, guildId: string, type: string): Promise<void> {
-  if (await db.getActiveTaxeByType(guildId, type)) {
-    return replyAutoDelete(interaction, `🚫 **${typeLabel(type)}** a déjà une taxe active — supprime-la ou attends son expiration avant d'en créer une nouvelle.`);
+  const nom = interaction.fields.getTextInputValue('nom').trim();
+
+  // La taxe Vente se paie par vente, pas par groupe : un même groupe peut en
+  // cumuler plusieurs actives, pas de vérification pour ce type.
+  const existing = type === 'vente' ? undefined : await db.getActiveTaxeByTypeAndNom(guildId, type, nom);
+  if (existing) {
+    return replyAutoDelete(interaction, `🚫 **${existing.nom}** a déjà une taxe ${typeLabel(type)} active (expire le ${formatDate(existing.echeance)}). Renouvelle-la plutôt que d'en créer une nouvelle, ou supprime-la d'abord.`);
   }
 
-  const nom = interaction.fields.getTextInputValue('nom').trim();
   const jours = parseInt(interaction.fields.getTextInputValue('jours'), 10);
   const mdp = interaction.fields.getTextInputValue('mot_de_passe').trim();
   let tel = '';
@@ -572,13 +579,8 @@ export async function handleSelect(interaction: StringSelectMenuInteraction): Pr
 
   if (interaction.customId === 'tax_select_zone_create') {
     const zoneKey = interaction.values[0];
-    const existing = await db.getActiveTaxeByType(guildId, zoneKey);
-    if (existing) {
-      return updateAutoDelete(interaction, {
-        content: `🚫 **${ZONE_BY_KEY.get(zoneKey)}** a déjà une taxe active : **${existing.nom}** (expire le ${formatDate(existing.echeance)}). Supprime-la ou attends son expiration avant d'en créer une nouvelle.`,
-        components: [],
-      });
-    }
+    // Le nom du groupe (donc l'unicité par groupe+zone) n'est connu qu'à la
+    // soumission du formulaire — voir `handleCreationModal`.
     return interaction.showModal(buildCreationModal(zoneKey));
   }
 

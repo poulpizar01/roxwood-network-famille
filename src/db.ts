@@ -875,14 +875,19 @@ export async function getTaxe(guildId: string, id: number) {
 }
 
 /**
- * Taxe active ET non expirée pour un type donné, ou undefined — utilisé pour
- * bloquer la création d'une nouvelle taxe tant qu'une autre du même type est
- * encore en cours. `actif` (soft-delete) ne suffit pas seul : une taxe
- * expirée mais pas encore supprimée ne doit PAS bloquer une nouvelle
- * création, d'où le filtre supplémentaire sur `echeance`.
+ * Taxe active ET non expirée pour un type ET un nom de groupe donnés (nom
+ * comparé insensible à la casse), ou undefined — utilisé pour bloquer la
+ * création d'une nouvelle taxe tant qu'une autre du MÊME groupe sur ce même
+ * type est encore en cours. Deux groupes différents peuvent chacun avoir
+ * leur propre taxe active sur le même type/zone en parallèle — voir
+ * docstring de `modules/taxes.ts`. `actif` (soft-delete) ne suffit pas seul :
+ * une taxe expirée mais pas encore supprimée ne doit PAS bloquer une
+ * nouvelle création, d'où le filtre supplémentaire sur `echeance`.
  */
-export async function getActiveTaxeByType(guildId: string, type: string) {
-  const row = await prisma.taxe.findFirst({ where: { guildId, type, actif: true, echeance: { gt: new Date() } } });
+export async function getActiveTaxeByTypeAndNom(guildId: string, type: string, nom: string) {
+  const row = await prisma.taxe.findFirst({
+    where: { guildId, type, nom: { equals: nom, mode: 'insensitive' }, actif: true, echeance: { gt: new Date() } },
+  });
   return row ? mapTaxe(row) : undefined;
 }
 
