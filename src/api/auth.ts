@@ -31,7 +31,6 @@ import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
 import type { Request, Response, NextFunction } from 'express';
 import type { Client } from 'discord.js';
-import * as configStore from '../config-store';
 import * as guildRegistry from '../guild-registry';
 import { isAdmin } from '../permissions';
 
@@ -49,7 +48,6 @@ export interface ApiUser {
   id: string;
   username: string;
   isAdmin: boolean;
-  isTaxes: boolean;
   /** Guilde à laquelle ce token donne accès — chaque route API doit filtrer ses requêtes `db.*` par CETTE valeur, jamais une autre (voir src/api/routes/*.ts). */
   guildId: string;
 }
@@ -192,10 +190,8 @@ export function handleCallback(client: Client): (req: Request, res: Response) =>
       }
 
       const admin = isAdmin(guildId, member);
-      const taxesRoleId = configStore.get(guildId).TAXES_ROLE_ID;
-      const taxes = admin || (!!taxesRoleId && member.roles.cache.has(taxesRoleId));
 
-      const user: ApiUser = { id: me.id, username: me.username, isAdmin: admin, isTaxes: taxes, guildId };
+      const user: ApiUser = { id: me.id, username: me.username, isAdmin: admin, guildId };
       const token = jwt.sign(user, API_JWT_SECRET!, { expiresIn: API_TOKEN_TTL, algorithm: 'HS256' });
 
       const frontendUrl = await guildRegistry.getGuildFrontendUrl(guildId);
@@ -218,10 +214,10 @@ export function handleCallback(client: Client): (req: Request, res: Response) =>
  * `/config site-externe remove` ou un retrait du bot resterait valable
  * jusqu'à expiration (7 jours), à l'encontre du message affiché à l'admin.
  *
- * Les droits (`isAdmin`/`isTaxes`) et l'appartenance à la guilde sont
+ * Les droits (`isAdmin`) et l'appartenance à la guilde sont
  * RE-RÉSOLUS À CHAQUE REQUÊTE depuis le client du bot (`guild.members`,
  * tenu à jour par l'intent `GuildMembers`) plutôt que lus tels quels dans le
- * token : sans ça, un membre dont on retire le rôle taxes/admin (ou qui est
+ * token : sans ça, un membre dont on retire le rôle admin (ou qui est
  * expulsé du serveur) garderait ses accès jusqu'à l'expiration du token, 7
  * jours plus tard. Le token ne sert donc plus que de preuve d'identité
  * (id + guilde) ; les rôles qu'il embarque ne sont qu'un instantané
@@ -263,21 +259,10 @@ export function requireAuth(client: Client): (req: Request, res: Response, next:
       return;
     }
     const admin = isAdmin(claims.guildId, member);
-    const taxesRoleId = configStore.get(claims.guildId).TAXES_ROLE_ID;
-    const taxes = admin || (!!taxesRoleId && member.roles.cache.has(taxesRoleId));
 
-    req.apiUser = { id: claims.id, username: member.user.username, isAdmin: admin, isTaxes: taxes, guildId: claims.guildId };
+    req.apiUser = { id: claims.id, username: member.user.username, isAdmin: admin, guildId: claims.guildId };
     next();
   };
-}
-
-/** Middleware à chaîner après `requireAuth` : exige en plus l'accès "taxes" (rôle `TAXES_ROLE_ID` ou admin — même règle que `isAdmin()` partout ailleurs dans le bot). */
-export function requireTaxesAccess(req: Request, res: Response, next: NextFunction): void {
-  if (!req.apiUser?.isTaxes) {
-    res.status(403).json({ error: 'Accès réservé au rôle taxes (ou admin).' });
-    return;
-  }
-  next();
 }
 
 /**

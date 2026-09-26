@@ -181,9 +181,9 @@ Pas de clé API statique : l'utilisateur se connecte avec son compte Discord, et
 1. Le site externe redirige le navigateur vers `<API_BASE_URL>/auth/login?guild=<ID_DU_SERVEUR>` (l'ID du serveur Discord concerné — refusé si ce serveur n'a jamais invité le bot, ou si aucun site n'y est configuré via `/config site-externe`).
 2. Après connexion Discord, l'utilisateur revient sur `<url_du_site>#token=<jwt>` (l'URL configurée via `/config site-externe set` PAR CE SERVEUR) — le site récupère ce token côté client (fragment d'URL, jamais envoyé à un serveur) et le stocke.
 3. Chaque appel à `/api/*` doit inclure `Authorization: Bearer <jwt>`. Le token expire au bout de 7 jours (pas de refresh token — se reconnecter via `/auth/login`) et reste scopé au serveur choisi à l'étape 1 : impossible de l'utiliser pour lire les données d'un autre serveur.
-4. Les **rôles ne sont pas figés dans le token** : à chaque requête, l'API revérifie via le client du bot que l'utilisateur est toujours membre du serveur et recalcule `isAdmin`/`isTaxes` depuis ses rôles actuels. Un rôle retiré (ou une expulsion) prend effet immédiatement, pas à l'expiration du token. `/api/me` renvoie donc toujours les droits du moment.
+4. Les **rôles ne sont pas figés dans le token** : à chaque requête, l'API revérifie via le client du bot que l'utilisateur est toujours membre du serveur et recalcule `isAdmin` depuis ses rôles actuels. Un rôle retiré (ou une expulsion) prend effet immédiatement, pas à l'expiration du token. `/api/me` renvoie donc toujours les droits du moment.
 
-Deux niveaux d'accès : **membre du serveur Discord** (suffit pour `/api/stocks`, `/api/quotas`, `/api/armurerie`, `/api/ventes`) et **rôle taxes ou admin** (requis en plus pour `/api/taxes` — le rôle `TAXES_ROLE_ID` de `/config role`, jusqu'ici sans utilisateur réel, sert enfin à ça). Deux restrictions supplémentaires, plus fines qu'un simple accès admin/non-admin :
+Un seul niveau d'accès de base : **membre du serveur Discord**, suffit pour toutes les ressources en lecture (`/api/stocks`, `/api/quotas`, `/api/armurerie`, `/api/ventes`, `/api/taxes`) — cohérent avec le module Discord `taxes.ts`, qui n'a lui-même jamais eu de rôle dédié (accès via la simple visibilité du salon). Deux restrictions supplémentaires, plus fines qu'un simple accès admin/non-admin :
 - **Soi-même ou admin** (`requireSelfOrAdmin`) sur toute route `:userId` (`/api/quotas/:userId`, `/api/quotas/pay/:userId`, `/api/ventes/:userId`) : un membre normal ne peut consulter que ses propres données, jamais celles d'un autre joueur.
 - **Coffres admin réservés aux admins** sur `/api/stocks/channels` et `/api/stocks/:channelId` : un coffre `logs_coffres_admin` n'apparaît dans la liste, ni n'est interrogeable en détail, que pour un admin. `/api/stocks` (le total global) reste inchangé pour tout le monde — l'exclure casserait le total affiché.
 
@@ -191,7 +191,7 @@ Deux niveaux d'accès : **membre du serveur Discord** (suffit pour `/api/stocks`
 
 | Endpoint | Accès | Retourne |
 |----------|-------|----------|
-| `GET /api/me` | Membre | Identité résolue (id, username, isAdmin, isTaxes) |
+| `GET /api/me` | Membre | Identité résolue (id, username, isAdmin) |
 | `GET /api/users` | Membre | Comptes Discord connus de la guilde (userId + dernier nom connu) — un non-admin ne reçoit que lui-même |
 | `GET /api/stocks` | Membre | Stock actuel de chaque item suivi, tous coffres confondus (admin inclus, pour tout le monde) |
 | `GET /api/stocks/channels` | Membre/Admin | Liste des coffres surveillés (`logs_coffres` + `logs_coffres_admin` avec leur label) — coffres admin réservés aux admins |
@@ -210,9 +210,9 @@ Deux niveaux d'accès : **membre du serveur Discord** (suffit pour `/api/stocks`
 | `GET /api/armurerie/ammo/history` | Membre | Ventes de munitions depuis le dernier reset hebdomadaire (dimanche 19h) |
 | `GET /api/ventes?week=` | Membre | Total vendu par joueur sur la plage (trié décroissant) + total du groupe |
 | `GET /api/ventes/:userId?week=` | Soi-même/Admin | Ventes d'un joueur précis : total + détail par drogue vendue |
-| `GET /api/taxes?type=&status=` | Taxes/Admin | Taxes filtrables par type (fixe, `zone` = toutes les zones groupées, ou la clé d'une zone précise) et statut (`active`/`expired`, défaut `active`) — infos générales seulement, jamais téléphone/mot de passe |
-| `GET /api/taxes/search?type=&q=` | Taxes/Admin | Recherche par nom dans un type donné (`type` requis) — infos générales seulement, jamais téléphone/mot de passe |
-| `GET /api/taxes/:id` | Taxes/Admin | Détail complet d'UNE taxe précise, téléphone/mot de passe inclus |
+| `GET /api/taxes?type=&status=` | Membre | Taxes filtrables par type (fixe, `zone` = toutes les zones groupées, ou la clé d'une zone précise) et statut (`active`/`expired`, défaut `active`) — infos générales seulement, jamais téléphone/mot de passe |
+| `GET /api/taxes/search?type=&q=` | Membre | Recherche par nom dans un type donné (`type` requis) — infos générales seulement, jamais téléphone/mot de passe |
+| `GET /api/taxes/:id` | Membre | Détail complet d'UNE taxe précise, téléphone/mot de passe inclus |
 
 Lecture seule pour l'instant — pas d'écriture depuis l'extérieur (voir docstring de `src/api/server.ts` pour pourquoi).
 
@@ -247,7 +247,7 @@ Les salons auto-créés (voir `/config category` ci-dessous) sont préfixés d'u
 L'ordre d'affichage des salons auto-créés (dans la liste Discord) est réappliqué après toute création/déplacement, selon un ordre fixe dans le code (`documentation`, puis les panneaux d'activité, puis les salons de labo, puis stock/paie/bilan, puis les logs/alertes en dernier).
 
 ### `/config role`
-Associe un rôle Discord à un usage (`admin` : commandes sensibles ; `taxes` : accès back-office taxes).
+Associe un rôle Discord à un usage (`admin` : commandes sensibles).
 - `/config role set <cible> <@rôle>` / `list`
 
 ### `/config item`

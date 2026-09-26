@@ -1,10 +1,9 @@
 /**
  * @file src/api/routes/taxes.ts
- * @description Lecture seule des taxes — le "back-office web" pour lequel
- * `TAXES_ROLE_ID` (voir `/config role`) a toujours existé sans jamais avoir
- * de consommateur réel jusqu'ici. Monté derrière `requireTaxesAccess` dans
- * server.ts (rôle taxes ou admin), en plus de `requireAuth` (membre du
- * serveur) appliqué à toute l'API.
+ * @description Lecture seule des taxes — même accès que le reste de l'API :
+ * `requireAuth` (membre du serveur) seul, pas de rôle dédié, cohérent avec
+ * le module Discord `taxes.ts` qui n'a lui-même jamais eu de restriction de
+ * rôle propre.
  *
  * `?type=` accepte, au choix : un type fixe (`sporex`, `heroine`, `vente`,
  * `fertilisant`, `cannabis`, `mexicana`, `cocaine`), le type fictif `zone`

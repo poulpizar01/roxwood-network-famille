@@ -7,8 +7,7 @@
  * les sites externes de plusieurs guildes à la fois. Authentification par
  * connexion Discord (voir auth.ts) : chaque route sous `/api` exige un
  * membre de LA guilde portée par le JWT (`req.apiUser.guildId`, résolu au
- * login via `?guild=`), et `/api/taxes` exige en plus le rôle taxes (ou
- * admin) de cette guilde — voir `requireAuth`/`requireTaxesAccess`.
+ * login via `?guild=`) — voir `requireAuth`.
  * L'appartenance et les rôles sont revérifiés à chaque requête via le client
  * du bot (d'où `requireAuth(client)`), pas seulement au login — un retrait
  * de rôle ou une expulsion prend effet immédiatement, pas 7 jours plus tard.
@@ -37,7 +36,7 @@ import express from 'express';
 import cors from 'cors';
 import rateLimit from 'express-rate-limit';
 import type { Client } from 'discord.js';
-import { assertAuthEnv, handleLogin, handleCallback, requireAuth, requireTaxesAccess } from './auth';
+import { assertAuthEnv, handleLogin, handleCallback, requireAuth } from './auth';
 import * as guildRegistry from '../guild-registry';
 import stocksRouter from './routes/stocks';
 import quotasRouter from './routes/quotas';
@@ -96,7 +95,7 @@ export function startApiServer(client: Client): void {
   api.use('/users', usersRouter);
   api.use('/stocks', stocksRouter);
   api.use('/quotas', quotasRouter);
-  api.use('/taxes', requireTaxesAccess, taxesRouter);
+  api.use('/taxes', taxesRouter);
   api.use('/armurerie', armurerieRouter);
   api.use('/ventes', ventesRouter);
   app.use('/api', api);
