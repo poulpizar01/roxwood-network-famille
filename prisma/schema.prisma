@@ -205,24 +205,15 @@ model ActivityClassementRate {
 
 // ═══ DONNÉES MÉTIER (génériques, indépendantes de la config ci-dessus) ═══
 
-/// Stock total, tous coffres suivis confondus (`/config channel add-log-coffre`)
-/// — c'est celui qu'affiche le panneau "Stock Général". Voir {@link
-/// CoffreStock} pour le détail par coffre (salon de log), suivi séparément
-/// depuis la mise en place de l'API (voir README, section Interopérabilité).
-model Stock {
-  guildId  String @map("guild_id")
-  item     String
-  quantite Int    @default(0)
-
-  @@id([guildId, item])
-  @@map("stocks")
-}
-
-/// Stock détaillé PAR coffre (un salon `logs_coffres`) — complément de
-/// {@link Stock} (le total global), pas un remplacement : les deux sont mis à
-/// jour ensemble à chaque mouvement (voir `stocks.ts`, `applyCoffreStockDelta`
-/// aux côtés de `applyStockDelta`). Vidé et reconstruit lors d'un `/sync-stock`
-/// complet, comme `Stock`.
+/// Stock détaillé PAR coffre (un salon `logs_coffres`) — SEULE table de
+/// stock : il n'existe pas de total global stocké séparément. Le panneau
+/// "Stock Général" et l'API (`db.getAllStocks`) recalculent ce total à la
+/// lecture comme la somme de tous les coffres pour chaque item (voir
+/// docstring de section STOCKS dans `db.ts`) — un ancien schéma tenait un
+/// total à part (`Stock`), mis à jour du même delta EN PLUS de cette table ;
+/// chaque table plafonnait sa propre valeur à 0 indépendamment, ce qui les
+/// faisait diverger au fil du temps même à l'intérieur d'une transaction DB.
+/// Vidé et reconstruit lors d'un `/sync-stock` complet.
 model CoffreStock {
   guildId   String @map("guild_id")
   channelId String @map("channel_id")
@@ -230,6 +221,7 @@ model CoffreStock {
   quantite  Int    @default(0)
 
   @@id([guildId, channelId, item])
+  @@index([guildId, item])
   @@map("coffre_stocks")
 }
 

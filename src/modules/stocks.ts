@@ -194,11 +194,11 @@ function extractText(msg: Message): string {
  * Parse une ligne de log de coffre (retrait/dépôt) et applique le delta au
  * stock si l'item est suivi ; `false` si la ligne ne matche rien ou que
  * l'item est inconnu (voir piège n°1 du projet : orthographe exacte).
- * `channelId` : salon `logs_coffres` d'origine — le delta est appliqué à la
- * fois au total global (`Stock`, inchangé) ET au détail par coffre
- * (`CoffreStock`, voir README section Interopérabilité), dans une seule
- * transaction DB (voir `db.applyStockAndCoffreDelta`) — jamais l'un sans
- * l'autre, y compris en cas de crash entre les deux écritures.
+ * `channelId` : salon `logs_coffres` d'origine — le delta est appliqué au
+ * détail par coffre (`CoffreStock`, seule source de vérité, voir README
+ * section Interopérabilité) ; le total global retourné par
+ * `db.applyStockMovement` est recalculé à la volée comme la somme de tous
+ * les coffres pour cet item.
  */
 async function parseAndApply(guildId: string, line: string, channelId: string, log = false): Promise<StockEntry | false> {
   const retireMatch = line.match(RE_RETIRE);
@@ -215,7 +215,7 @@ async function parseAndApply(guildId: string, line: string, channelId: string, l
 
   const action: 'retire' | 'depose' = retireMatch ? 'retire' : 'depose';
   const delta = retireMatch ? -quantite : quantite;
-  const { avant: stockAvant, apres: stockApres } = await db.applyStockAndCoffreDelta(guildId, channelId, item, delta);
+  const { avant: stockAvant, apres: stockApres } = await db.applyStockMovement(guildId, channelId, item, delta);
 
   const entry: StockEntry = { joueur, action, item, quantite, stock_avant: stockAvant, stock_apres: stockApres };
 
@@ -474,19 +474,13 @@ export async function handleSetStockCommand(interaction: ChatInputCommandInterac
   const coffre = interaction.options.getChannel('coffre', true);
   const itemLabel = configStore.get(guildId).ALLOWED_ITEMS.find(i => i.toLowerCase() === item) || item;
 
-  // Corrige CE coffre précis (SET absolu) et répercute le même delta sur le
-  // total global — cohérent avec le fait qu'un mouvement réel met à jour les
-  // deux compteurs en parallèle du même delta (voir parseAndApply). `coffre`
-  // obligatoire : un ancien chemin "sans coffre" écrasait directement le
-  // total global (db.setStock) sans jamais le rattacher à un CoffreStock,
-  // faisant diverger le total de la somme des coffres connus dès qu'on
-  // mélangeait les deux usages sur un même item.
+  // Corrige CE coffre précis (SET absolu) — `coffre` obligatoire : le total
+  // global n'est jamais stocké séparément (voir db.ts), il se recalcule tout
+  // seul comme la somme des coffres dès la prochaine lecture.
   const { avant, apres } = await db.setCoffreStock(guildId, coffre.id, item, quantite);
-  const delta = apres - avant;
-  if (delta !== 0) await db.applyStockDelta(guildId, item, delta);
   await updateStockMessage(interaction.client, guildId);
   await interaction.reply({
-    content: `✅ Stock de **${itemLabel}** corrigé pour <#${coffre.id}> : \`${avant.toLocaleString('fr-FR')}\` → \`${apres.toLocaleString('fr-FR')}\` (total global ajusté du même delta).`,
+    content: `✅ Stock de **${itemLabel}** corrigé pour <#${coffre.id}> : \`${avant.toLocaleString('fr-FR')}\` → \`${apres.toLocaleString('fr-FR')}\` (total global recalculé automatiquement).`,
     flags: MessageFlags.Ephemeral,
   });
 }

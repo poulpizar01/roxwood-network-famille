@@ -275,100 +275,99 @@ export async function getAllActivityClassementRates(guildId: string) {
 }
 
 // ─── STOCKS ─────────────────────────────────────────────────────────────────
+//
+// Il n'existe qu'UNE table de stock, `CoffreStock` (détail par salon
+// `logs_coffres`) : le total global n'est jamais stocké, toujours recalculé
+// à la lecture comme la somme des coffres pour cet item. Un ancien schéma
+// tenait un total (`Stock`) en parallèle, mis à jour du même delta EN PLUS du
+// détail par coffre — même dans la même transaction DB, chaque table
+// plafonnait sa propre valeur à 0 indépendamment (`GREATEST(quantite + delta,
+// 0)`) : un retrait absorbé côté coffre (déjà à 0 selon le suivi) ne l'était
+// pas côté total (qui a du stock ailleurs), faisant dériver le total en
+// dessous de la somme réelle des coffres au fil du temps. Une seule source de
+// vérité élimine structurellement cette dérive.
 
-/** Quantité en stock d'un item (0 si jamais initialisé). */
+/** Quantité en stock d'un item, tous coffres confondus (0 si jamais mouvementé). */
 export async function getStock(guildId: string, item: string): Promise<number> {
-  const row = await prisma.stock.findUnique({ where: { guildId_item: { guildId, item: item.toLowerCase() } } });
-  return row ? row.quantite : 0;
+  const result = await prisma.coffreStock.aggregate({
+    where: { guildId, item: item.toLowerCase() },
+    _sum: { quantite: true },
+  });
+  return result._sum.quantite ?? 0;
 }
 
-/** Stock de plusieurs items en une seule requête, individuellement (clé = nom en minuscules, absent si jamais mouvementé) — voir `armurerie.getMunitionsStock`/`weightedStockSum`, qui pondèrent différemment chaque item d'un groupe avant de sommer (contre un `getStock` par item, un N+1 pour un groupe qui peut grossir). */
+/** Stock de plusieurs items en une seule requête (clé = nom en minuscules, absent si jamais mouvementé) — voir `armurerie.getMunitionsStock`/`weightedStockSum`, qui pondèrent différemment chaque item d'un groupe avant de sommer (contre un `getStock` par item, un N+1 pour un groupe qui peut grossir). */
 export async function getStocksByItems(guildId: string, items: string[]): Promise<Record<string, number>> {
   if (!items.length) return {};
-  const rows = await prisma.stock.findMany({ where: { guildId, item: { in: items.map(i => i.toLowerCase()) } } });
-  return Object.fromEntries(rows.map(r => [r.item, r.quantite]));
+  const rows = await prisma.coffreStock.groupBy({
+    by: ['item'],
+    where: { guildId, item: { in: items.map(i => i.toLowerCase()) } },
+    _sum: { quantite: true },
+  });
+  return Object.fromEntries(rows.map(r => [r.item, r._sum.quantite ?? 0]));
 }
 
-/**
- * Applique un delta au stock d'un item de façon atomique (une seule requête
- * SQL — upsert + valeur précédente lue dans la même instruction), et retourne
- * les quantités avant/après. Deux mouvements concurrents sur le même item
- * (ex. deux retraits de coffre détectés à quelques ms d'intervalle) ne
- * peuvent donc pas s'écraser l'un l'autre comme le ferait un
- * lire-puis-écrire en deux requêtes séparées.
- */
-export async function applyStockDelta(guildId: string, item: string, delta: number): Promise<{ avant: number; apres: number }> {
-  const key = item.toLowerCase();
-  const rows = await prisma.$queryRaw<Array<{ avant: number; apres: number }>>`
-    WITH prev AS (
-      SELECT quantite FROM stocks WHERE guild_id = ${guildId} AND item = ${key}
-    ), upserted AS (
-      INSERT INTO stocks (guild_id, item, quantite) VALUES (${guildId}, ${key}, GREATEST(${delta}, 0))
-      ON CONFLICT (guild_id, item) DO UPDATE SET quantite = GREATEST(stocks.quantite + ${delta}, 0)
-      RETURNING quantite
-    )
-    SELECT COALESCE((SELECT quantite FROM prev), 0)::int AS avant, (SELECT quantite FROM upserted)::int AS apres
-  `;
-  return { avant: rows[0]?.avant ?? 0, apres: rows[0]?.apres ?? 0 };
+/** Le stock de tous les items d'une guilde (sommé sur tous les coffres), trié par nom — même forme `{ guildId, item, quantite }` que l'ancien modèle `Stock`, pour que le panneau/l'API n'aient rien à changer. */
+export async function getAllStocks(guildId: string): Promise<Array<{ guildId: string; item: string; quantite: number }>> {
+  const rows = await prisma.coffreStock.groupBy({
+    by: ['item'],
+    where: { guildId },
+    _sum: { quantite: true },
+    orderBy: { item: 'asc' },
+  });
+  return rows.map(r => ({ guildId, item: r.item, quantite: r._sum.quantite ?? 0 }));
 }
 
-/** Le stock de tous les items d'une guilde, trié par nom. */
-export async function getAllStocks(guildId: string) {
-  return prisma.stock.findMany({ where: { guildId }, orderBy: { item: 'asc' } });
-}
-
-/** Supprime tout le stock d'une guilde — global ET par coffre (resync complète, voir `stocks.fullResync`). */
+/** Supprime tout le stock détaillé par coffre d'une guilde (resync complète, voir `stocks.fullResync`) — le total global suit automatiquement puisqu'il n'est jamais stocké. */
 export async function resetAllStocks(guildId: string): Promise<void> {
-  await prisma.stock.deleteMany({ where: { guildId } });
   await prisma.coffreStock.deleteMany({ where: { guildId } });
 }
 
 // ─── STOCK PAR COFFRE ─────────────────────────────────────────────────────────
 //
-// Détail par salon `logs_coffres` (voir modèle CoffreStock) — mis à jour EN
-// PLUS du total global (jamais à sa place, voir `applyStockDelta`) à chaque
-// mouvement, avec le même identifiant de salon que celui d'où vient le log.
+// Détail par salon `logs_coffres` (voir modèle CoffreStock) — SEULE source de
+// vérité pour le stock (voir commentaire ci-dessus).
 
 /**
- * Applique un delta au total global (`Stock`, même pattern atomique que
- * `applyStockDelta`) PUIS au détail par coffre (table `CoffreStock`), dans
- * la même transaction DB (`prisma.$transaction`) — utilisée par
- * `stocks.parseAndApply` (le point d'entrée temps réel, un mouvement de
- * coffre en jeu = un appel). Sans ça, un crash entre les deux écritures
- * (ex. redémarrage du bot pendant le traitement d'un lot de mouvements)
- * laisse le total global (`Stock`) et le détail par coffre (`CoffreStock`)
- * désynchronisés — CLAUDE.md documente explicitement que les deux DOIVENT
- * être mis à jour ensemble. Retourne avant/après du total GLOBAL uniquement
- * (ce dont l'appelant a besoin pour construire son `StockEntry`) — le
- * détail par coffre n'est jamais relu dans la foulée.
+ * Applique un delta au stock d'UN coffre précis, de façon atomique (upsert +
+ * valeur précédente lue dans la même instruction — deux mouvements
+ * concurrents sur le même item/coffre ne peuvent pas s'écraser comme le
+ * ferait un lire-puis-écrire en deux requêtes séparées), et retourne le total
+ * GLOBAL avant/après (somme de tous les coffres pour cet item), pas juste ce
+ * coffre — c'est ce qu'attend `stocks.parseAndApply` pour construire son
+ * `StockEntry`/l'historique. Un CTE ne voit pas les lignes que la même
+ * requête modifie : la somme des AUTRES coffres (`autres`, qui exclut CE
+ * coffre) est donc calculée séparément puis additionnée à la valeur
+ * avant/après de ce coffre, plutôt que de resommer `coffre_stocks` après coup
+ * (qui renverrait l'ancienne valeur pour ce coffre).
  */
-export async function applyStockAndCoffreDelta(guildId: string, channelId: string, item: string, delta: number): Promise<{ avant: number; apres: number }> {
+export async function applyStockMovement(guildId: string, channelId: string, item: string, delta: number): Promise<{ avant: number; apres: number }> {
   const key = item.toLowerCase();
-  return prisma.$transaction(async tx => {
-    const globalRows = await tx.$queryRaw<Array<{ avant: number; apres: number }>>`
-      WITH prev AS (
-        SELECT quantite FROM stocks WHERE guild_id = ${guildId} AND item = ${key}
-      ), upserted AS (
-        INSERT INTO stocks (guild_id, item, quantite) VALUES (${guildId}, ${key}, GREATEST(${delta}, 0))
-        ON CONFLICT (guild_id, item) DO UPDATE SET quantite = GREATEST(stocks.quantite + ${delta}, 0)
-        RETURNING quantite
-      )
-      SELECT COALESCE((SELECT quantite FROM prev), 0)::int AS avant, (SELECT quantite FROM upserted)::int AS apres
-    `;
-    await tx.$executeRaw`
+  const rows = await prisma.$queryRaw<Array<{ avant: number; apres: number }>>`
+    WITH prev AS (
+      SELECT quantite FROM coffre_stocks WHERE guild_id = ${guildId} AND channel_id = ${channelId} AND item = ${key}
+    ), autres AS (
+      SELECT COALESCE(SUM(quantite), 0)::int AS total FROM coffre_stocks
+      WHERE guild_id = ${guildId} AND item = ${key} AND channel_id != ${channelId}
+    ), upserted AS (
       INSERT INTO coffre_stocks (guild_id, channel_id, item, quantite) VALUES (${guildId}, ${channelId}, ${key}, GREATEST(${delta}, 0))
       ON CONFLICT (guild_id, channel_id, item) DO UPDATE SET quantite = GREATEST(coffre_stocks.quantite + ${delta}, 0)
-    `;
-    return { avant: globalRows[0]?.avant ?? 0, apres: globalRows[0]?.apres ?? 0 };
-  });
+      RETURNING quantite
+    )
+    SELECT
+      (SELECT total FROM autres) + COALESCE((SELECT quantite FROM prev), 0) AS avant,
+      (SELECT total FROM autres) + (SELECT quantite FROM upserted) AS apres
+  `;
+  return { avant: rows[0]?.avant ?? 0, apres: rows[0]?.apres ?? 0 };
 }
 
 /**
  * Force la valeur du stock d'un item POUR UN COFFRE DONNÉ (correction
  * manuelle, `/set-stock ... coffre:`) — SET absolu, pas un delta (contraste
- * avec `applyStockAndCoffreDelta`, additive). Même pattern atomique (upsert +
+ * avec `applyStockMovement`, additive). Même pattern atomique (upsert +
  * valeur précédente en une seule requête) pour ne pas écraser un mouvement
- * réel concurrent sur ce même coffre/item.
+ * réel concurrent sur ce même coffre/item. Le total global suit tout seul à
+ * la lecture, aucun appel complémentaire nécessaire.
  */
 export async function setCoffreStock(guildId: string, channelId: string, item: string, quantite: number): Promise<{ avant: number; apres: number }> {
   const key = item.toLowerCase();
