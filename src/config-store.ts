@@ -61,13 +61,8 @@ export interface ActivityTypeConfig {
   displayOrder: number;
   /** Résolu dans `reload()` selon `TYPE_GROUPE` — voir {@link LABO_TIERS}. `true` pour toute activité non listée dans `LABO_TIERS` (jamais désactivée par le tier). */
   enabled: boolean;
-  /** Icône d'affichage (optionnelle) — champ à part, jamais fondue dans `label` (voir {@link activityDisplayLabel}). */
+  /** Icône d'affichage (optionnelle) — n'apparaît QUE dans les slots braquages de l'embed "Gestion des Activités" (`buildMainEmbed`, quotas.ts). Décision explicite de l'utilisateur : jamais ailleurs (boutons, titres de modal, messages, API…). */
   icon?: string;
-}
-
-/** Combine icône + libellé pour l'affichage (bouton, embed, message) — `label` seul reste réutilisable tel quel (ex. pour matcher un titre d'embed existant). */
-export function activityDisplayLabel(cfg: ActivityTypeConfig): string {
-  return cfg.icon ? `${cfg.icon} ${cfg.label}` : cfg.label;
 }
 
 /** Types d'organisation — voir docstring de {@link BRAQUAGE_LIMITS_BY_TIER} et {@link LABO_TIERS}. */

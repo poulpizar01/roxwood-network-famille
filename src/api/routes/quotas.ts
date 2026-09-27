@@ -24,7 +24,6 @@
 import { Router } from 'express';
 import * as quotas from '../../modules/quotas';
 import * as configStore from '../../config-store';
-import { activityDisplayLabel } from '../../config-store';
 import { resolveWeekRange } from '../week';
 import { requireSelfOrAdmin } from '../auth';
 
@@ -54,7 +53,7 @@ router.get('/config', async (req, res) => {
   if (!range) return;
   const c = configStore.get(guildId);
   const activities = Object.fromEntries(
-    Object.entries(c.ACTIVITY_TYPES).map(([key, cfg]) => [key, { label: activityDisplayLabel(cfg), quotaType: cfg.quotaType, enabled: cfg.enabled }]),
+    Object.entries(c.ACTIVITY_TYPES).map(([key, cfg]) => [key, { label: cfg.label, quotaType: cfg.quotaType, enabled: cfg.enabled }]),
   );
   res.json({
     range,

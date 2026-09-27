@@ -13,7 +13,8 @@ Notes de conventions et de pièges pour un agent Claude Code reprenant ce projet
   - **Docker** (`Dockerfile` + `docker-compose.yml`, à la racine) : conteneurise le bot ET PostgreSQL (service `db`, volume nommé). `docker-entrypoint.sh` lance `prisma migrate deploy` avant de démarrer le bot à chaque `docker compose up`/redémarrage de conteneur — pas besoin de l'appeler à la main comme en systemd. Mise à jour : `git pull && docker compose up -d --build`.
     - L'image (`node:20-alpine`) a besoin d'`apk add openssl` : sans ça, le moteur Prisma échoue au démarrage avec une erreur de parsing qui masque le vrai problème.
     - Build observé cassé (`invalid file request`) avec BuildKit sur Windows + OneDrive sur ce poste précisément — `DOCKER_BUILDKIT=0` en solution de contournement si ça se reproduit.
-- Le langage de toutes les interactions Discord (embeds, messages, boutons) et de la conversation avec l'utilisateur est le **français**.
+- Le langage de toutes les interactions Discord (embeds, messages, boutons) est le **français**.
+- **Toujours répondre en français à l'utilisateur**, dans toutes les réponses de l'agent (texte, résumés, questions), quelle que soit la langue du message reçu — décision explicite de l'utilisateur.
 
 ## Le modèle de configuration — piège n°1 : orthographe des items FiveM
 

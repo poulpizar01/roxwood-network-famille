@@ -50,7 +50,7 @@ export async function checkExpiredCooldowns(client: Client, guildId: string): Pr
 
     for (const row of expired) {
       const rowCfg = c.ACTIVITY_TYPES[row.action];
-      const label = rowCfg ? configStore.activityDisplayLabel(rowCfg) : row.action;
+      const label = rowCfg ? rowCfg.label : row.action;
       await channel.send({
         content: `<@${row.userId}>`,
         embeds: [
@@ -90,7 +90,7 @@ export async function postBraquageAlert(client: Client, guildId: string, action:
 
     const used = await db.getBraquageCount(guildId, action);
     const remaining = Math.max(0, limit - used);
-    const label = configStore.activityDisplayLabel(cfg);
+    const label = cfg.label;
 
     await channel.send({
       embeds: [
