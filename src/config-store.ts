@@ -165,6 +165,14 @@ export interface ItemConfig {
   stockMultiplier: number;
 }
 
+/** Une tranche d'un barème de paie progressif — voir `BotConfig.VENTE_PALIERS` et `quotas.computeVentePay`. */
+export interface SalaryTierEntry {
+  /** Borne haute (unités) de cette tranche, incluse — `null` pour la tranche finale, sans limite. */
+  upTo: number | null;
+  /** $ par unité pour cette tranche précise. */
+  amount: number;
+}
+
 export interface BotConfig {
   /** `logs_coffres`/`logs_coffres_admin` sont des listes (plusieurs salons possibles chacune, voir `/config channel add-log-coffre`/`add-log-coffre-admin`) — les deux sont surveillées de la même façon par `stocks.ts`, `logs_coffres_admin` obtenant en plus le badge 🛡️ dans `historique_stock` (voir `logStockToChannel`). Un salon donné ne peut appartenir qu'à UNE SEULE des deux listes à la fois, jamais les deux (`handleChannel` dans `modules/config.ts` rejette l'ajout sinon). */
   CHANNELS: Record<ChannelRole, string | null> & { logs_coffres: string[]; logs_coffres_admin: string[] };
@@ -183,6 +191,8 @@ export interface BotConfig {
   SALARY_RATES: Record<string, number>;
   /** $ par unité, par item vendu — remplace `SALARY_RATES.vente` pour cet item précis (voir `/config salaire ... item:`). Vide pour la grande majorité des guildes : ne JAMAIS relire `Transaction` en détail par item si cette map est vide (voir `quotas.getVenteByItemMap`). */
   ITEM_SALARY_RATES: Record<string, number>;
+  /** Paliers de paie progressifs pour la vente de drogue (voir `/config palier`, `quotas.computeVentePay`) — chaque tranche payée à son propre taux, sommées (barème, pas un seuil qui repaierait toute la quantité au dernier taux atteint). `general` prime sur `SALARY_RATES.vente` s'il est non vide ; une entrée de `byItem[nomItem]` prime sur `general` ET sur `ITEM_SALARY_RATES[nomItem]` pour cet item précis. Chaque tableau est trié par `upTo` croissant, la dernière tranche ayant `upTo: null` (sans limite) — vide si aucun palier configuré pour cette cible (repli sur le taux plat). */
+  VENTE_PALIERS: { general: SalaryTierEntry[]; byItem: Record<string, SalaryTierEntry[]> };
   /** Points de classement (entiers), par catégorie de quota — voir `/config classement` et `computeClassement` dans quotas.ts. Totalement indépendant de SALARY_RATES : un item/activité peut avoir un taux de paie, des points, les deux, ou aucun. */
   CLASSEMENT_RATES: Record<string, number>;
   /** Points de classement par activité de la catégorie "actions" — remplace `CLASSEMENT_RATES.actions` pour cette activité précise (voir `/config classement ... activite:`). */
@@ -273,6 +283,16 @@ export async function reload(guildId: string): Promise<BotConfig> {
   const ITEM_SALARY_RATES: Record<string, number> = {};
   for (const row of await db.getAllItemSalaryRates(guildId)) ITEM_SALARY_RATES[row.item] = row.amount;
 
+  const VENTE_PALIERS: { general: SalaryTierEntry[]; byItem: Record<string, SalaryTierEntry[]> } = { general: [], byItem: {} };
+  for (const row of await db.getAllSalaryTiers(guildId)) {
+    const entry: SalaryTierEntry = { upTo: row.upTo, amount: row.amount };
+    if (row.item === null) VENTE_PALIERS.general.push(entry);
+    else (VENTE_PALIERS.byItem[row.item] ??= []).push(entry);
+  }
+  const byUpTo = (a: SalaryTierEntry, b: SalaryTierEntry) => (a.upTo ?? Infinity) - (b.upTo ?? Infinity);
+  VENTE_PALIERS.general.sort(byUpTo);
+  for (const item in VENTE_PALIERS.byItem) VENTE_PALIERS.byItem[item].sort(byUpTo);
+
   const CLASSEMENT_RATES: Record<string, number> = {};
   for (const row of await db.getAllClassementRates(guildId)) CLASSEMENT_RATES[row.quotaType] = row.amount;
 
@@ -295,6 +315,7 @@ export async function reload(guildId: string): Promise<BotConfig> {
     ADMIN_ROLE_ID: rolesByTarget.admin ?? null,
     SALARY_RATES,
     ITEM_SALARY_RATES,
+    VENTE_PALIERS,
     CLASSEMENT_RATES,
     ACTIVITY_CLASSEMENT_RATES,
     TYPE_GROUPE,

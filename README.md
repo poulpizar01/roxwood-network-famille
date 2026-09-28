@@ -198,7 +198,7 @@ Un seul niveau d'accès de base : **membre du serveur Discord**, suffit pour tou
 | `GET /api/stocks/:channelId` | Membre/Admin | Stock actuel de chaque item pour UN coffre précis — 403 sur un coffre admin pour un non-admin |
 | `GET /api/stocks/history?item=&channelId=&limit=` | Membre/Admin | Derniers mouvements, filtrables par item et/ou coffre (défaut 20, max 200) — les mouvements des coffres admin n'apparaissent que pour un admin (403 si un non-admin les demande explicitement) |
 | `GET /api/quotas?week=` | Membre | Quota (somme par catégorie + détail brut) de tous les joueurs suivis |
-| `GET /api/quotas/config?week=` | Membre | De quoi interpréter les autres réponses : plage `[since, until)` résolue, objectifs (`/config quota`) et taux (`/config salaire`, `/config classement`) **actuels**, libellés des activités |
+| `GET /api/quotas/config?week=` | Membre | De quoi interpréter les autres réponses : plage `[since, until)` résolue, objectifs (`/config quota`), taux (`/config salaire`, `/config classement`) et paliers de paie vente (`/config palier`) **actuels**, libellés des activités |
 | `GET /api/quotas/:userId?week=` | Soi-même/Admin | Quota d'un joueur précis |
 | `GET /api/quotas/pay?week=` | Membre | Paie de tous les joueurs suivis, y compris à 0$ |
 | `GET /api/quotas/pay/:userId?week=` | Soi-même/Admin | Paie d'un joueur précis |
@@ -220,7 +220,7 @@ Lecture seule pour l'instant — pas d'écriture depuis l'extérieur (voir docst
 
 Les 6 endpoints `/api/quotas*` et les 2 endpoints `/api/ventes*` acceptent un paramètre `week` (semaine ISO 8601, ex. `2026-W37`, lundi 00:00 UTC → lundi suivant, résolu par `src/api/week.ts`) — sans ce paramètre, ils portent sur la semaine en cours (depuis le dernier reset hebdomadaire). Reconstruit depuis la table `transactions` (jamais purgée, une ligne par déclaration) plutôt que le cache `stats` (vidé entièrement à chaque reset) — voir les fonctions `*ForRange` dans `modules/quotas.ts` et `getVenteTotalsForRange`/`getVenteDetailForUser` dans `db.ts`. Une vente confirmée écrit une `transaction` (`action: 'vente'`) comme n'importe quelle activité, donc le `total` de `/api/ventes` est toujours identique au `vente` d'un quota pour la même plage — une seule vérité.
 
-**Limite à connaître** : les objectifs (`/config quota`) et taux de paie (`/config salaire`) ne sont **pas historisés** — seule la valeur actuelle existe en base. Une requête sur une semaine passée applique donc les objectifs/taux *actuels* à l'activité de cette semaine-là, pas ceux réellement en vigueur à l'époque si l'admin les a changés depuis (n'affecte pas `/api/ventes`, qui ne dépend d'aucun taux). Si ça devient un problème pour `/api/quotas*`, il faudrait historiser `QuotaTarget`/`SalaryRate` (nouvelle table, logique de résolution "valeur en vigueur à telle date") — pas fait pour l'instant.
+**Limite à connaître** : les objectifs (`/config quota`), taux de paie (`/config salaire`) et paliers (`/config palier`) ne sont **pas historisés** — seule la valeur actuelle existe en base. Une requête sur une semaine passée applique donc les objectifs/taux/paliers *actuels* à l'activité de cette semaine-là, pas ceux réellement en vigueur à l'époque si l'admin les a changés depuis (n'affecte pas `/api/ventes`, qui ne dépend d'aucun taux). Si ça devient un problème pour `/api/quotas*`, il faudrait historiser `QuotaTarget`/`SalaryRate`/`SalaryTier` (nouvelle table, logique de résolution "valeur en vigueur à telle date") — pas fait pour l'instant.
 
 ### Types de taxe (`?type=`)
 
@@ -278,13 +278,24 @@ Objectif hebdomadaire par catégorie de quota (`actions`, `vente`, `recolte`, `l
 - `/config quota set <quota_type> <valeur>` / `remove` / `list`
 
 ### `/config salaire`
-Taux de paie ($ par unité) par catégorie de quota — mêmes catégories que `/config quota`. **Une catégorie sans taux configuré ne génère aucune paie**, même si des activités lui sont rattachées : "Ma Paie" et la paie hebdomadaire n'affichent que les catégories ayant un taux.
+Taux de paie ($ par unité) par catégorie de quota — mêmes catégories que `/config quota`. **Une catégorie sans taux configuré ne génère aucune paie**, même si des activités lui sont rattachées : "Ma Paie" et la paie hebdomadaire n'affichent que les catégories ayant un taux (ou, pour "vente" uniquement, un palier — voir `/config palier` ci-dessous).
 - `/config salaire set <quota_type> <valeur> [item]` / `remove <quota_type> [item]` / `list`
   - `item` (autocomplete sur les items vendables) : optionnel, utilisable uniquement avec `quota_type: vente` — fixe un taux spécifique à une drogue, qui remplace le taux général "vente" pour elle seule. Un item sans taux spécifique utilise le taux général.
 
 Exemple : `/config salaire set vente 30` → chaque unité vendue rapporte 30$. `/config salaire set vente 45 item:Cocaïne` → la Cocaïne rapporte 45$/unité, tout le reste continue à 30$/unité. On peut faire pareil pour `labos`, `recolte`, etc. — indépendamment des objectifs fixés par `/config quota` (une catégorie peut avoir un objectif sans taux de paie, un taux sans objectif, ou les deux).
 
-**Coût de calcul** : un taux par item force une relecture de la table `transactions` (jamais purgée) pour reconstruire la répartition des ventes par drogue — mais uniquement si au moins un taux par item est configuré pour la guilde ; pour toute guilde qui n'utilise pas cette option, le calcul de paie reste léger (cache `stats` uniquement, aucune lecture supplémentaire).
+**Coût de calcul** : un taux par item force une relecture de la table `transactions` (jamais purgée) pour reconstruire la répartition des ventes par drogue — mais uniquement si au moins un taux par item (ou un palier par item, voir `/config palier` ci-dessous) est configuré pour la guilde ; pour toute guilde qui n'utilise pas ces options, le calcul de paie reste léger (cache `stats` uniquement, aucune lecture supplémentaire).
+
+### `/config palier` — barème de paie progressif (vente de drogue uniquement)
+Alternative à `/config salaire` pour la catégorie "vente" : au lieu d'un taux plat, un barème par tranche de quantité — la première tranche est payée à son propre taux, la suivante au sien, etc. (comme un barème d'impôt, **jamais** un seuil qui repaierait toute la quantité au taux de la dernière tranche atteinte). `item` optionnel cible une drogue précise, sinon le barème général "vente".
+- `/config palier add [item] <jusqua omis = tranche finale> <valeur>` — ajoute une tranche ; la borne doit être strictement croissante, et une seule tranche finale (sans limite) par barème.
+- `/config palier remove [item] [jusqua]` — retire une tranche précise (`jusqua` omis = la tranche finale).
+- `/config palier clear [item]` — retire tout le barème visé, retombe sur le taux plat (`/config salaire`) s'il existe.
+- `/config palier list` — liste tous les barèmes configurés.
+
+Exemple : `/config palier add jusqua:100 valeur:10` puis `/config palier add valeur:15` (sans `jusqua`) donne un barème général "vente" à deux tranches — les 100 premières unités vendues (toutes drogues confondues) à 10$/unité, puis 15$/unité au-delà. `/config palier add item:Cocaïne jusqua:50 valeur:25` crée un barème propre à la Cocaïne, qui prime sur le barème général pour cette drogue précise (mais nécessite ensuite une tranche finale, sinon la quantité au-delà de 50 pour cet item ne serait payée par AUCUNE tranche).
+
+**Priorité de résolution par item, à la lecture** (voir `quotas.computeVentePay`) : barème propre à l'item > taux plat propre à l'item (`/config salaire ... item:`) > barème général > taux plat général. Un item sans aucun override retombe sur le barème/taux général, appliqué à la quantité restante mise en commun (`pooled`, toutes les drogues sans override confondues) — pas item par item, pour que les tranches du barème général se calculent sur le bon total.
 
 ### `/config classement` — points de classement de groupe
 Points de classement (entiers, pas des $) par catégorie de quota — **totalement indépendant de `/config salaire`** : un item/une activité peut avoir un taux de paie, des points de classement, les deux, ou aucun. Le classement de groupe (bouton "Classement Groupe" du panneau) se base sur ces points, pas sur le salaire — voir "Ma Paie", qui garde son propre classement (`🏆 Classement (paie)`), distinct de celui-ci.

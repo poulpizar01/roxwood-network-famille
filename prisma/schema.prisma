@@ -180,6 +180,28 @@ model ItemSalaryRate {
   @@map("item_salary_rates")
 }
 
+/// Palier de paie progressif pour la vente de drogue (voir `/config palier`)
+/// — barème par tranche : chaque tranche [borne précédente, upTo] est payée
+/// à son propre taux, sommées comme un barème d'impôt (pas un seuil qui
+/// repaierait toute la quantité au dernier taux atteint, voir
+/// `quotas.computeVentePay`). `item` null = barème général "vente" ; sinon
+/// propre à cette drogue précise, remplace le barème général pour cet item
+/// (même principe que {@link ItemSalaryRate}, avec un barème au lieu d'un
+/// taux plat — les deux peuvent coexister par item, le barème prime s'il
+/// existe). `upTo` null = tranche finale, sans limite — au plus une par
+/// (guildId, item), vérifié en code (pas par une contrainte DB, même logique
+/// que l'unicité des taxes par groupe+type dans `taxes.ts`).
+model SalaryTier {
+  guildId String  @map("guild_id")
+  id      Int     @id @default(autoincrement())
+  item    String?
+  upTo    Int?    @map("up_to")
+  amount  Float
+
+  @@index([guildId, item])
+  @@map("salary_tiers")
+}
+
 /// Points de classement (entiers, pas $ — indépendant de SalaryRate) par
 /// catégorie de quota. Voir `/config classement` et `quotas.computeClassement`.
 model ClassementRate {

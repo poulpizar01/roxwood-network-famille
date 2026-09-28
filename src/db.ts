@@ -234,6 +234,33 @@ export async function getAllItemSalaryRates(guildId: string) {
   return prisma.itemSalaryRate.findMany({ where: { guildId } });
 }
 
+// ─── PALIERS DE PAIE VENTE (config) ──────────────────────────────────────────
+
+/** Ajoute une tranche au barème de paie de la vente (général si `item` est `null`, propre à cet item sinon) — validation de l'ordre/unicité de la tranche finale faite par l'appelant (`modules/config.ts`), pas ici. */
+export async function addSalaryTier(guildId: string, item: string | null, upTo: number | null, amount: number): Promise<void> {
+  await prisma.salaryTier.create({ data: { guildId, item, upTo, amount } });
+}
+
+/** Retire UNE tranche précise (par sa borne haute — `null` cible la tranche finale sans limite) du barème général ou d'un item. */
+export async function removeSalaryTier(guildId: string, item: string | null, upTo: number | null): Promise<void> {
+  await prisma.salaryTier.deleteMany({ where: { guildId, item, upTo } });
+}
+
+/** Retire tout le barème (général ou celui d'un item précis) — retombe sur le taux plat (`SalaryRate`/`ItemSalaryRate`) s'il existe. */
+export async function clearSalaryTiers(guildId: string, item: string | null): Promise<void> {
+  await prisma.salaryTier.deleteMany({ where: { guildId, item } });
+}
+
+/** Toutes les tranches de tous les barèmes (général + par item) d'une guilde, triées par item puis par borne haute croissante (Postgres place les `NULL` en dernier sur un `ORDER BY ... ASC` — la tranche finale sans limite se retrouve donc naturellement en dernier de son groupe). */
+export async function getAllSalaryTiers(guildId: string) {
+  return prisma.salaryTier.findMany({ where: { guildId }, orderBy: [{ item: 'asc' }, { upTo: 'asc' }] });
+}
+
+/** Les tranches du barème d'UNE seule cible (général si `item` est `null`), triées par borne haute croissante. */
+export async function getSalaryTiersFor(guildId: string, item: string | null) {
+  return prisma.salaryTier.findMany({ where: { guildId, item }, orderBy: { upTo: 'asc' } });
+}
+
 // ─── CLASSEMENT (config) ──────────────────────────────────────────────────────
 
 /** Fixe (upsert) les points de classement d'une catégorie de quota. */
