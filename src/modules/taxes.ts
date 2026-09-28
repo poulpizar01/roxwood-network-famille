@@ -7,7 +7,7 @@
  *  - Types fixes avec leur propre bouton : 'sporex' (labo Spore X), 'heroine'
  *    (labo Héroïne), 'vente' (vente de drogue), 'fertilisant' (récolte),
  *    'cannabis' (labo Cannabis, Gang), 'mexicana' (labo Mexicana, Organisation),
- *    'cocaine' (labo Cocaïne, Organisation).
+ *    'cocaine' (labo Cocaïne, Organisation), 'salvia' (Salvia, Petite Frappe).
  *  - Taxes de zone : un seul bouton "Taxe Zone" qui demande d'abord de
  *    choisir une zone, puis affiche le même formulaire que les autres types
  *    (+ téléphone). Le nom de la zone choisie EST directement stocké comme
@@ -95,7 +95,7 @@ type Taxe = NonNullable<Awaited<ReturnType<typeof db.getTaxe>>>;
  * `type=zone` y regroupe TOUTES les zones sous un type fictif unique, plutôt
  * que de devoir filtrer une zone précise à la fois.
  */
-export const FIXED_TYPES = ['sporex', 'heroine', 'vente', 'fertilisant', 'cannabis', 'mexicana', 'cocaine'] as const;
+export const FIXED_TYPES = ['sporex', 'heroine', 'vente', 'fertilisant', 'cannabis', 'mexicana', 'cocaine', 'salvia'] as const;
 export type FixedType = (typeof FIXED_TYPES)[number];
 
 /** Titre de bouton, emoji et style par type fixe — source unique pour le panneau et les modals. */
@@ -106,6 +106,7 @@ const FIXED_TYPE_META: Record<FixedType, { title: string; emoji: string; style: 
   cannabis: { title: 'Taxe Cannabis', emoji: '🌿', style: ButtonStyle.Primary },
   mexicana: { title: 'Taxe Mexicana', emoji: '🌵', style: ButtonStyle.Primary },
   cocaine: { title: 'Taxe Cocaïne', emoji: '⚪', style: ButtonStyle.Primary },
+  salvia: { title: 'Taxe Salvia', emoji: '🍃', style: ButtonStyle.Primary },
   vente: { title: 'Taxe Vente', emoji: '💊', style: ButtonStyle.Secondary },
 };
 
@@ -116,11 +117,13 @@ const FIXED_TYPE_META: Record<FixedType, { title: string; emoji: string; style: 
  * LABO_TIERS dans config-store.ts pour ces drogues, mais indépendante :
  * Mexicana est produite par Gang ET Organisation via LABO_TIERS, alors que
  * sa taxe reste réservée à Organisation — décision métier, pas un miroir
- * automatique de LABO_TIERS).
+ * automatique de LABO_TIERS). Petite Frappe a la taxe Salvia, réservée à ce
+ * tier même si le labo Salvia (LABO_TIERS) est lui accessible à Indépendant
+ * — même logique d'indépendance que Mexicana/Cocaïne ci-dessus.
  */
 const TAXES_FIXES_BY_TIER: Record<GroupTier, readonly FixedType[]> = {
   independant: [],
-  petite_frappe: ['sporex', 'heroine', 'fertilisant'],
+  petite_frappe: ['sporex', 'heroine', 'fertilisant', 'salvia'],
   gang: ['cannabis'],
   organisation: ['mexicana', 'cocaine'],
 };
@@ -135,7 +138,7 @@ const GANG_ORGA_ZONES: readonly string[] = [
 /** Zones taxables par tier — Indépendant n'en a aucune ; Gang et Organisation partagent les mêmes 18 zones (voir {@link GANG_ORGA_ZONES}). */
 const ZONES_BY_TIER: Record<GroupTier, readonly string[]> = {
   independant: [],
-  petite_frappe: ['Roxwood Village', 'Grapeseed Valley', 'Richman', 'Cinéma', 'Hawick', 'Carson'],
+  petite_frappe: ['Roxwood Village', 'Grapeseed Valley', 'Richman', 'Cinéma', 'Hawick', 'Carson', 'Plage Cayo'],
   gang: GANG_ORGA_ZONES,
   organisation: GANG_ORGA_ZONES,
 };

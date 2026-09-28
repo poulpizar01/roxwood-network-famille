@@ -6,7 +6,7 @@
  * rôle propre.
  *
  * `?type=` accepte, au choix : un type fixe (`sporex`, `heroine`, `vente`,
- * `fertilisant`, `cannabis`, `mexicana`, `cocaine`), le type fictif `zone`
+ * `fertilisant`, `cannabis`, `mexicana`, `cocaine`, `salvia`), le type fictif `zone`
  * qui regroupe TOUTES les zones (une par tier, voir `modules/taxes.ts`), ou
  * la clé d'UNE zone précise (ex. `roxwood_village` — voir
  * `/config channel list` côté Discord, ou `/api/taxes?type=zone` pour lister
