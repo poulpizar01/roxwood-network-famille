@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # `npm ci` génère déjà le client Prisma via le postinstall de
+      # @prisma/client (pas de DATABASE_URL nécessaire pour ça, juste le
+      # schéma) — pas d'étape `prisma generate` séparée.
+      - run: npm ci
+
+      - run: npx tsc --noEmit
+
+      # Une description de commande/option slash au-delà de 100 caractères
+      # bloque silencieusement le déploiement de TOUTES les commandes d'une
+      # guilde (voir CLAUDE.md, section "Discord : limites à connaître") —
+      # ce check n'a besoin que du code source, aucun token Discord.
+      - run: npx tsx scripts/check-description-lengths.ts

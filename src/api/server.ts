@@ -37,6 +37,7 @@ import cors from 'cors';
 import rateLimit from 'express-rate-limit';
 import type { Client } from 'discord.js';
 import { assertAuthEnv, handleLogin, handleCallback, requireAuth } from './auth';
+import { prisma } from '../db';
 import * as guildRegistry from '../guild-registry';
 import stocksRouter from './routes/stocks';
 import quotasRouter from './routes/quotas';
@@ -77,7 +78,17 @@ export function startApiServer(client: Client): void {
     credentials: false,
   }));
 
-  app.get('/health', (_req, res) => res.json({ ok: true }));
+  // Ping DB léger en plus de la vivacité du process — un supervisor externe
+  // (uptime monitor) doit voir un `/health` en échec si Postgres est
+  // injoignable, pas un `{ok:true}` qui ne reflète que "Express répond".
+  app.get('/health', async (_req, res) => {
+    try {
+      await prisma.$queryRaw`SELECT 1`;
+      res.json({ ok: true });
+    } catch {
+      res.status(503).json({ ok: false });
+    }
+  });
 
   // Par IP, pas par guilde (le JWT n'existe pas encore à ce stade). Une
   // limite dédiée et plus stricte sur /auth/login, séparée de l'API : pas de
@@ -85,6 +96,20 @@ export function startApiServer(client: Client): void {
   // mais évite un DoS applicatif par répétition de requêtes.
   const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 20, standardHeaders: true, legacyHeaders: false });
   const apiLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 300, standardHeaders: true, legacyHeaders: false });
+  // Par guilde, APRÈS requireAuth (le JWT, donc `req.apiUser.guildId`, n'existe
+  // qu'à partir de là) — en plus de `apiLimiter` (par IP, avant requireAuth,
+  // première ligne de défense contre un abus non authentifié). Plusieurs
+  // sites externes de guildes différentes peuvent partager la même IP
+  // sortante (même reverse proxy) : sans ce second palier, ils partageraient
+  // aussi le même quota `apiLimiter`, et un tenant très actif épuiserait
+  // celui des autres.
+  const guildLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: 300,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => req.apiUser!.guildId,
+  });
 
   app.get('/auth/login', authLimiter, handleLogin);
   app.get('/auth/callback', authLimiter, handleCallback(client));
@@ -92,6 +117,7 @@ export function startApiServer(client: Client): void {
   const api = express.Router();
   api.use(apiLimiter);
   api.use(requireAuth(client));
+  api.use(guildLimiter);
   api.get('/me', (req, res) => res.json(req.apiUser));
   api.use('/users', usersRouter);
   api.use('/stocks', stocksRouter);

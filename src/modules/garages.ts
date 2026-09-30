@@ -147,6 +147,11 @@ export async function catchUpMissedMessages(client: Client, guildId: string): Pr
 
     const sortedInit = collected.sort((a, b) => a.createdTimestamp - b.createdTimestamp);
     for (const msg of sortedInit) {
+      // Un message humain ne doit jamais être rejoué comme un événement de
+      // garage, même en historique — même règle qu'en temps réel (voir
+      // `handleMessage`) : un membre pouvant écrire/ajouter un webhook dans
+      // `logs_garages` pourrait sinon forger un état véhicule.
+      if (!msg.author.bot) continue;
       for (const ligne of extractLignes(msg)) {
         await traiterLigne(guildId, ligne, false);
         total++;
@@ -164,9 +169,11 @@ export async function catchUpMissedMessages(client: Client, guildId: string): Pr
 
     const sorted = [...batch.values()].sort((a, b) => a.createdTimestamp - b.createdTimestamp);
     for (const msg of sorted) {
-      for (const ligne of extractLignes(msg)) {
-        await traiterLigne(guildId, ligne, false);
-        total++;
+      if (msg.author.bot) {
+        for (const ligne of extractLignes(msg)) {
+          await traiterLigne(guildId, ligne, false);
+          total++;
+        }
       }
       await db.setSetting(guildId, 'last_garages_msg', msg.id);
     }

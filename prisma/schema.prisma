@@ -335,6 +335,7 @@ model Taxe {
   paye       Boolean  @default(true)
 
   @@index([guildId, actif])
+  @@index([guildId, type])
   @@map("taxes")
 }
 
@@ -375,6 +376,7 @@ model PendingSale {
   confirmed  Boolean  @default(false)
 
   @@index([guildId, statut])
+  @@index([guildId, joueur, item])
   @@map("pending_sales")
 }
 

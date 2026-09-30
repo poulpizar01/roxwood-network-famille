@@ -1,6 +1,6 @@
 # Bot Famille — Bot Discord RP FiveM (illégal), 100% configurable
 
-Bot Discord (TypeScript / discord.js v14 / PostgreSQL via Prisma) pour la gestion d'une organisation RP FiveM illégale : stocks de coffre, quotas hebdomadaires, braquages, cooldowns, taxes & racket, armurerie (armes + munitions), fourrière véhicules, cycle de vente de drogue — plus une API REST optionnelle pour exposer ces données à un outil externe (site web, dashboard…).
+Bot Discord (TypeScript / discord.js v14 / PostgreSQL via Prisma) pour la gestion d'une organisation RP FiveM illégale : stocks de coffre, quotas hebdomadaires, braquages, cooldowns, taxes & racket, armurerie (armes + munitions), fourrière véhicules, cycle de vente de drogue — ainsi qu'une API REST pour exposer ces données à un outil externe (site web, dashboard…), mise en place dans le cadre de l'installation standard (voir plus bas).
 
 Contrairement à un bot figé pour un serveur précis, **toute la structure métier est configurable depuis Discord** via la commande `/config` : items suivis, activités déclarables (quotas, cooldowns, limites de braquage, labos), objectifs de quota, taux de paie, salons, rôles, et le **type d'organisation** (Indépendant/Petite Frappe/Gang/Organisation, `/config type-groupe`) qui fait varier les limites de braquage, les labos accessibles et les taxes/zones de vente sans toucher au code. Aucune de ces valeurs n'est codée en dur — un changement prend effet immédiatement, sans redémarrage (jamais besoin de relancer le bot après une écriture `/config`, voir "Robustesse & fiabilité" plus bas). À l'inverse, certaines valeurs restent volontairement fixes dans le code car elles ne bougent jamais une fois le bot déployé pour une organisation donnée : types d'armes, types de taxe, plafonds de munitions, amende de fourrière (voir "Modules" plus bas).
 
@@ -9,9 +9,9 @@ Contrairement à un bot figé pour un serveur précis, **toute la structure mét
 ## Sommaire
 
 - [Prérequis](#prérequis) ([Créer l'application Discord](#créer-lapplication-discord))
-- [Installation](#installation) ([Via systemd](#via-systemd-production-sans-docker), [Via Docker](#via-docker))
+- [Installation](#installation) ([Via systemd](#via-systemd-production-sans-docker), [Via Docker](#via-docker), [API REST](#api-rest))
 - [Plusieurs guildes — multi-tenant](#plusieurs-guildes--multi-tenant)
-- [Interopérabilité — API REST](#interopérabilité--api-rest-optionnelle)
+- [Interopérabilité — API REST](#interopérabilité--api-rest)
 - [Configuration — `/config`](#configuration--tout-se-fait-depuis-discord-via-config)
 - [Modules](#modules)
 - [Robustesse & fiabilité](#robustesse--fiabilité)
@@ -109,6 +109,28 @@ Les deux services ont une rotation de logs (`max-size: 10m`, `max-file: 3` — s
 
 Si `docker compose build` échoue avec `invalid file request` (observé sur Windows + OneDrive avec BuildKit sur ce projet), désactiver BuildKit pour ce build : `set DOCKER_BUILDKIT=0 && docker compose build` (PowerShell : `$env:DOCKER_BUILDKIT=0`).
 
+### API REST
+
+Le bot expose une API REST en lecture seule (`src/api/`) pour un outil externe (site web, tableau de bord…) — voir la section [Interopérabilité](#interopérabilité--api-rest) pour l'authentification et la liste des endpoints. Sa mise en place fait partie de l'installation standard, après le `.env` de base ci-dessus (systemd ou Docker, indifféremment) :
+
+1. Dans le [Discord Developer Portal](https://discord.com/developers/applications), onglet **OAuth2** de l'application du bot : noter le **Client Secret**, et ajouter une **Redirect URI** = `<API_BASE_URL>/auth/callback` (ex. `http://localhost:3001/auth/callback` en dev, l'URL publique réelle en prod).
+2. Renseigner dans `.env` : `API_PORT`, `DISCORD_CLIENT_SECRET`, `API_JWT_SECRET` (une longue chaîne aléatoire, à générer une fois), `API_BASE_URL` — voir `.env.example`. Rien à renseigner de plus par site externe : chaque **serveur Discord** configure le sien directement depuis Discord, voir `/config site-externe set` (chapitre "Plusieurs guildes" plus bas).
+3. Démarrer/redémarrer le bot : `✅ API REST en écoute sur le port <API_PORT>` dans les logs confirme que c'est actif.
+4. Le serveur Express écoute sur toutes les interfaces (`0.0.0.0:<API_PORT>`, pas seulement en local) — en prod, choisir un sous-domaine (ex. `bot.exemple.fr`) et pointer son enregistrement DNS **A**/**AAAA** vers l'IP publique du serveur (préalable indispensable : sans DNS déjà propagé, l'émission du certificat ci-dessous échoue). Une fois le DNS actif, mettre un reverse proxy HTTPS devant l'API et **restreindre `<API_PORT>`** pour qu'il ne soit joignable que depuis la machine elle-même, seul le port 443 exposé publiquement (n'ouvrir que 443 au pare-feu en systemd/bare-metal ; en Docker, le pare-feu ne suffit PAS — Docker contourne `ufw`/iptables classique en publiant un port, `docker-compose.yml` bind déjà `<API_PORT>` sur `127.0.0.1` par défaut ici, à garder tel quel) ; `API_BASE_URL` doit alors pointer vers ce domaine public, pas vers `localhost`. Vérifier : `curl https://<API_BASE_URL>/health` doit répondre `{"ok":true}`. Le code fait déjà confiance à UN SEUL reverse proxy en amont (`app.set('trust proxy', 1)`, voir `src/api/server.ts`) pour que le rate-limiting fonctionne par visiteur — si tu chaînes plusieurs proxys avant l'API, ajuster ce nombre en conséquence.
+
+   Un modèle de config est fourni dans `deploy/nginx-roxwood-network-famille.conf` (reverse proxy nginx — c'est ce que la prod de ce projet utilise réellement) :
+   ```bash
+   sudo apt install -y nginx certbot python3-certbot-nginx
+   sudo cp deploy/nginx-roxwood-network-famille.conf /etc/nginx/sites-available/roxwood-network-famille
+   sudo nano /etc/nginx/sites-available/roxwood-network-famille   # remplacer server_name par le vrai sous-domaine
+   sudo ln -s /etc/nginx/sites-available/roxwood-network-famille /etc/nginx/sites-enabled/
+   sudo nginx -t && sudo systemctl reload nginx
+   sudo certbot --nginx -d bot.exemple.fr   # obtient le certificat ET modifie le fichier pour ajouter le bloc HTTPS
+   ```
+   nginx n'ayant pas de renouvellement/émission de certificat intégré (contrairement à Caddy, une alternative valable si tu préfères une config plus courte — `bot.exemple.fr { reverse_proxy 127.0.0.1:3001 }` suffit, certificat automatique), `certbot` installe normalement un timer systemd de renouvellement automatique — vérifier avec `sudo certbot renew --dry-run`.
+
+Techniquement toujours désactivable (`API_PORT` omis de `.env` → aucun port ouvert, comportement inchangé) si vraiment aucun site externe n'est prévu pour ce déploiement — mais pour un déploiement standard de ce bot, la mise en place ci-dessus fait partie de l'installation, pas une étape à part.
+
 ---
 
 ## Plusieurs guildes — multi-tenant
@@ -152,27 +174,9 @@ Un admin peut aussi consulter (`/config site-externe list`) ou retirer (`/config
 
 ---
 
-## Interopérabilité — API REST (optionnelle)
+## Interopérabilité — API REST
 
-Une petite API REST **en lecture seule**, dans le même process que le bot (`src/api/`), permet à un outil externe (ex. un site web) de récupérer les données du bot. **Désactivée par défaut** — n'existe que si `API_PORT` est défini dans `.env` ; sinon aucun port n'est ouvert, comportement inchangé.
-
-### Mise en place
-
-1. Dans le [Discord Developer Portal](https://discord.com/developers/applications), onglet **OAuth2** de l'application du bot : noter le **Client Secret**, et ajouter une **Redirect URI** = `<API_BASE_URL>/auth/callback` (ex. `http://localhost:3001/auth/callback` en dev, l'URL publique réelle en prod).
-2. Renseigner dans `.env` : `API_PORT`, `DISCORD_CLIENT_SECRET`, `API_JWT_SECRET` (une longue chaîne aléatoire, à générer une fois), `API_BASE_URL` — voir `.env.example`. Rien à renseigner de plus par site externe : chaque **serveur Discord** configure le sien directement depuis Discord, voir `/config site-externe set` (chapitre "Plusieurs guildes" ci-dessus).
-3. Démarrer/redémarrer le bot : `✅ API REST en écoute sur le port <API_PORT>` dans les logs confirme que c'est actif.
-4. Le serveur Express écoute sur toutes les interfaces (`0.0.0.0:<API_PORT>`, pas seulement en local) — en prod, choisir un sous-domaine (ex. `bot.exemple.fr`) et pointer son enregistrement DNS **A**/**AAAA** vers l'IP publique du serveur (préalable indispensable : sans DNS déjà propagé, l'émission du certificat ci-dessous échoue). Une fois le DNS actif, mettre un reverse proxy HTTPS devant l'API et **restreindre `<API_PORT>`** pour qu'il ne soit joignable que depuis la machine elle-même, seul le port 443 exposé publiquement (n'ouvrir que 443 au pare-feu en systemd/bare-metal ; en Docker, le pare-feu ne suffit PAS — Docker contourne `ufw`/iptables classique en publiant un port, `docker-compose.yml` bind déjà `<API_PORT>` sur `127.0.0.1` par défaut ici, à garder tel quel) ; `API_BASE_URL` doit alors pointer vers ce domaine public, pas vers `localhost`. Vérifier : `curl https://<API_BASE_URL>/health` doit répondre `{"ok":true}`. Le code fait déjà confiance à UN SEUL reverse proxy en amont (`app.set('trust proxy', 1)`, voir `src/api/server.ts`) pour que le rate-limiting fonctionne par visiteur — si tu chaînes plusieurs proxys avant l'API, ajuster ce nombre en conséquence.
-
-   Un modèle de config est fourni dans `deploy/nginx-roxwood-network-famille.conf` (reverse proxy nginx — c'est ce que la prod de ce projet utilise réellement) :
-   ```bash
-   sudo apt install -y nginx certbot python3-certbot-nginx
-   sudo cp deploy/nginx-roxwood-network-famille.conf /etc/nginx/sites-available/roxwood-network-famille
-   sudo nano /etc/nginx/sites-available/roxwood-network-famille   # remplacer server_name par le vrai sous-domaine
-   sudo ln -s /etc/nginx/sites-available/roxwood-network-famille /etc/nginx/sites-enabled/
-   sudo nginx -t && sudo systemctl reload nginx
-   sudo certbot --nginx -d bot.exemple.fr   # obtient le certificat ET modifie le fichier pour ajouter le bloc HTTPS
-   ```
-   nginx n'ayant pas de renouvellement/émission de certificat intégré (contrairement à Caddy, une alternative valable si tu préfères une config plus courte — `bot.exemple.fr { reverse_proxy 127.0.0.1:3001 }` suffit, certificat automatique), `certbot` installe normalement un timer systemd de renouvellement automatique — vérifier avec `sudo certbot renew --dry-run`.
+Une petite API REST **en lecture seule**, dans le même process que le bot (`src/api/`), permet à un outil externe (ex. un site web) de récupérer les données du bot. Mise en place dans le cadre de l'installation standard — voir [Installation → API REST](#api-rest) pour l'OAuth2, les variables `.env` et le reverse proxy. Référence ci-dessous : authentification et endpoints disponibles.
 
 ### Authentification — connexion via Discord
 
@@ -390,7 +394,7 @@ roxwood-network-famille/
 │   │   ├── taxes.ts
 │   │   ├── armurerie.ts
 │   │   └── ventes.ts
-│   └── api/                    # API REST optionnelle (voir "Interopérabilité")
+│   └── api/                    # API REST (voir "Interopérabilité")
 │       ├── server.ts
 │       ├── auth.ts             # Connexion via Discord (OAuth2)
 │       ├── week.ts             # Résolution de ?week= (semaine ISO 8601)

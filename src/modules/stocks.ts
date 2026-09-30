@@ -153,7 +153,12 @@ async function fetchMessagesAfter(channel: Extract<TextBasedChannel, { messages:
     if (!batch.size) break;
 
     const sorted = [...batch.values()].sort((a, b) => a.createdTimestamp - b.createdTimestamp);
-    collected.push(...sorted);
+    // Un message humain ne doit jamais être rejoué comme un mouvement de
+    // stock, même en historique (voir `handleMessage`, le point d'entrée
+    // temps réel, qui applique la même règle) — filtré ici, au point de
+    // collecte unique de resync/rattrapage, pour ne pas dupliquer la
+    // vérification à chaque appelant.
+    collected.push(...sorted.filter(m => m.author.bot));
 
     if (batch.size < 100) break;
     cursor = sorted[sorted.length - 1].id;

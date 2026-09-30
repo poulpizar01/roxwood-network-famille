@@ -24,5 +24,12 @@ RUN chmod +x docker-entrypoint.sh
 
 ENV NODE_ENV=production
 
+# Utilisateur non-root (déjà présent dans l'image officielle node:20-alpine,
+# uid/gid 1000) — même exigence que le service systemd (voir
+# deploy/roxwood-network-famille.service, User=). Le process n'écrit rien sur
+# le disque à l'exécution (logs sur stdout, tout le reste passe par le
+# réseau/la DB) : aucun droit d'écriture supplémentaire requis.
+USER node
+
 ENTRYPOINT ["./docker-entrypoint.sh"]
 CMD ["node", "dist/index.js"]

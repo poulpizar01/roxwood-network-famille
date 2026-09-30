@@ -192,11 +192,14 @@ client.once('clientReady', async (readyClient) => {
     const braquageActions = Object.entries(configStore.get(guildId).ACTIVITY_TYPES)
       .filter(([, cfg]) => cfg.enabled && cfg.braquageWeeklyLimit != null)
       .map(([key]) => key);
-    const before: Record<string, number> = {};
-    for (const action of braquageActions) before[action] = await db.getBraquageCount(guildId, action);
+    // getBraquageCounts (groupBy, 1 requête pour TOUTES les actions) plutôt
+    // que getBraquageCount en boucle (1 par action, ×2 pour avant/après) —
+    // même fonction que quotas.ts pour le même genre d'affichage groupé.
+    const before = await db.getBraquageCounts(guildId, braquageActions);
     await db.cleanOldBraquages();
+    const after = await db.getBraquageCounts(guildId, braquageActions);
     for (const action of braquageActions) {
-      if ((await db.getBraquageCount(guildId, action)) < before[action]) {
+      if ((after[action] ?? 0) < (before[action] ?? 0)) {
         await alertes.postBraquageAlert(client, guildId, action);
       }
     }
@@ -304,6 +307,13 @@ client.on('messageCreate', async (message) => {
 
   const channelsBotAutorises = [...c.CHANNELS.logs_coffres, ...c.CHANNELS.logs_coffres_admin, c.CHANNELS.logs_garages].filter((id): id is string => !!id);
   if (message.author.bot && !channelsBotAutorises.includes(message.channelId)) return;
+  // Un message humain, même posté DANS logs_coffres/logs_garages, ne doit
+  // JAMAIS déclencher de mouvement de stock/état véhicule — seul le bot de
+  // jeu FiveM (ou son webhook) le peut : un membre avec la permission
+  // d'écrire dans ces salons pourrait sinon forger un message texte
+  // (`"Joueur a déposé 9999 x Argent Sale"`) et faire créditer une fausse
+  // vente/gonfler le stock.
+  if (!message.author.bot) return;
 
   await stocks.handleMessage(message).catch(err => console.error('[stocks] messageCreate :', (err as Error).message));
   await garages.handleMessage(message).catch(err => console.error('[garages] messageCreate :', (err as Error).message));
@@ -393,6 +403,14 @@ if (!process.env.TOKEN) {
 }
 if (!process.env.CLIENT_ID) {
   console.error('❌ CLIENT_ID manquant dans le fichier .env');
+  process.exit(1);
+}
+// `new PrismaClient()` (voir db.ts, importé plus haut) ne lève rien à la
+// construction si `DATABASE_URL` est absente — l'erreur ne remonterait qu'à
+// la première requête, depuis un handler async profondément imbriqué, sans
+// message clair. Autant l'attraper ici, au même endroit que TOKEN/CLIENT_ID.
+if (!process.env.DATABASE_URL) {
+  console.error('❌ DATABASE_URL manquant dans le fichier .env');
   process.exit(1);
 }
 // Vérifié ICI plutôt que seulement au moment de startApiServer() (appelée

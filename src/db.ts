@@ -782,9 +782,9 @@ export async function getActiveCooldowns(guildId: string): Promise<Array<{ userI
 }
 
 /** Cooldowns d'une guilde expirés dont l'alerte de fin n'a pas encore été envoyée. */
-export async function getExpiredUnnotifiedCooldowns(guildId: string) {
+export async function getExpiredUnnotifiedCooldowns(guildId: string): Promise<Array<{ userId: string; action: string; expiresAt: number }>> {
   const rows = await prisma.cooldown.findMany({ where: { guildId, expiresAt: { lte: new Date() }, notified: false } });
-  return rows.map(r => ({ ...r, expires_at: toMs(r.expiresAt) }));
+  return rows.map(r => ({ userId: r.userId, action: r.action, expiresAt: toMs(r.expiresAt) }));
 }
 
 /** Marque un cooldown comme déjà notifié (évite une double alerte de fin de cooldown). */
