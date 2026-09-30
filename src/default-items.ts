@@ -50,6 +50,15 @@ const DEFAULT_ITEMS: db.ItemInput[] = [
   // Simple item de stock, sans groupe : affiché dans l'armurerie via
   // MUNITIONS_SMG_ITEM (stock brut uniquement, pas de quota fabrication/vente).
   { name: MUNITIONS_SMG_ITEM, display_order: -1 },
+  // Butin/outils de casse — simple suivi de stock, pas de vente:true (pas
+  // déclarables via le circuit de vente PNJ, contrairement aux drogues).
+  { name: 'Or Rouge' },
+  { name: 'Or Bleu' },
+  { name: 'Jetons ETI' },
+  { name: 'Outil de crochetage' },
+  { name: 'Boîtier de piratage' },
+  { name: 'Perceuse' },
+  { name: 'Carte Piratage Fleeca' },
   // Drogues vendables aux PNJ sans lien avec un labo particulier (variantes
   // de pureté/formes commerciales) — noms vérifiés avec l'utilisateur avant
   // ajout (piège n°1).
