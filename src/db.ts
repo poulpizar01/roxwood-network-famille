@@ -652,6 +652,16 @@ export async function getMunitionsFabriqueesDepuis(guildId: string, sinceTs: num
   return agg._sum.quantite ?? 0;
 }
 
+/** Déclarations de fabrication de munitions depuis `sinceTs` (détail ligne par ligne, pas juste le total), du plus récent au plus ancien — pas de limite, contrairement à {@link getFabricationMunitionsHistorique}. Pendant de {@link getMunitionsVentesDepuis} côté fabrication. */
+export async function getFabricationMunitionsDepuis(guildId: string, sinceTs: number) {
+  const rows = await prisma.transaction.findMany({
+    where: { guildId, action: 'fabrication_munitions', deleted: false, timestamp: { gte: new Date(sinceTs) } },
+    orderBy: { timestamp: 'desc' },
+    select: { timestamp: true, quantite: true, username: true, userId: true },
+  });
+  return rows.map(r => ({ ...r, timestamp: toMs(r.timestamp) }));
+}
+
 /** Enregistre une vente de munitions. */
 export async function addMunitionVente(guildId: string, data: { vendeur_id: string; vendeur_username?: string; acheteur_id: string; quantite: number; prix: number }): Promise<void> {
   await prisma.munitionVente.create({
@@ -691,7 +701,7 @@ export async function getFabricationMunitionsHistorique(guildId: string, limite 
     where: { guildId, action: 'fabrication_munitions', deleted: false },
     orderBy: { timestamp: 'desc' },
     take: limite,
-    select: { timestamp: true, quantite: true, username: true },
+    select: { timestamp: true, quantite: true, username: true, userId: true },
   });
   return rows.map(r => ({ ...r, timestamp: toMs(r.timestamp) }));
 }
@@ -765,10 +775,10 @@ export async function setCooldown(guildId: string, userId: string, action: strin
   });
 }
 
-/** Tous les cooldowns encore actifs (non expirés) d'une guilde. */
-export async function getActiveCooldowns(guildId: string) {
+/** Tous les cooldowns encore actifs (non expirés) d'une guilde — voir `/api/quotas/cooldowns`, seule utilisatrice actuelle. */
+export async function getActiveCooldowns(guildId: string): Promise<Array<{ userId: string; action: string; expiresAt: number }>> {
   const rows = await prisma.cooldown.findMany({ where: { guildId, expiresAt: { gt: new Date() } } });
-  return rows.map(r => ({ ...r, expires_at: toMs(r.expiresAt) }));
+  return rows.map(r => ({ userId: r.userId, action: r.action, expiresAt: toMs(r.expiresAt) }));
 }
 
 /** Cooldowns d'une guilde expirés dont l'alerte de fin n'a pas encore été envoyée. */
@@ -1294,6 +1304,12 @@ export async function getVenteDetailAllUsers(guildId: string, sinceTs: number, u
 export async function getVehiculeEtat(guildId: string, plaque: string) {
   const row = await prisma.vehicule.findUnique({ where: { guildId_plaque: { guildId, plaque } } });
   return row ? { ...row, timestamp: toMs(row.timestamp) } : undefined;
+}
+
+/** Véhicules actuellement sortis et pas encore rangés (`joueur` non `null`, voir `clearVehiculeEtat`) — pour `/api/garages/vehicles`, le plus récemment sorti en premier. */
+export async function getVehiculesSortis(guildId: string) {
+  const rows = await prisma.vehicule.findMany({ where: { guildId, joueur: { not: null } }, orderBy: { timestamp: 'desc' } });
+  return rows.map(r => ({ ...r, timestamp: toMs(r.timestamp) }));
 }
 
 /** Fixe (upsert) le responsable courant d'un véhicule. */

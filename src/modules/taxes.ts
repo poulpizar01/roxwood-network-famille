@@ -172,6 +172,40 @@ const ZONE_BY_KEY = new Map<string, string>(ALL_ZONES.map(zone => [slugifyZone(z
 export const ZONE_TYPE_KEYS: readonly string[] = [...ZONE_BY_KEY.keys()];
 
 /**
+ * Référentiel taxes pour le site externe (`GET /api/taxes/types`) : le tier
+ * courant, TOUS les types fixes et TOUTES les zones connues (pas seulement
+ * ceux du tier courant — un type/une zone sorti du barème après un
+ * changement de tier doit rester nommable pour une taxe orpheline existante,
+ * même logique que {@link currentTypesRecherche}), chacun avec `available`
+ * indiquant s'il est proposé à la création pour le tier ACTUEL. `vente` est
+ * toujours `available: true` (universelle, voir docstring de fichier).
+ */
+export function getTaxesReferentiel(guildId: string): {
+  tier: { key: GroupTier; label: string };
+  fixed: Array<{ key: FixedType; label: string; available: boolean }>;
+  zones: Array<{ key: string; label: string; available: boolean }>;
+} {
+  const tierKey = configStore.get(guildId).TYPE_GROUPE;
+  const tierLabel = configStore.GROUP_TIERS.find(t => t.key === tierKey)?.label ?? tierKey;
+  const fixesActuelles = new Set<FixedType>(currentTaxesFixes(guildId));
+  const zonesActuelles = new Set<string>(currentZones(guildId));
+
+  return {
+    tier: { key: tierKey, label: tierLabel },
+    fixed: FIXED_TYPES.map(key => ({
+      key,
+      label: FIXED_TYPE_META[key].title.replace(/^Taxe /, ''),
+      available: key === 'vente' || fixesActuelles.has(key),
+    })),
+    zones: ALL_ZONES.map(zone => ({
+      key: slugifyZone(zone),
+      label: zone,
+      available: zonesActuelles.has(zone),
+    })),
+  };
+}
+
+/**
  * Types proposés dans les select menus "Rechercher"/"Supprimer une taxe" :
  * le barème du tier courant, complété par tout type ayant une taxe active
  * en base mais sorti de ce barème (voir docstring de fichier — sinon une

@@ -15,14 +15,15 @@
  * `/` et `/search` ne renvoient que les infos générales d'une taxe
  * (`db.findTaxes`/`mapTaxeSummary` dans db.ts, sans `telephone`/
  * `motDePasse`) — seul `/:id` (détail d'UNE taxe précise, `db.getTaxe`)
- * renvoie tout. Route dynamique `/:id` déclarée en DERNIER, après `/search`
- * — même principe que `/api/quotas`/`/api/ventes` (`:userId` toujours en
- * dernier), sinon Express l'interpréterait comme un paramètre plutôt qu'une
- * route statique.
+ * renvoie tout. `/types` (référentiel, voir plus bas) est une route statique
+ * de plus. Route dynamique `/:id` déclarée en DERNIER, après `/search` et
+ * `/types` — même principe que `/api/quotas`/`/api/ventes` (`:userId`
+ * toujours en dernier), sinon Express l'interpréterait comme un paramètre
+ * plutôt qu'une route statique.
  */
 import { Router } from 'express';
 import * as db from '../../db';
-import { FIXED_TYPES, ZONE_TYPE_KEYS, isZoneType } from '../../modules/taxes';
+import { FIXED_TYPES, ZONE_TYPE_KEYS, isZoneType, getTaxesReferentiel } from '../../modules/taxes';
 
 const router = Router();
 
@@ -86,6 +87,17 @@ router.get('/search', async (req, res) => {
 
   const query = typeof req.query.q === 'string' ? req.query.q : undefined;
   res.json(await db.findTaxes(req.apiUser!.guildId, { types, query, limit: 25 }));
+});
+
+/**
+ * GET /api/taxes/types — référentiel (tier courant, types fixes et zones
+ * connus avec leur libellé, `available` pour le tier ACTUEL) — évite au site
+ * externe de dupliquer en dur `FIXED_TYPE_META`/`ZONES_BY_TIER`. Voir
+ * `taxes.getTaxesReferentiel`. Déclaré avant `/:id`, sinon Express
+ * l'interpréterait comme une recherche du type "types".
+ */
+router.get('/types', async (req, res) => {
+  res.json(getTaxesReferentiel(req.apiUser!.guildId));
 });
 
 /**

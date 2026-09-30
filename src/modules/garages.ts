@@ -28,8 +28,8 @@ import * as configStore from '../config-store';
 import { isAdmin } from '../permissions';
 import { buildChunkedEmbeds } from '../embed-chunks';
 
-/** Amende indicative par mise en fourrière — valeur fixe, ne bouge jamais. */
-const MONTANT_FOURRIERE = 350;
+/** Amende indicative par mise en fourrière — valeur fixe, ne bouge jamais. Exportée pour `/api/garages/impounds`, qui réutilise cette même valeur plutôt que de la dupliquer. */
+export const MONTANT_FOURRIERE = 350;
 
 const RE_SORTIE_FOURRIERE = /^\*\*(.+?)\*\* a sorti un\(e\) (.+?) de la fourrière ?: \*\*(.+?)\*\*$/im;
 const RE_SORTIE_GARAGE = /^\*\*(.+?)\*\* a sorti un\(e\) (.+?) (?:du garage \d+|de son garage public) ?: \*\*(.+?)\*\*$/im;

@@ -352,6 +352,35 @@ async function getSalaryRanking(guildId: string): Promise<Array<{ userId: string
   return results.sort((a, b) => b.salaire - a.salaire);
 }
 
+/**
+ * Slots de braquage restants par activité, à l'échelle du GROUPE (limite
+ * hebdomadaire glissante sur 7 jours, partagée par tous les membres — voir
+ * `BRAQUAGE_LIMITS_BY_TIER`/`ActivityTypeConfig.braquageWeeklyLimit`), pour
+ * `/api/quotas/braquages`. Mêmes fonctions `db` que le panneau Discord
+ * (`buildMainEmbed`/`buildMinuterieEmbed`) mais un calcul dédié qui retourne
+ * une structure exploitable plutôt que des lignes de texte formatées — même
+ * logique de séparation que les fonctions `*ForRange` ci-dessous (un chemin
+ * de calcul propre à l'API, pas fusionné au panneau live).
+ */
+export async function getBraquageSummary(guildId: string): Promise<Array<{ action: string; label: string; limit: number; used: number; nextSlotAt: number | null }>> {
+  const activityTypes = configStore.get(guildId).ACTIVITY_TYPES;
+  const entries = Object.entries(activityTypes)
+    .filter(([, cfg]) => cfg.enabled && cfg.braquageWeeklyLimit != null)
+    .sort((a, b) => a[1].displayOrder - b[1].displayOrder);
+  const counts = await db.getBraquageCounts(guildId, entries.map(([key]) => key));
+
+  return Promise.all(entries.map(async ([key, cfg]) => {
+    const limit = cfg.braquageWeeklyLimit!;
+    const used = counts[key] ?? 0;
+    let nextSlotAt: number | null = null;
+    if (used >= limit) {
+      const oldest = await db.getOldestBraquage(guildId, key);
+      if (oldest) nextSlotAt = oldest + 7 * 24 * 60 * 60 * 1000;
+    }
+    return { action: key, label: cfg.label, limit, used, nextSlotAt };
+  }));
+}
+
 // ─── RECONSTRUCTION SUR UNE PLAGE (API — semaines passées) ────────────────────
 //
 // Les fonctions au-dessus (getUserQuotaSummary, getAllUserQuotaSummaries,

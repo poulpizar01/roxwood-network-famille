@@ -44,6 +44,7 @@ import taxesRouter from './routes/taxes';
 import armurerieRouter from './routes/armurerie';
 import ventesRouter from './routes/ventes';
 import usersRouter from './routes/users';
+import garagesRouter from './routes/garages';
 
 /** Démarre l'API REST. N'a d'effet que si `API_PORT` est défini dans `.env` — absent = API désactivée, déploiement existant inchangé. */
 export function startApiServer(client: Client): void {
@@ -98,6 +99,7 @@ export function startApiServer(client: Client): void {
   api.use('/taxes', taxesRouter);
   api.use('/armurerie', armurerieRouter);
   api.use('/ventes', ventesRouter);
+  api.use('/garages', garagesRouter);
   app.use('/api', api);
 
   // Signature à 4 paramètres obligatoire : Express reconnaît un middleware

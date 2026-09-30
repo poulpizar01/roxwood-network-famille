@@ -6,10 +6,10 @@
  * total global (`/`, `db.getAllStocks`) est toujours la somme des coffres,
  * recalculée à la lecture — jamais un compteur séparé qui pourrait diverger.
  *
- * Route statique `/history`/`/channels` déclarées AVANT `/:channelId` —
- * sinon Express interpréterait `/stocks/history` comme une recherche du
- * coffre "history" (même principe que `/api/quotas`, `/:userId` toujours en
- * dernier).
+ * Route statique `/history`/`/channels`/`/items` déclarées AVANT
+ * `/:channelId` — sinon Express interpréterait `/stocks/history` comme une
+ * recherche du coffre "history" (même principe que `/api/quotas`, `/:userId`
+ * toujours en dernier).
  *
  * Chaque route filtre par `req.apiUser.guildId` (posé par `requireAuth`,
  * voir src/api/auth.ts) — jamais les données d'une autre guilde.
@@ -66,6 +66,16 @@ router.get('/channels', async (req, res) => {
     ? (await db.getChannelsWithLabel(apiUser.guildId, 'logs_coffres_admin')).map(c => ({ ...c, role: 'logs_coffres_admin' as const }))
     : [];
   res.json([...normaux, ...admin]);
+});
+
+/**
+ * GET /api/stocks/items — catalogue des objets suivis (`db.getAllItems`),
+ * dans l'ordre du Stock Général (`displayOrder`) — pour que le site externe
+ * groupe/ordonne comme le panneau Discord au lieu de dupliquer la liste en
+ * dur. Déclarée avant `/:channelId`.
+ */
+router.get('/items', async (req, res) => {
+  res.json(await db.getAllItems(req.apiUser!.guildId));
 });
 
 /**

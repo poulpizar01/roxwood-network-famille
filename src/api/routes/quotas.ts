@@ -8,9 +8,13 @@
  * appliqués sont ceux ACTUELLEMENT configurés, pas historisés.
  *
  * Ordre des routes : l'endpoint générique (`/`) en premier, puis les plus
- * spécifiques (`/config`, `/summary`, `/ranking`, `/pay`), et `/:userId` (le paramètre
- * dynamique) toujours en dernier — sinon Express interpréterait
- * `/quotas/ranking` comme une recherche de l'utilisateur "ranking".
+ * spécifiques (`/config`, `/summary`, `/ranking`, `/pay`, `/cooldowns`,
+ * `/braquages`), et `/:userId` (le paramètre dynamique) toujours en dernier
+ * — sinon Express interpréterait `/quotas/ranking` comme une recherche de
+ * l'utilisateur "ranking". `/cooldowns` et `/braquages` n'acceptent PAS
+ * `?week=` (contrairement au reste du groupe) : ce sont des états courants
+ * (cooldown en cours, fenêtre glissante de 7 jours), pas des totaux sur une
+ * plage — pas de notion de "semaine ISO passée" pour eux.
  *
  * Chaque route filtre par `req.apiUser.guildId` (posé par `requireAuth`,
  * voir src/api/auth.ts) — jamais les données d'une autre guilde.
@@ -22,6 +26,7 @@
  * équivalentes du panneau Discord (classement/bilan visibles par tous).
  */
 import { Router } from 'express';
+import * as db from '../../db';
 import * as quotas from '../../modules/quotas';
 import * as configStore from '../../config-store';
 import { resolveWeekRange } from '../week';
@@ -93,6 +98,31 @@ router.get('/pay', async (req, res) => {
   const range = await resolveWeekRange(req, res, guildId);
   if (!range) return;
   res.json(await quotas.getAllUserPayForRange(guildId, range));
+});
+
+/**
+ * GET /api/quotas/cooldowns — cooldowns personnels actuellement en cours
+ * (`db.getActiveCooldowns`). Un non-admin ne reçoit que les siens, même
+ * principe que `/api/users` — pas de route `:userId` dédiée ici, juste un
+ * filtre sur la réponse (`requireAuth` seul suffit).
+ */
+router.get('/cooldowns', async (req, res) => {
+  const apiUser = req.apiUser!;
+  const activityTypes = configStore.get(apiUser.guildId).ACTIVITY_TYPES;
+  const rows = await db.getActiveCooldowns(apiUser.guildId);
+  const visibles = apiUser.isAdmin ? rows : rows.filter(r => r.userId === apiUser.id);
+  res.json(visibles.map(r => ({ userId: r.userId, action: r.action, label: activityTypes[r.action]?.label ?? r.action, expiresAt: r.expiresAt })));
+});
+
+/**
+ * GET /api/quotas/braquages — slots de braquage restants par activité, à
+ * l'échelle du GROUPE (limite hebdomadaire glissante sur 7 jours, voir
+ * `quotas.getBraquageSummary`) — ouvert à tout membre, comme le panneau
+ * Discord. Pas de `?week=` : contrairement aux autres routes de ce groupe,
+ * la fenêtre glissante de 7 jours n'a pas de notion de "semaine ISO passée".
+ */
+router.get('/braquages', async (req, res) => {
+  res.json(await quotas.getBraquageSummary(req.apiUser!.guildId));
 });
 
 /** GET /api/quotas/pay/:userId?week= — paie d'un joueur précis. Réservé à ce joueur lui-même (ou un admin), voir `requireSelfOrAdmin`. */

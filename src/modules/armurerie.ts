@@ -48,52 +48,60 @@ import { buildChunkedEmbeds } from '../embed-chunks';
  * Types d'armes proposés à l'ajout — liste fixe (voir docstring de fichier).
  * Chaque modèle est son propre type (pas de regroupement par catégorie
  * d'arme) : c'est ce qui détermine le groupement par section dans l'embed
- * armurerie (voir `buildArmurierieEmbed`). Plus de 25 entrées → l'ajout d'une
- * arme passe par le pattern "modal de recherche avant select" (limite
- * Discord de 25 options par menu, voir `handleButton`/`handleModal`).
+ * armurerie (voir `buildArmurierieEmbed`). `category` n'est qu'un libellé
+ * informatif (exposé via `/api/armurerie/types` pour le site externe) — le
+ * groupement affiché dans l'embed reste par `key`/`label` individuel, jamais
+ * recalculé depuis `category`. Plus de 25 entrées → l'ajout d'une arme passe
+ * par le pattern "modal de recherche avant select" (limite Discord de 25
+ * options par menu, voir `handleButton`/`handleModal`).
  */
-const ARME_TYPES: Array<{ key: string; label: string }> = [
+const ARME_TYPES: Array<{ key: string; label: string; category: string }> = [
   // Armes de poing
-  { key: 'pistolet_artisanal', label: 'Pistolet artisanal' },
-  { key: 'sns', label: 'SNS' },
-  { key: 'sns_pico', label: 'SNS PICO' },
-  { key: 'colt', label: 'Colt' },
-  { key: 'p88', label: 'P88' },
-  { key: 'beretta', label: 'Beretta' },
-  { key: 'glock', label: 'Glock' },
-  { key: 'glock_17', label: 'Glock 17' },
-  { key: 'pistolet_en_ceramique', label: 'Pistolet en céramique' },
-  { key: 'calibre_50', label: 'Calibre 50' },
-  { key: 'berreta_mk2', label: 'Berreta (Pistolet MK2)' },
-  { key: 'pistolet_lourd', label: 'Pistolet Lourd' },
-  { key: 'revolver', label: 'Revolver' },
+  { key: 'pistolet_artisanal', label: 'Pistolet artisanal', category: 'Armes de poing' },
+  { key: 'sns', label: 'SNS', category: 'Armes de poing' },
+  { key: 'sns_pico', label: 'SNS PICO', category: 'Armes de poing' },
+  { key: 'colt', label: 'Colt', category: 'Armes de poing' },
+  { key: 'p88', label: 'P88', category: 'Armes de poing' },
+  { key: 'beretta', label: 'Beretta', category: 'Armes de poing' },
+  { key: 'glock', label: 'Glock', category: 'Armes de poing' },
+  { key: 'glock_17', label: 'Glock 17', category: 'Armes de poing' },
+  { key: 'pistolet_en_ceramique', label: 'Pistolet en céramique', category: 'Armes de poing' },
+  { key: 'calibre_50', label: 'Calibre 50', category: 'Armes de poing' },
+  { key: 'berreta_mk2', label: 'Berreta (Pistolet MK2)', category: 'Armes de poing' },
+  { key: 'pistolet_lourd', label: 'Pistolet Lourd', category: 'Armes de poing' },
+  { key: 'revolver', label: 'Revolver', category: 'Armes de poing' },
   // Fusils à pompe
-  { key: 'fusil_a_canon_scie', label: 'Fusil à canon scié' },
-  { key: 'fusil_a_pompe', label: 'Fusil à pompe' },
-  { key: 'striker_12', label: 'Striker 12' },
-  { key: 'fusil_a_pompe_dassaut', label: "Fusil à pompe d'assaut" },
-  { key: 'fusil_a_double_canon', label: 'Fusil à double canon' },
+  { key: 'fusil_a_canon_scie', label: 'Fusil à canon scié', category: 'Fusils à pompe' },
+  { key: 'fusil_a_pompe', label: 'Fusil à pompe', category: 'Fusils à pompe' },
+  { key: 'striker_12', label: 'Striker 12', category: 'Fusils à pompe' },
+  { key: 'fusil_a_pompe_dassaut', label: "Fusil à pompe d'assaut", category: 'Fusils à pompe' },
+  { key: 'fusil_a_double_canon', label: 'Fusil à double canon', category: 'Fusils à pompe' },
   // Armes automatiques
-  { key: 'mini_smg', label: 'Mini SMG' },
-  { key: 'micro_smg', label: 'Micro SMG' },
-  { key: 'tec9', label: 'TEC9' },
-  { key: 'mini_uzi_tactic', label: 'Mini Uzi Tactic' },
-  { key: 'mac_10', label: 'MAC-10' },
-  { key: 'mp5k', label: 'Mp5k' },
-  { key: 'mitraillette_tactique', label: 'Mitraillette Tactique' },
-  { key: 'vesper_9', label: 'Vesper 9' },
-  { key: 'vortex_smg', label: 'Vortex SMG' },
+  { key: 'mini_smg', label: 'Mini SMG', category: 'Armes automatiques' },
+  { key: 'micro_smg', label: 'Micro SMG', category: 'Armes automatiques' },
+  { key: 'tec9', label: 'TEC9', category: 'Armes automatiques' },
+  { key: 'mini_uzi_tactic', label: 'Mini Uzi Tactic', category: 'Armes automatiques' },
+  { key: 'mac_10', label: 'MAC-10', category: 'Armes automatiques' },
+  { key: 'mp5k', label: 'Mp5k', category: 'Armes automatiques' },
+  { key: 'mitraillette_tactique', label: 'Mitraillette Tactique', category: 'Armes automatiques' },
+  { key: 'vesper_9', label: 'Vesper 9', category: 'Armes automatiques' },
+  { key: 'vortex_smg', label: 'Vortex SMG', category: 'Armes automatiques' },
   // Armes lourdes
-  { key: 'fusil_compact', label: 'Fusil compact' },
-  { key: 'ump_45', label: 'UMP 45' },
-  { key: 'sg552', label: 'SG552' },
-  { key: 'fusil_lourd', label: 'Fusil Lourd' },
-  { key: 'thompson', label: 'Thompson' },
-  { key: 'ak47', label: 'AK47' },
-  { key: 'ump_45_chr', label: 'UMP 45 CHR' },
-  { key: 'mk_priss', label: 'Mk Priss' },
-  { key: 'ar_7', label: 'AR 7' },
+  { key: 'fusil_compact', label: 'Fusil compact', category: 'Armes lourdes' },
+  { key: 'ump_45', label: 'UMP 45', category: 'Armes lourdes' },
+  { key: 'sg552', label: 'SG552', category: 'Armes lourdes' },
+  { key: 'fusil_lourd', label: 'Fusil Lourd', category: 'Armes lourdes' },
+  { key: 'thompson', label: 'Thompson', category: 'Armes lourdes' },
+  { key: 'ak47', label: 'AK47', category: 'Armes lourdes' },
+  { key: 'ump_45_chr', label: 'UMP 45 CHR', category: 'Armes lourdes' },
+  { key: 'mk_priss', label: 'Mk Priss', category: 'Armes lourdes' },
+  { key: 'ar_7', label: 'AR 7', category: 'Armes lourdes' },
 ];
+
+/** Types d'armes, dans l'ordre défini — voir `/api/armurerie/types`. */
+export function getArmeTypes(): ReadonlyArray<{ key: string; label: string; category: string }> {
+  return ARME_TYPES;
+}
 
 /** Plafond indicatif hebdomadaire de fabrication — valeur fixe, ne bouge jamais. La vente n'a volontairement aucun plafond (juste le total suivi, voir buildArmurierieEmbed). */
 const MUNITIONS_FABRICATION_QUOTA_HEBDO = 5000;
