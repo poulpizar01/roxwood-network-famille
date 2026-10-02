@@ -9,7 +9,7 @@ Contrairement à un bot figé pour un serveur précis, **toute la structure mét
 ## Sommaire
 
 - [Prérequis](#prérequis) ([Créer l'application Discord](#créer-lapplication-discord))
-- [Installation](#installation) ([Via systemd](#via-systemd-production-sans-docker), [Via Docker](#via-docker), [API REST](#api-rest))
+- [Installation](#installation) ([Via Docker (recommandé)](#via-docker-recommandé), [Sans Docker (systemd)](#sans-docker-systemd), [Développement](#développement), [API REST](#api-rest))
 - [Plusieurs guildes — multi-tenant](#plusieurs-guildes--multi-tenant)
 - [Interopérabilité — API REST](#interopérabilité--api-rest)
 - [Configuration — `/config`](#configuration--tout-se-fait-depuis-discord-via-config)
@@ -23,8 +23,8 @@ Contrairement à un bot figé pour un serveur précis, **toute la structure mét
 
 ## Prérequis
 
-- **Node.js** ≥ 18
-- **PostgreSQL** ≥ 14 (local, hébergé — Supabase, Neon, Railway, RDS… — ou via Docker, voir plus bas)
+- **Docker** avec Docker Compose (installation recommandée, voir [Via Docker](#via-docker-recommandé)) — fournit Node.js et PostgreSQL, rien d'autre à installer sur l'hôte.
+- Sans Docker uniquement : **Node.js** ≥ 18 et **PostgreSQL** ≥ 14 (local ou hébergé — Supabase, Neon, Railway, RDS…).
 - Une application Discord avec un bot configuré (voir juste en dessous) — token, permissions et intents privilégiés.
 
 ### Créer l'application Discord
@@ -47,6 +47,40 @@ Contrairement à un bot figé pour un serveur précis, **toute la structure mét
 ---
 
 ## Installation
+
+> **Docker est le mode de déploiement recommandé en production.** systemd reste pleinement supporté (voir [Sans Docker](#sans-docker-systemd)) si tu préfères t'en passer — Docker est simplement le choix par défaut.
+
+Pourquoi Docker plutôt que systemd :
+- **PostgreSQL inclus** : la base tourne dans son propre conteneur, avec son volume — pas d'installation ni de création d'utilisateur/base à faire à la main.
+- **Migrations automatiques** : `docker-entrypoint.sh` applique `prisma migrate deploy` à chaque démarrage — impossible d'oublier l'étape après une mise à jour.
+- **Mise à jour en une commande** : `git pull && docker compose up -d --build`, contre cinq étapes enchaînées à la main côté systemd.
+- **Environnement figé** : version de Node.js et dépendances système (OpenSSL pour Prisma) fixées par l'image, identiques d'un serveur à l'autre.
+- **Déjà durci** : bot exécuté en utilisateur non-root, ports publiés en loopback uniquement, rotation des logs et limite mémoire configurées.
+
+### Via Docker (recommandé)
+
+`docker-compose.yml` fournit le bot **et** PostgreSQL (volume nommé `db_data`, migrations appliquées automatiquement au démarrage du conteneur — voir `docker-entrypoint.sh`).
+
+```bash
+git clone https://github.com/poulpizar01/roxwood-network-famille.git
+cd roxwood-network-famille
+
+cp .env.example .env
+# Éditer .env : TOKEN, CLIENT_ID, POSTGRES_PASSWORD
+# (DATABASE_URL est recalculé par docker-compose pour pointer vers le service "db" — inutile de l'éditer)
+
+docker compose up -d --build
+docker compose logs -f roxwood-network-famille
+```
+Mise à jour après un `git pull` : `docker compose up -d --build`. Le port `5432` du service `db` (et `<API_PORT>` du service bot si l'API REST est activée) est publié sur l'hôte **en loopback uniquement** (`127.0.0.1:...`, pratique pour `prisma studio`/`psql` en local) — volontairement pas un simple `5432:5432`/`<API_PORT>:<API_PORT>`, qui publierait sur toutes les interfaces : Docker manipule directement les chaînes iptables et **contourne un pare-feu ufw/iptables classique**, un port publié ainsi resterait joignable depuis l'extérieur même pare-feu actif.
+
+Les deux services ont une rotation de logs (`max-size: 10m`, `max-file: 3` — sinon le driver `json-file` par défaut grossit indéfiniment sur le disque de l'hôte) ; le service `roxwood-network-famille` a en plus une limite mémoire (`mem_limit: 512m`, large pour un bot Discord + petite API — à ajuster si `docker stats` montre un dépassement). Nommé ainsi (pas juste `bot`) pour rester identifiable sans ambiguïté si un second bot tourne sur le même hôte.
+
+Si `docker compose build` échoue avec `invalid file request` (observé sur Windows + OneDrive avec BuildKit sur ce projet), désactiver BuildKit pour ce build : `set DOCKER_BUILDKIT=0 && docker compose build` (PowerShell : `$env:DOCKER_BUILDKIT=0`).
+
+### Sans Docker (systemd)
+
+Alternative à Docker, aussi fonctionnelle — mais avec PostgreSQL, les migrations et les mises à jour à gérer soi-même (voir plus haut pourquoi Docker est le choix par défaut).
 
 ```bash
 git clone https://github.com/poulpizar01/roxwood-network-famille.git
@@ -72,10 +106,6 @@ sudo -u postgres psql -c "CREATE DATABASE roxwood_network_famille OWNER roxwood_
 # DATABASE_URL=postgresql://roxwood_network_famille:change_me@localhost:5432/roxwood_network_famille
 ```
 
-En développement : `npm run dev` (tsx, rechargement à chaud, pas de build).
-
-### Via systemd (production, sans Docker)
-
 Un modèle de service est fourni dans `deploy/roxwood-network-famille.service` — à adapter (chemins, utilisateur système) puis installer :
 ```bash
 sudo cp deploy/roxwood-network-famille.service /etc/systemd/system/
@@ -91,32 +121,18 @@ sudo journalctl -u roxwood-network-famille.service -n 50 --no-pager
 ```
 Après toute mise à jour du code : `git pull && npm install && npx prisma migrate deploy && npm run build` (toujours vérifier `npx tsc --noEmit` avant, pour attraper une erreur sans faire planter le service en cours) puis `sudo systemctl restart roxwood-network-famille.service`.
 
-### Via Docker
+### Développement
 
-`docker-compose.yml` fournit le bot **et** PostgreSQL (volume nommé `db_data`, migrations appliquées automatiquement au démarrage du conteneur — voir `docker-entrypoint.sh`).
-
-```bash
-cp .env.example .env
-# Éditer .env : TOKEN, CLIENT_ID, POSTGRES_PASSWORD
-# (DATABASE_URL est recalculé par docker-compose pour pointer vers le service "db" — inutile de l'éditer)
-
-docker compose up -d --build
-docker compose logs -f roxwood-network-famille
-```
-Mise à jour après un `git pull` : `docker compose up -d --build`. Le port `5432` du service `db` (et `<API_PORT>` du service bot si l'API REST est activée) est publié sur l'hôte **en loopback uniquement** (`127.0.0.1:...`, pratique pour `prisma studio`/`psql` en local) — volontairement pas un simple `5432:5432`/`<API_PORT>:<API_PORT>`, qui publierait sur toutes les interfaces : Docker manipule directement les chaînes iptables et **contourne un pare-feu ufw/iptables classique**, un port publié ainsi resterait joignable depuis l'extérieur même pare-feu actif.
-
-Les deux services ont une rotation de logs (`max-size: 10m`, `max-file: 3` — sinon le driver `json-file` par défaut grossit indéfiniment sur le disque de l'hôte) ; le service `roxwood-network-famille` a en plus une limite mémoire (`mem_limit: 512m`, large pour un bot Discord + petite API — à ajuster si `docker stats` montre un dépassement). Nommé ainsi (pas juste `bot`) pour rester identifiable sans ambiguïté si un second bot tourne sur le même hôte.
-
-Si `docker compose build` échoue avec `invalid file request` (observé sur Windows + OneDrive avec BuildKit sur ce projet), désactiver BuildKit pour ce build : `set DOCKER_BUILDKIT=0 && docker compose build` (PowerShell : `$env:DOCKER_BUILDKIT=0`).
+`npm install`, un `.env` avec `DATABASE_URL` pointant vers un PostgreSQL accessible (le service `db` de Docker fait l'affaire : `docker compose up -d db`, publié sur `127.0.0.1:5432`), `npx prisma migrate deploy`, puis `npm run dev` (tsx, rechargement à chaud, pas de build).
 
 ### API REST
 
 Le bot expose une API REST en lecture seule (`src/api/`) pour un outil externe (site web, tableau de bord…) — voir la section [Interopérabilité](#interopérabilité--api-rest) pour l'authentification et la liste des endpoints. Sa mise en place fait partie de l'installation standard, après le `.env` de base ci-dessus (systemd ou Docker, indifféremment) :
 
 1. Dans le [Discord Developer Portal](https://discord.com/developers/applications), onglet **OAuth2** de l'application du bot : noter le **Client Secret**, et ajouter une **Redirect URI** = `<API_BASE_URL>/auth/callback` (ex. `http://localhost:3001/auth/callback` en dev, l'URL publique réelle en prod).
-2. Renseigner dans `.env` : `API_PORT`, `DISCORD_CLIENT_SECRET`, `API_JWT_SECRET` (une longue chaîne aléatoire, à générer une fois), `API_BASE_URL` — voir `.env.example`. Rien à renseigner de plus par site externe : chaque **serveur Discord** configure le sien directement depuis Discord, voir `/config site-externe set` (chapitre "Plusieurs guildes" plus bas).
+2. Renseigner dans `.env` : `API_PORT`, `DISCORD_CLIENT_SECRET`, `API_JWT_SECRET` (chaîne aléatoire d'au moins 32 caractères, à générer une fois avec `openssl rand -hex 32` — le bot refuse de démarrer avec la valeur d'exemple ou un secret plus court : quiconque devine ce secret peut forger un token admin pour n'importe quelle guilde), `API_BASE_URL` — voir `.env.example`. Rien à renseigner de plus par site externe : chaque **serveur Discord** configure le sien directement depuis Discord, voir `/config site-externe set` (chapitre "Plusieurs guildes" plus bas).
 3. Démarrer/redémarrer le bot : `✅ API REST en écoute sur le port <API_PORT>` dans les logs confirme que c'est actif.
-4. Le serveur Express écoute sur toutes les interfaces (`0.0.0.0:<API_PORT>`, pas seulement en local) — en prod, choisir un sous-domaine (ex. `bot.exemple.fr`) et pointer son enregistrement DNS **A**/**AAAA** vers l'IP publique du serveur (préalable indispensable : sans DNS déjà propagé, l'émission du certificat ci-dessous échoue). Une fois le DNS actif, mettre un reverse proxy HTTPS devant l'API et **restreindre `<API_PORT>`** pour qu'il ne soit joignable que depuis la machine elle-même, seul le port 443 exposé publiquement (n'ouvrir que 443 au pare-feu en systemd/bare-metal ; en Docker, le pare-feu ne suffit PAS — Docker contourne `ufw`/iptables classique en publiant un port, `docker-compose.yml` bind déjà `<API_PORT>` sur `127.0.0.1` par défaut ici, à garder tel quel) ; `API_BASE_URL` doit alors pointer vers ce domaine public, pas vers `localhost`. Vérifier : `curl https://<API_BASE_URL>/health` doit répondre `{"ok":true}`. Le code fait déjà confiance à UN SEUL reverse proxy en amont (`app.set('trust proxy', 1)`, voir `src/api/server.ts`) pour que le rate-limiting fonctionne par visiteur — si tu chaînes plusieurs proxys avant l'API, ajuster ce nombre en conséquence.
+4. L'API n'écoute que sur `127.0.0.1:<API_PORT>` par défaut (`API_HOST` pour changer l'adresse) : elle n'est joignable que depuis la machine elle-même, via un reverse proxy HTTPS. En prod, choisir un sous-domaine (ex. `bot.exemple.fr`) et pointer son enregistrement DNS **A**/**AAAA** vers l'IP publique du serveur (préalable indispensable : sans DNS déjà propagé, l'émission du certificat ci-dessous échoue), puis mettre le reverse proxy devant l'API — seul le port 443 est exposé publiquement. En Docker, `docker-compose.yml` passe `API_HOST=0.0.0.0` (le loopback du conteneur n'est pas celui de l'hôte) et restreint lui-même la publication du port à `127.0.0.1` côté hôte — à garder tel quel : Docker contourne `ufw`/iptables classique pour un port publié sans adresse explicite. Si le port est déjà pris, l'API est désactivée (erreur dans les logs) mais le bot Discord continue. `API_BASE_URL` doit pointer vers le domaine public, pas vers `localhost`. Vérifier : `curl https://<API_BASE_URL>/health` doit répondre `{"ok":true}`. Le code fait déjà confiance à UN SEUL reverse proxy en amont (`app.set('trust proxy', 1)`, voir `src/api/server.ts`) pour que le rate-limiting fonctionne par visiteur — si tu chaînes plusieurs proxys avant l'API, ajuster ce nombre en conséquence.
 
    Un modèle de config est fourni dans `deploy/nginx-roxwood-network-famille.conf` (reverse proxy nginx — c'est ce que la prod de ce projet utilise réellement) :
    ```bash
@@ -355,10 +371,11 @@ Un retrait de coffre sur un item marqué `vente_pnj: true` crée une vente en at
 
 - **Aucun redémarrage requis après une écriture `/config`** : chaque sous-commande qui touche un panneau permanent (salon, item, type d'organisation…) rafraîchit explicitement le message concerné dans son propre handler, plutôt que de compter sur le prochain mouvement de coffre ou une déclaration d'activité pour le déclencher indirectement.
 - **Reset hebdomadaire auto-réparant** : plutôt que de compter sur un cron qui tombe pile à l'heure, le bot vérifie à chaque démarrage *et* toutes les 15 minutes si le reset attendu (dimanche 19h Europe/Paris) est en retard, et le déclenche si besoin — un redémarrage pendant la fenêtre de reset ne fait pas perdre le cycle.
-- **Crash-restart** : le process peut s'arrêter sur un événement `error` non catché du WebSocket Discord (rare, pas un bug applicatif) — un service systemd avec `Restart=` (déjà dans le déploiement documenté plus haut) le relance automatiquement en quelques secondes. En Docker, `restart: unless-stopped` fait pareil.
+- **Erreurs isolées sans crash** : une erreur WebSocket Discord (discord.js se reconnecte seul), une erreur dans un handler d'événement ou une promesse rejetée non attrapée sont loggées sans arrêter le process — une erreur sur une guilde ne coupe pas le bot pour les autres. Un message reçu d'une guilde dont la config n'est pas encore chargée (démarrage en cours) est ignoré, et un message de log coffre/garage attend la fin du rattrapage de sa guilde (sans ça, il ferait sauter les messages publiés pendant l'arrêt du bot).
+- **Crash-restart** : si l'initialisation globale échoue (base injoignable au démarrage, typiquement), le process s'arrête volontairement plutôt que de rester connecté sans config — le service systemd (`Restart=always`, `RestartSec=10`, sans limite de redémarrages) ou Docker (`restart: unless-stopped`) le relance jusqu'à ce que ça passe.
 - **Purge automatique des données opérationnelles obsolètes** : un cron quotidien (4h Europe/Paris) supprime les ventes en attente **terminées** (confirmée/reposée/ignorée/expirée — jamais une vente encore en cours) et les ventes de munitions de plus de 30 jours — pur historique de workflow sans valeur une fois le cycle clos. **`transactions`** (le journal de toute activité déclarée, y compris les ventes confirmées) n'est en revanche **jamais purgée** : c'est ce qui permet à `/api/quotas`/`/api/ventes` de remonter une semaine passée via `?week=` (voir Interopérabilité) — une purge casserait cette navigation.
 - **Cron sans chevauchement** : `node-cron` ne protège pas nativement contre une exécution qui démarre alors que la précédente tourne encore. Le cron le plus fréquent (vérification des cooldowns expirés, toutes les minutes) a un verrou en mémoire pour éviter qu'un batch particulièrement long fasse partir un second passage sur les mêmes lignes (ex. double notification).
-- **Mémoire** : le cache de messages de discord.js est vidé au bout d'une heure (`sweepers`, sans impact sur les panneaux permanents — toujours re-récupérés par ID, jamais lus depuis ce cache) ; en Docker, `mem_limit: 512m` sur le bot évite qu'une fuite mémoire fasse tomber tout l'hôte plutôt que le seul conteneur (voir "Via Docker").
+- **Mémoire** : le cache de messages de discord.js est vidé au bout d'une heure (`sweepers`, sans impact sur les panneaux permanents — toujours re-récupérés par ID, jamais lus depuis ce cache) ; une fuite mémoire est contenue au seul bot plutôt que de faire tomber tout l'hôte — `MemoryMax=512M` dans le service systemd, `mem_limit: 512m` en Docker (voir "Via Docker").
 
 ---
 
@@ -405,8 +422,10 @@ roxwood-network-famille/
 ├── scripts/
 │   ├── backfill-guild-id.ts             # One-off migration multi-tenant (voir historique du projet)
 │   └── check-description-lengths.ts     # Vérifie la limite Discord de 100 caractères sur les descriptions de commande/option
+├── docs/
+│   └── audits.md                         # Prompts d'audit par angle (fiabilité, sécurité, multi-tenant, données, pièges)
 ├── deploy/
-│   ├── roxwood-network-famille.service       # Modèle de service systemd (voir "Via systemd")
+│   ├── roxwood-network-famille.service       # Modèle de service systemd (voir "Sans Docker (systemd)")
 │   └── nginx-roxwood-network-famille.conf    # Modèle de reverse proxy nginx (voir "Interopérabilité — API REST")
 ├── Dockerfile
 ├── docker-compose.yml

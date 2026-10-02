@@ -10,6 +10,12 @@
 Description=Bot Famille — roxwood-network-famille (bot Discord RP FiveM)
 After=network-online.target
 Wants=network-online.target
+# Redémarre aussi si le process crash en boucle très vite (ex. mauvaise
+# config au déploiement, base injoignable au démarrage) plutôt que de
+# s'arrêter silencieusement après trop d'échecs rapprochés — enlève la
+# limite par défaut de systemd (5 en 10s). Option de [Unit] : dans
+# [Service], systemd l'ignore.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -17,12 +23,12 @@ User=REMPLACER_utilisateur_systeme
 WorkingDirectory=/REMPLACER/chemin/vers/roxwood-network-famille
 EnvironmentFile=/REMPLACER/chemin/vers/roxwood-network-famille/.env
 ExecStart=/REMPLACER/chemin/vers/node dist/index.js
-Restart=on-failure
-RestartSec=5
-# Redémarre aussi si le process crash en boucle très vite (ex. mauvaise
-# config au déploiement) plutôt que de s'arrêter silencieusement après trop
-# d'échecs rapprochés — enlève la limite par défaut de systemd (5 en 10s).
-StartLimitIntervalSec=0
+Restart=always
+RestartSec=10
+# Une fuite mémoire tue ce seul service (puis Restart= le relance) plutôt
+# que de faire swapper/tuer les autres process de la machine — même limite
+# que mem_limit dans docker-compose.yml.
+MemoryMax=512M
 
 [Install]
 WantedBy=multi-user.target

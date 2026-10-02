@@ -233,6 +233,7 @@ CREATE TABLE "pending_sales" (
     "discord_id" TEXT,
     "item" TEXT NOT NULL,
     "quantite" INTEGER NOT NULL,
+    "quantite_retiree" INTEGER NOT NULL,
     "timestamp" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "statut" TEXT NOT NULL DEFAULT 'en_attente',
     "montant" INTEGER,
@@ -323,3 +324,4 @@ CREATE INDEX "fourrieres_guild_id_timestamp_idx" ON "fourrieres"("guild_id", "ti
 
 -- CreateIndex
 CREATE INDEX "munitions_ventes_guild_id_timestamp_idx" ON "munitions_ventes"("guild_id", "timestamp");
+

@@ -78,12 +78,22 @@ function coffreLogChannelIds(guildId: string): string[] {
   return [...new Set([...c.logs_coffres, ...c.logs_coffres_admin])];
 }
 
-/** Point d'entrée temps réel : traite un nouveau message posté dans un salon `logs_coffres`/`logs_coffres_admin` suivi. */
+/**
+ * Point d'entrée temps réel : traite un nouveau message posté dans un salon
+ * `logs_coffres`/`logs_coffres_admin` suivi. Un message dont l'ID n'est pas
+ * postérieur au curseur du salon a déjà été appliqué par
+ * `catchUpMissedMessages` (un message arrivé pendant le rattrapage est à la
+ * fois récupéré par celui-ci et livré en temps réel) — l'appliquer à nouveau
+ * doublerait le mouvement.
+ */
 export async function handleMessage(message: Message): Promise<void> {
   const guildId = message.guildId;
   if (!guildId || !coffreLogChannelIds(guildId).includes(message.channelId)) return;
 
-  await db.setSetting(guildId, `last_stock_msg_${message.channelId}`, message.id);
+  const cursorKey = `last_stock_msg_${message.channelId}`;
+  const cursor = await db.getSetting(guildId, cursorKey);
+  if (cursor && BigInt(message.id) <= BigInt(cursor)) return;
+  await db.setSetting(guildId, cursorKey, message.id);
 
   const entries = await parseAndApplyAll(guildId, extractText(message), message.channelId, true);
   if (entries.length > 0) {

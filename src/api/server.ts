@@ -135,7 +135,20 @@ export function startApiServer(client: Client): void {
     res.status(500).json({ error: 'Erreur interne.' });
   });
 
-  app.listen(API_PORT, () => {
-    console.log(`✅ API REST en écoute sur le port ${API_PORT}`);
+  // Loopback par défaut : le reverse proxy HTTPS tourne sur la même machine
+  // (voir deploy/nginx-roxwood-network-famille.conf). En Docker, l'interface
+  // du conteneur n'est pas le loopback de l'hôte : docker-compose.yml passe
+  // `API_HOST=0.0.0.0` et restreint lui-même la publication du port à
+  // 127.0.0.1 côté hôte.
+  const API_HOST = process.env.API_HOST || '127.0.0.1';
+
+  // Express 5 transmet l'erreur d'écoute (port déjà pris…) à ce callback —
+  // seule l'API est alors indisponible, le bot Discord continue.
+  app.listen(API_PORT, API_HOST, (err?: Error) => {
+    if (err) {
+      console.error(`❌ API REST indisponible (${API_HOST}:${API_PORT}) :`, err.message);
+      return;
+    }
+    console.log(`✅ API REST en écoute sur ${API_HOST}:${API_PORT}`);
   });
 }

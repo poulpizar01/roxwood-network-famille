@@ -367,7 +367,13 @@ model PendingSale {
   joueur     String
   discordId  String?  @map("discord_id")
   item       String
+  /// Quantité vendue, corrigeable par le joueur (bouton "Modifier la
+  /// quantité") — c'est elle qui est créditée à la confirmation.
   quantite   Int
+  /// Retrait net réel constaté dans les logs de coffre (retraits cumulés
+  /// moins redépôts) — jamais modifié par une correction manuelle, il borne
+  /// `quantite` : on ne peut pas déclarer avoir vendu plus que retiré.
+  quantiteRetiree Int @map("quantite_retiree")
   timestamp  DateTime @default(now())
   statut     String   @default("en_attente")
   montant    Int?

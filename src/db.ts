@@ -1109,6 +1109,7 @@ export async function createPendingSale(guildId: string, data: PendingSaleInput)
       discordId: data.discord_id ?? null,
       item: data.item,
       quantite: data.quantite,
+      quantiteRetiree: data.quantite,
       timestamp: new Date(data.timestamp),
     },
   });
@@ -1131,7 +1132,7 @@ export async function updatePendingSaleStatut(guildId: string, id: number, statu
   await prisma.pendingSale.updateMany({ where: { id, guildId }, data: { statut } });
 }
 
-/** Corrige la quantité d'une vente en attente. */
+/** Correction manuelle de la quantité vendue (bouton "Modifier la quantité") — ne touche pas `quantiteRetiree`, une correction n'étant pas un mouvement de coffre. Un vrai mouvement passe par {@link applyPendingSaleMovement}. */
 export async function updatePendingSaleQuantite(guildId: string, id: number, quantite: number): Promise<void> {
   await prisma.pendingSale.updateMany({ where: { id, guildId }, data: { quantite } });
 }
@@ -1194,9 +1195,21 @@ export async function getPendingSaleForReduction(guildId: string, joueur: string
   return row ? mapPendingSale(row) : undefined;
 }
 
-/** Cumule une nouvelle quantité sur une vente en attente existante et rafraîchit son timestamp. */
-export async function accumulatePendingSale(guildId: string, id: number, quantite: number, timestamp: number): Promise<void> {
-  await prisma.pendingSale.updateMany({ where: { id, guildId }, data: { quantite, timestamp: new Date(timestamp) } });
+/**
+ * Applique un vrai mouvement de coffre (nouveau retrait cumulé, redépôt
+ * partiel) à une vente en attente : nouvelle `quantite`, et `retraitDelta`
+ * reporté sur `quantiteRetiree`. `timestamp` rafraîchit la fenêtre de la
+ * vente ; omis, elle reste inchangée.
+ */
+export async function applyPendingSaleMovement(guildId: string, id: number, quantite: number, retraitDelta: number, timestamp?: number): Promise<void> {
+  await prisma.pendingSale.updateMany({
+    where: { id, guildId },
+    data: {
+      quantite,
+      quantiteRetiree: { increment: retraitDelta },
+      ...(timestamp !== undefined ? { timestamp: new Date(timestamp) } : {}),
+    },
+  });
 }
 
 /** Ventes déclarées d'un joueur en attente de confirmation (dépôt d'argent) depuis `since`. */

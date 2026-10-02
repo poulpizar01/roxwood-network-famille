@@ -41,6 +41,10 @@ const API_BASE_URL = process.env.API_BASE_URL;
 /** Durée de validité d'un token émis — l'utilisateur doit se reconnecter via Discord après ça (pas de refresh token : simplicité, API en lecture seule). */
 const API_TOKEN_TTL = '7d';
 
+/** Valeur de `.env.example`, refusée telle quelle par `assertAuthEnv`. */
+const JWT_SECRET_PLACEHOLDER = 'change_me_to_a_long_random_string';
+const JWT_SECRET_MIN_LENGTH = 32;
+
 /** Nom du cookie court-terme (anti-CSRF) posé par `/auth/login`, vérifié puis effacé par `/auth/callback`. */
 const STATE_COOKIE = 'oauth_state';
 
@@ -77,6 +81,16 @@ export function assertAuthEnv(): void {
     .filter(k => !process.env[k]);
   if (missing.length) {
     throw new Error(`[api/auth] Variable(s) d'environnement manquante(s) : ${missing.join(', ')} (voir .env.example)`);
+  }
+  // Toute l'isolation entre guildes repose sur ce secret : un secret devinable
+  // permet de forger un token avec l'ID Discord (public) d'un vrai admin et le
+  // guildId de n'importe quelle guilde, et requireAuth l'accepterait.
+  const secret = process.env.API_JWT_SECRET!;
+  if (secret === JWT_SECRET_PLACEHOLDER || secret.length < JWT_SECRET_MIN_LENGTH) {
+    throw new Error(
+      `[api/auth] API_JWT_SECRET trop faible (valeur d'exemple ou moins de ${JWT_SECRET_MIN_LENGTH} caractères). ` +
+      'En générer un avec : openssl rand -hex 32',
+    );
   }
 }
 

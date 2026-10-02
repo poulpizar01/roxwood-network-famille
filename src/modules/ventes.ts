@@ -102,7 +102,7 @@ async function createPendingSale(client: Client, guildId: string, entry: StockEn
   const existing = await db.getPendingSaleForAccumulation(guildId, entry.joueur, entry.item, Date.now() - ACCUMULATION_WINDOW_MS);
   if (existing) {
     const newQuantite = existing.quantite + entry.quantite;
-    await db.accumulatePendingSale(guildId, existing.id, newQuantite, Date.now());
+    await db.applyPendingSaleMovement(guildId, existing.id, newQuantite, entry.quantite, Date.now());
     await editAccumulatedAlert(client, existing, newQuantite);
     return;
   }
@@ -233,10 +233,10 @@ async function tryConfirmRedeposit(client: Client, guildId: string, entry: Stock
     await db.updatePendingSaleStatut(guildId, saleActive.id, 'ignore');
     await editAlertMessage(client, saleActive, '📦 Drogue intégralement reposée — vente annulée', 0x95A5A6);
   } else if (saleActive.statut === 'declare') {
-    await db.updatePendingSaleQuantite(guildId, saleActive.id, nouvelleQuantite);
+    await db.applyPendingSaleMovement(guildId, saleActive.id, nouvelleQuantite, -entry.quantite);
     await editDeclaredAlertQuantite(client, saleActive, nouvelleQuantite);
   } else {
-    await db.accumulatePendingSale(guildId, saleActive.id, nouvelleQuantite, Date.now());
+    await db.applyPendingSaleMovement(guildId, saleActive.id, nouvelleQuantite, -entry.quantite, Date.now());
     await editAccumulatedAlert(client, saleActive, nouvelleQuantite);
   }
 }
@@ -325,7 +325,7 @@ async function editAlertMessage(client: Client, sale: NonNullable<PendingSale>, 
 // ─── AUTORISATION D'INTERACTION ───────────────────────────────────────────────
 
 /** Vrai si l'auteur de l'interaction est mappé au joueur de la vente (et backfill `discordId` si absent), ou admin ; répond sinon avec un refus. */
-async function authorizeSaleInteraction(interaction: ButtonInteraction, guildId: string, sale: NonNullable<PendingSale>): Promise<boolean> {
+async function authorizeSaleInteraction(interaction: ButtonInteraction | ModalSubmitInteraction, guildId: string, sale: NonNullable<PendingSale>): Promise<boolean> {
   const mappedIds = await db.getUserMappings(guildId, sale.joueur);
 
   if (mappedIds.includes(interaction.user.id)) {
@@ -395,7 +395,7 @@ export async function handleButton(interaction: ButtonInteraction): Promise<void
         .setTitle('Corriger la quantité')
         .addComponents(new ActionRowBuilder<TextInputBuilder>().addComponents(
           new TextInputBuilder().setCustomId('quantite').setLabel('Quantité correcte')
-            .setStyle(TextInputStyle.Short).setRequired(true).setPlaceholder(`Actuel : ${sale.quantite}`),
+            .setStyle(TextInputStyle.Short).setRequired(true).setPlaceholder(`Actuel : ${sale.quantite} — max ${sale.quantiteRetiree} (retrait réel)`),
         )),
     );
   }
@@ -403,7 +403,13 @@ export async function handleButton(interaction: ButtonInteraction): Promise<void
 
 // ─── HANDLER MODALS ───────────────────────────────────────────────────────────
 
-/** Traite la soumission du modal de correction de quantité (`modal_vente_modifier_<id>`). */
+/**
+ * Traite la soumission du modal de correction de quantité
+ * (`modal_vente_modifier_<id>`). Statut et auteur sont revérifiés ici, pas
+ * seulement au clic : un modal peut rester ouvert pendant que la vente est
+ * déclarée/confirmée/expirée, et l'ID de vente dans `customId` n'est pas une
+ * preuve d'autorisation.
+ */
 export async function handleModal(interaction: ModalSubmitInteraction): Promise<void> {
   const id = interaction.customId;
   const guildId = interaction.guildId!;
@@ -414,8 +420,19 @@ export async function handleModal(interaction: ModalSubmitInteraction): Promise<
     const raw = interaction.fields.getTextInputValue('quantite').replace(/[\s ]/g, '');
     const quantite = parseInt(raw, 10);
 
-    if (!sale) { await interaction.reply({ content: '❌ Vente introuvable.', flags: MessageFlags.Ephemeral }); return; }
+    if (!sale || sale.statut !== 'en_attente') {
+      await interaction.reply({ content: "❌ Cette vente n'est plus en attente.", flags: MessageFlags.Ephemeral });
+      return;
+    }
+    if (!(await authorizeSaleInteraction(interaction, guildId, sale))) return;
     if (isNaN(quantite) || quantite <= 0) { await interaction.reply({ content: '❌ Quantité invalide.', flags: MessageFlags.Ephemeral }); return; }
+    if (quantite > sale.quantiteRetiree) {
+      await interaction.reply({
+        content: `❌ Impossible de déclarer plus que le retrait réel (**${sale.quantiteRetiree.toLocaleString('fr-FR')}**).`,
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
 
     const ancienneQuantite = sale.quantite;
     await db.updatePendingSaleQuantite(guildId, saleId, quantite);

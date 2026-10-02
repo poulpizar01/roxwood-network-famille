@@ -105,10 +105,25 @@ async function traiterLigne(guildId: string, ligne: string, chargerAmendes: bool
   return null;
 }
 
-/** Point d'entrée temps réel : traite un nouveau message posté dans le salon `logs_garages`. */
+/**
+ * Point d'entrée temps réel : traite un nouveau message posté dans le salon
+ * `logs_garages`. Un message dont l'ID n'est pas postérieur au curseur a
+ * déjà été appliqué par `catchUpMissedMessages` — le rejouer ici fausserait
+ * l'état : une ligne "sorti de la fourrière" déjà appliquée a fait du joueur
+ * qui l'a récupéré le responsable courant, et serait facturée à lui-même.
+ * Sans curseur (salon configuré à chaud, jamais rattrapé), rien n'est créé
+ * ici : c'est son absence qui déclenche la reconstruction complète de l'état
+ * depuis l'historique au prochain rattrapage.
+ */
 export async function handleMessage(message: Message): Promise<void> {
   const guildId = message.guildId;
   if (!guildId || message.channelId !== configStore.get(guildId).CHANNELS.logs_garages) return;
+
+  const cursor = await db.getSetting(guildId, 'last_garages_msg');
+  if (cursor) {
+    if (BigInt(message.id) <= BigInt(cursor)) return;
+    await db.setSetting(guildId, 'last_garages_msg', message.id);
+  }
 
   const lignes = extractLignes(message);
   if (!lignes.length) return;

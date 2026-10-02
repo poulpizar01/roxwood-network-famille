@@ -5,6 +5,5 @@ dist
 .env
 .env.example
 *.log
-bot.pid
 _*.ts
 README.md

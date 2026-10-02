@@ -364,6 +364,11 @@ export function get(guildId: string): BotConfig {
   return config;
 }
 
+/** Vrai si la config de cette guilde est chargée — un événement Discord peut arriver pour une guilde dont le `reload()` n'a pas encore eu lieu (démarrage, `guildCreate` en cours), où `get()` lèverait. */
+export function has(guildId: string): boolean {
+  return cache.has(guildId);
+}
+
 /** Retire une guilde du cache (voir `guildDelete` dans src/index.ts) — ses données restent en base, seul le cache en mémoire est vidé. */
 export function remove(guildId: string): void {
   cache.delete(guildId);

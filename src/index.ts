@@ -22,26 +22,6 @@
  */
 import 'dotenv/config';
 
-// ─── PROTECTION MULTI-INSTANCE (fichier PID) ──────────────────────────────────
-import fs from 'fs';
-import path from 'path';
-const PID_FILE = path.join(__dirname, '..', 'bot.pid');
-
-const existingPid = fs.existsSync(PID_FILE) ? parseInt(fs.readFileSync(PID_FILE, 'utf8'), 10) : null;
-if (existingPid) {
-  try {
-    process.kill(existingPid, 0);
-    console.error(`❌ Le bot tourne déjà (PID ${existingPid}). Arrête-le d'abord.`);
-    process.exit(1);
-  } catch {
-    // Process inexistant → PID file obsolète, on continue
-  }
-}
-fs.writeFileSync(PID_FILE, String(process.pid));
-process.on('exit', () => { try { fs.unlinkSync(PID_FILE); } catch { /* déjà absent */ } });
-process.on('SIGINT', () => process.exit(0));
-process.on('SIGTERM', () => process.exit(0));
-
 import { Client, GatewayIntentBits, Partials, REST, Routes, MessageFlags, type Guild } from 'discord.js';
 import cron from 'node-cron';
 
@@ -110,36 +90,71 @@ async function deployCommandsForGuild(guildId: string): Promise<void> {
 
 // ─── BOOTSTRAP D'UNE GUILDE ───────────────────────────────────────────────────
 /**
- * Met une guilde en état de marche : enregistrement dans le registre,
- * config chargée, items par défaut pré-remplis, commandes déployées,
- * panneaux permanents initialisés/rafraîchis. Même chemin de code que la
- * guilde soit déjà connue (appelé en boucle au démarrage) ou toute nouvelle
- * (`guildCreate`) — voir docstring de fichier.
+ * Par guilde, une promesse résolue une fois le rattrapage des logs
+ * (coffres/garages) terminé. Le traitement temps réel d'un message de log
+ * l'attend : traité avant, il ferait avancer le curseur `last_*_msg`
+ * au-delà des messages publiés pendant l'arrêt du bot, qui ne seraient alors
+ * jamais rejoués. Un message arrivé pendant le rattrapage est à la fois
+ * récupéré par celui-ci et mis en attente ici — c'est le curseur, vérifié
+ * par `stocks.handleMessage`/`garages.handleMessage`, qui évite de
+ * l'appliquer deux fois.
  */
-async function bootstrapGuild(guild: Guild): Promise<void> {
+const logsCaughtUp = new Map<string, { promise: Promise<void>; release: () => void }>();
+
+/**
+ * Phase légère : registre, config, items par défaut — de quoi répondre aux
+ * interactions de cette guilde. Faite pour TOUTES les guildes avant la phase
+ * lourde (voir `initGuild`), sinon la n-ième guilde resterait inutilisable
+ * le temps que toutes les précédentes aient fini leur rattrapage.
+ */
+async function prepareGuild(guild: Guild): Promise<void> {
   const guildId = guild.id;
+  if (!logsCaughtUp.has(guildId)) {
+    let release!: () => void;
+    const promise = new Promise<void>(resolve => { release = resolve; });
+    logsCaughtUp.set(guildId, { promise, release });
+  }
   await guildRegistry.registerGuild(guildId, guild.name);
   await configStore.reload(guildId);
-  // Pré-remplit les items connus absents (ex. munitions, argent sale) — voir
-  // src/default-items.ts. N'écrase jamais un item déjà configuré ; recharge
-  // le cache seulement si quelque chose a effectivement été inséré.
+  // N'écrase jamais un item déjà configuré ; recharge le cache seulement si
+  // quelque chose a effectivement été inséré (voir src/default-items.ts).
   await seedDefaultItems(guildId);
-  await deployCommandsForGuild(guildId);
+}
 
-  await stocks.catchUpMissedMessages(client, guildId);
+/** Phase lourde : commandes slash, rattrapage des logs, panneaux permanents. */
+async function initGuild(guild: Guild): Promise<void> {
+  const guildId = guild.id;
+  try {
+    await deployCommandsForGuild(guildId);
+    await stocks.catchUpMissedMessages(client, guildId);
+    await garages.catchUpMissedMessages(client, guildId);
+  } finally {
+    logsCaughtUp.get(guildId)?.release();
+  }
+
   await stocks.updateStockMessage(client, guildId);
   await quotas.initPermanentMessage(client, guildId);
   await armurerie.initPermanentMessage(client, guildId);
   await taxes.initPermanentMessage(client, guildId);
   await configModule.initDocumentationMessage(client, guildId);
   await alertes.initLaboTimers(client, guildId);
-  await garages.catchUpMissedMessages(client, guildId);
 }
 
 // ─── READY ────────────────────────────────────────────────────────────────────
 client.once('clientReady', async (readyClient) => {
   console.log(`✅ Connecté en tant que ${readyClient.user.tag}`);
+  try {
+    await startup();
+  } catch (err) {
+    // Une erreur ici (base injoignable au démarrage, typiquement) laisserait
+    // sinon un bot connecté à Discord mais sans config ni crons — arrêter le
+    // process laisse systemd/Docker le relancer jusqu'à ce que ça passe.
+    console.error('❌ Initialisation impossible :', err);
+    process.exit(1);
+  }
+});
 
+async function startup(): Promise<void> {
   // Réconcilie le registre avec la réalité Discord : une guilde `active` en
   // base mais absente du cache actuel a retiré le bot pendant qu'il était
   // hors ligne (le `guildDelete` correspondant n'a jamais pu se déclencher).
@@ -148,14 +163,23 @@ client.once('clientReady', async (readyClient) => {
     if (!currentGuildIds.has(knownId)) await guildRegistry.deactivateGuild(knownId);
   }
 
-  // Bootstrap séquentiel de chaque guilde présente — couvre aussi le cas
-  // "a invité le bot pendant qu'il était hors ligne" (jamais de `guildCreate`
-  // pour elle, donc jamais bootstrapée sans ce passage).
-  for (const guild of client.guilds.cache.values()) {
+  // Chaque guilde présente, y compris celles qui ont invité le bot pendant
+  // qu'il était hors ligne (jamais de `guildCreate` pour elles). Une guilde
+  // en échec n'empêche pas les suivantes.
+  const guilds = [...client.guilds.cache.values()];
+  for (const guild of guilds) {
     try {
-      await bootstrapGuild(guild);
+      await prepareGuild(guild);
     } catch (err) {
-      console.error(`[index] bootstrapGuild(${guild.id}) :`, (err as Error).message);
+      console.error(`[index] prepareGuild(${guild.id}) :`, (err as Error).message);
+    }
+  }
+  for (const guild of guilds) {
+    if (!configStore.has(guild.id)) continue;
+    try {
+      await initGuild(guild);
+    } catch (err) {
+      console.error(`[index] initGuild(${guild.id}) :`, (err as Error).message);
     }
   }
 
@@ -207,17 +231,25 @@ client.once('clientReady', async (readyClient) => {
   }));
 
   console.log('✅ Tâches cron démarrées');
-});
+}
 
 /**
  * Exécute `fn` séquentiellement pour chaque guilde active connue —
  * séquentiel et pas `Promise.all` : ce bot est très dépendant du rate-limit
  * Discord par itération (fetch de salon, édition de message), paralléliser
  * multiplierait le risque de le déclencher globalement. Une guilde en échec
- * (config incohérente, etc.) n'interrompt jamais les suivantes.
+ * (config incohérente, etc.) n'interrompt jamais les suivantes, et une base
+ * momentanément injoignable fait juste sauter ce passage du cron.
  */
 async function forEachActiveGuild(fn: (guildId: string) => Promise<void>): Promise<void> {
-  for (const guildId of await guildRegistry.listActiveGuildIds()) {
+  let guildIds: string[];
+  try {
+    guildIds = await guildRegistry.listActiveGuildIds();
+  } catch (err) {
+    console.error('[cron] liste des guildes actives indisponible :', (err as Error).message);
+    return;
+  }
+  for (const guildId of guildIds) {
     try {
       await fn(guildId);
     } catch (err) {
@@ -230,93 +262,120 @@ async function forEachActiveGuild(fn: (guildId: string) => Promise<void>): Promi
 client.on('guildCreate', async (guild) => {
   console.log(`[index] Nouvelle guilde : ${guild.name} (${guild.id})`);
   try {
-    await bootstrapGuild(guild);
+    await prepareGuild(guild);
   } catch (err) {
-    console.error(`[index] bootstrapGuild(${guild.id}) après guildCreate :`, (err as Error).message);
+    console.error(`[index] prepareGuild(${guild.id}) après guildCreate :`, (err as Error).message);
+  }
+  if (!configStore.has(guild.id)) return;
+  try {
+    await initGuild(guild);
+  } catch (err) {
+    console.error(`[index] initGuild(${guild.id}) après guildCreate :`, (err as Error).message);
   }
 });
 
 client.on('guildDelete', async (guild) => {
   console.log(`[index] Guilde retirée : ${guild.id}`);
-  await guildRegistry.deactivateGuild(guild.id);
   configStore.remove(guild.id);
+  logsCaughtUp.get(guild.id)?.release();
+  logsCaughtUp.delete(guild.id);
+  try {
+    await guildRegistry.deactivateGuild(guild.id);
+  } catch (err) {
+    console.error(`[index] deactivateGuild(${guild.id}) :`, (err as Error).message);
+  }
 });
 
 // ─── RÉACTION 🗑️ → SUPPRESSION DU MESSAGE DU BOT ────────────────────────────
 client.on('messageReactionAdd', async (reaction, user) => {
-  if (user.bot) return;
-  if (reaction.emoji.name !== '🗑️') return;
-  if (!reaction.message.guildId) return; // pas de config sans guilde (DM) — n'arrive normalement jamais, aucun intent DM
-
   try {
-    if (reaction.partial) await reaction.fetch();
-    if (reaction.message.partial) await reaction.message.fetch();
-  } catch {
-    return;
+    if (user.bot) return;
+    if (reaction.emoji.name !== '🗑️') return;
+    const guildId = reaction.message.guildId;
+    if (!guildId || !configStore.has(guildId)) return;
+
+    try {
+      if (reaction.partial) await reaction.fetch();
+      if (reaction.message.partial) await reaction.message.fetch();
+    } catch {
+      return;
+    }
+
+    if (reaction.message.author?.id !== client.user?.id) return;
+
+    if (await ventes.handleTrashReaction(reaction, user)) return;
+
+    const message = reaction.message.partial ? null : reaction.message;
+    if (!message) return; // fetch() ci-dessus a échoué silencieusement (message supprimé entre-temps)
+
+    const c = configStore.get(guildId);
+    const noDeleteChannels = [
+      c.CHANNELS.alertes_braquages,
+      c.CHANNELS.alertes_actions,
+      c.CHANNELS.paie,
+      c.CHANNELS.historique_stock,
+      c.CHANNELS.log_ventes,
+      c.CHANNELS.logs_activites,
+      c.CHANNELS.ventes_drogue,
+    ];
+    if (noDeleteChannels.includes(message.channelId)) return;
+
+    if (quotas.isQuotaReminderMessage(message)) return;
+
+    if (message.components?.length) return;
+
+    await message.delete().catch(() => null);
+  } catch (err) {
+    console.error('[messageReactionAdd] :', (err as Error).message);
   }
-
-  if (reaction.message.author?.id !== client.user?.id) return;
-
-  if (await ventes.handleTrashReaction(reaction, user)) return;
-
-  const message = reaction.message.partial ? null : reaction.message;
-  if (!message) return; // fetch() ci-dessus a échoué silencieusement (message supprimé entre-temps)
-
-  const c = configStore.get(reaction.message.guildId);
-  const noDeleteChannels = [
-    c.CHANNELS.alertes_braquages,
-    c.CHANNELS.alertes_actions,
-    c.CHANNELS.paie,
-    c.CHANNELS.historique_stock,
-    c.CHANNELS.log_ventes,
-    c.CHANNELS.logs_activites,
-    c.CHANNELS.ventes_drogue,
-  ];
-  if (noDeleteChannels.includes(message.channelId)) return;
-
-  if (quotas.isQuotaReminderMessage(message)) return;
-
-  if (message.components?.length) return;
-
-  await message.delete().catch(() => null);
 });
 
 // ─── MESSAGES (logs coffres/garages + réaction 🗑️ auto) ─────────────────────
 client.on('messageCreate', async (message) => {
-  if (!message.guildId) return; // pas de config sans guilde (DM) — n'arrive normalement jamais, aucun intent DM
-  const c = configStore.get(message.guildId);
-  const noTrashChannels = [
-    c.CHANNELS.stock_general,
-    c.CHANNELS.bilan,
-    c.CHANNELS.paie,
-    c.CHANNELS.historique_stock,
-    c.CHANNELS.log_ventes,
-    c.CHANNELS.logs_activites,
-    c.CHANNELS.ventes_drogue,
-    c.CHANNELS.alertes_braquages,
-    c.CHANNELS.alertes_actions,
-  ];
-  if (
-    message.author.id === client.user?.id &&
-    !noTrashChannels.includes(message.channelId) &&
-    !quotas.isQuotaReminderMessage(message) &&
-    !garages.isFourriereNotification(message)
-  ) {
-    if (!message.components?.length) message.react('🗑️').catch(() => null);
+  try {
+    const guildId = message.guildId;
+    // Guilde dont la config n'est pas encore chargée (démarrage, guildCreate
+    // en cours) : ignoré — un message de log sera repris par le rattrapage.
+    if (!guildId || !configStore.has(guildId)) return;
+    const c = configStore.get(guildId);
+    const noTrashChannels = [
+      c.CHANNELS.stock_general,
+      c.CHANNELS.bilan,
+      c.CHANNELS.paie,
+      c.CHANNELS.historique_stock,
+      c.CHANNELS.log_ventes,
+      c.CHANNELS.logs_activites,
+      c.CHANNELS.ventes_drogue,
+      c.CHANNELS.alertes_braquages,
+      c.CHANNELS.alertes_actions,
+    ];
+    if (
+      message.author.id === client.user?.id &&
+      !noTrashChannels.includes(message.channelId) &&
+      !quotas.isQuotaReminderMessage(message) &&
+      !garages.isFourriereNotification(message)
+    ) {
+      if (!message.components?.length) message.react('🗑️').catch(() => null);
+    }
+
+    const channelsBotAutorises = [...c.CHANNELS.logs_coffres, ...c.CHANNELS.logs_coffres_admin, c.CHANNELS.logs_garages].filter((id): id is string => !!id);
+    if (message.author.bot && !channelsBotAutorises.includes(message.channelId)) return;
+    // Un message humain, même posté DANS logs_coffres/logs_garages, ne doit
+    // JAMAIS déclencher de mouvement de stock/état véhicule — seul le bot de
+    // jeu FiveM (ou son webhook) le peut : un membre avec la permission
+    // d'écrire dans ces salons pourrait sinon forger un message texte
+    // (`"Joueur a déposé 9999 x Argent Sale"`) et faire créditer une fausse
+    // vente/gonfler le stock.
+    if (!message.author.bot) return;
+
+    await logsCaughtUp.get(guildId)?.promise;
+    if (!configStore.has(guildId)) return;
+
+    await stocks.handleMessage(message).catch(err => console.error('[stocks] messageCreate :', (err as Error).message));
+    await garages.handleMessage(message).catch(err => console.error('[garages] messageCreate :', (err as Error).message));
+  } catch (err) {
+    console.error('[messageCreate] :', (err as Error).message);
   }
-
-  const channelsBotAutorises = [...c.CHANNELS.logs_coffres, ...c.CHANNELS.logs_coffres_admin, c.CHANNELS.logs_garages].filter((id): id is string => !!id);
-  if (message.author.bot && !channelsBotAutorises.includes(message.channelId)) return;
-  // Un message humain, même posté DANS logs_coffres/logs_garages, ne doit
-  // JAMAIS déclencher de mouvement de stock/état véhicule — seul le bot de
-  // jeu FiveM (ou son webhook) le peut : un membre avec la permission
-  // d'écrire dans ces salons pourrait sinon forger un message texte
-  // (`"Joueur a déposé 9999 x Argent Sale"`) et faire créditer une fausse
-  // vente/gonfler le stock.
-  if (!message.author.bot) return;
-
-  await stocks.handleMessage(message).catch(err => console.error('[stocks] messageCreate :', (err as Error).message));
-  await garages.handleMessage(message).catch(err => console.error('[garages] messageCreate :', (err as Error).message));
 });
 
 // ─── INTERACTIONS ─────────────────────────────────────────────────────────────
@@ -394,6 +453,20 @@ client.on('interactionCreate', async (interaction) => {
       }
     } catch { /* silence */ }
   }
+});
+
+// ─── FILETS GLOBAUX ───────────────────────────────────────────────────────────
+// Un rejet de promesse non attrapé tue le process par défaut sous Node ≥ 15 :
+// une erreur isolée dans un handler ne doit pas couper le bot pour toutes les
+// guildes. Une erreur fatale au démarrage, elle, arrête explicitement le
+// process (voir `clientReady`).
+process.on('unhandledRejection', reason => {
+  console.error('[process] Rejet de promesse non géré :', reason);
+});
+// discord.js se reconnecte seul après une erreur WebSocket — mais sans
+// écouteur, l'événement `error` d'un EventEmitter fait planter le process.
+client.on('error', err => {
+  console.error('[discord] Erreur client :', err.message);
 });
 
 // ─── DÉMARRAGE ────────────────────────────────────────────────────────────────
