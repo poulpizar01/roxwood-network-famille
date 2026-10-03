@@ -130,15 +130,18 @@ const TAXES_FIXES_BY_TIER: Record<GroupTier, readonly FixedType[]> = {
 
 /** Les 18 zones de vente, identiques pour Gang et Organisation (pas de découpage par tier pour ces deux-là, contrairement aux labos). */
 const GANG_ORGA_ZONES: readonly string[] = [
-  'New Cayo Perico', 'Paleto', 'Sandy Shores', 'Grapeseed', 'Vinewood', 'Aéroport',
-  'Wardog', 'Mirror Park', 'Fête Foraine', 'Barillo Plage', 'Del Perro', 'Roxwood Est',
-  'Eclypse Tower', 'Vespucci', 'Roxwood Ouest', 'Terrain de cross', "Champ d'éolienne", 'Cayo Perico',
+  'Aéroport', 'Barillo Plage', 'Cayo Perico', "Champ d'éolienne", 'Del Perro', 'Eclypse Tower',
+  'Fête Foraine', 'Grapeseed', 'Mirror Park', 'New Cayo Perico', 'Paleto', 'Roxwood Est',
+  'Roxwood Ouest', 'Sandy Shores', 'Terrain de cross', 'Vespucci', 'Vinewood', 'Wardog',
 ];
 
-/** Zones taxables par tier — Indépendant n'en a aucune ; Gang et Organisation partagent les mêmes 18 zones (voir {@link GANG_ORGA_ZONES}). */
+/** Zones taxables par tier — Indépendant n'en a aucune ; Gang et Organisation partagent les mêmes 18 zones (voir {@link GANG_ORGA_ZONES}). Chaque liste est tenue par ordre alphabétique : c'est l'ordre d'affichage (boutons Discord, référentiel de l'API). */
 const ZONES_BY_TIER: Record<GroupTier, readonly string[]> = {
   independant: [],
-  petite_frappe: ['Roxwood Village', 'Grapeseed Valley', 'Richman', 'Cinéma', 'Hawick', 'Carson', 'Plage Cayo'],
+  petite_frappe: [
+    'Carson', 'Cinéma', 'Docks', 'Grapeseed Valley', 'Hawick', 'Mirror Park', 'Paleto',
+    'Pétrolière', 'Plage Cayo', 'Ponton', 'Richman', 'Roxwood Sud', 'Roxwood Village', 'S-Mart',
+  ],
   gang: GANG_ORGA_ZONES,
   organisation: GANG_ORGA_ZONES,
 };
