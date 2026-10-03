@@ -24,7 +24,7 @@ Contrairement à un bot figé pour un serveur précis, **toute la structure mét
 ## Prérequis
 
 - **Docker** avec Docker Compose (installation recommandée, voir [Via Docker](#via-docker-recommandé)) — fournit Node.js et PostgreSQL, rien d'autre à installer sur l'hôte.
-- Sans Docker uniquement : **Node.js** ≥ 18 et **PostgreSQL** ≥ 14 (local ou hébergé — Supabase, Neon, Railway, RDS…).
+- Sans Docker uniquement : **Node.js** ≥ 18 et **PostgreSQL** ≥ 14 (local ou hébergé).
 - Une application Discord avec un bot configuré (voir juste en dessous) — token, permissions et intents privilégiés.
 
 ### Créer l'application Discord
@@ -98,7 +98,7 @@ npm run build
 npm start
 ```
 
-`DATABASE_URL` pointe vers un PostgreSQL déjà accessible : un service hébergé (Supabase, Neon, Railway, RDS…), ou une instance locale sur le VPS lui-même — sur une base Debian/Ubuntu fraîche, par exemple :
+`DATABASE_URL` pointe vers un PostgreSQL déjà accessible : un service hébergé, ou une instance locale sur le VPS lui-même — sur une base Debian/Ubuntu fraîche, par exemple :
 ```bash
 sudo apt install -y postgresql
 sudo -u postgres psql -c "CREATE USER roxwood_network_famille WITH PASSWORD 'change_me';"
