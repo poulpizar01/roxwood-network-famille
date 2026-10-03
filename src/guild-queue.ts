@@ -8,24 +8,20 @@
  * parallèle sur des séquences lire-puis-écrire (curseur de salon, vente en
  * attente à cumuler ou à confirmer), avec à la clé des mouvements perdus ou
  * appliqués deux fois. Tout traitement de log d'une guilde passe donc par
- * `runExclusive` — temps réel, rattrapage et `/sync-stock` compris, ce qui
- * suspend aussi le temps réel pendant une resynchronisation. Les guildes
- * restent indépendantes entre elles.
+ * `runExclusive` — temps réel, rattrapage, `/sync-stock` et expiration des
+ * ventes compris, ce qui suspend aussi le temps réel pendant une
+ * resynchronisation. Les guildes restent indépendantes entre elles.
  */
+import { SerialRunner } from './serial';
 
-const tails = new Map<string, Promise<void>>();
+const queue = new SerialRunner();
 
 /** Exécute `fn` après tout ce qui est déjà en file pour cette guilde. Ne jamais appeler depuis un `fn` déjà en file pour la même guilde (attente infinie). */
 export function runExclusive<T>(guildId: string, fn: () => Promise<T>): Promise<T> {
-  const previous = tails.get(guildId) ?? Promise.resolve();
-  const run = previous.then(fn);
-  const tail = run.then(() => undefined, () => undefined);
-  tails.set(guildId, tail);
-  void tail.then(() => { if (tails.get(guildId) === tail) tails.delete(guildId); });
-  return run;
+  return queue.run(guildId, fn);
 }
 
 /** Résolue quand toutes les files sont vides — pour un arrêt propre du process. */
-export async function drain(): Promise<void> {
-  await Promise.all([...tails.values()]);
+export function drain(): Promise<void> {
+  return queue.drain();
 }

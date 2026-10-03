@@ -32,6 +32,7 @@ import * as db from '../db';
 import * as configStore from '../config-store';
 import { isAdmin } from '../permissions';
 import { buildChunkedEmbeds } from '../embed-chunks';
+import { parseEntier } from '../parse';
 import * as quotas from './quotas';
 import type { StockEntry } from './stocks';
 
@@ -136,8 +137,25 @@ async function createPendingSale(client: Client, guildId: string, entry: StockEn
   const row = buildAlertButtons(saleId);
   const ping = discordIds.length > 0 ? discordIds.map(id => `<@${id}>`).join(' ') : `**${entry.joueur}**`;
 
-  const sentMsg = await channel.send({ content: ping, embeds: [embed], components: [row] });
+  // Sans son message, la vente n'aurait aucun bouton pour être déclarée et
+  // absorberait en silence les retraits suivants : elle est écartée, et les
+  // admins prévenus pour la suivre à la main.
+  const sentMsg = await channel.send({ content: ping, embeds: [embed], components: [row] }).catch(() => null);
+  if (!sentMsg) {
+    await db.transitionPendingSale(guildId, saleId, ['en_attente'], 'ignore');
+    await alertAdmin(client, guildId, '⚠️ Alerte de vente non postée', `Impossible de poster l'alerte de vente de **${entry.joueur}** (${entry.quantite.toLocaleString('fr-FR')} × ${entry.item}) dans <#${channelId}> — vérifier les permissions du bot. Vente à suivre manuellement.`);
+    return;
+  }
   await db.updatePendingSaleMessage(guildId, saleId, sentMsg.id, sentMsg.channelId);
+}
+
+/** Alerte libre dans le salon `admin`, s'il est configuré. */
+async function alertAdmin(client: Client, guildId: string, title: string, description: string): Promise<void> {
+  const channelId = configStore.get(guildId).CHANNELS.admin;
+  if (!channelId) return;
+  const channel = await client.channels.fetch(channelId).catch(() => null);
+  if (!channel?.isSendable()) return;
+  await channel.send({ embeds: [new EmbedBuilder().setTitle(title).setColor(0xED4245).setDescription(description).setTimestamp()] }).catch(() => null);
 }
 
 /** Embed d'alerte de vente : joueur, item, quantité — le footer `Vente #<id>` identifie la vente (voir `handleTrashReaction`). */
@@ -198,21 +216,24 @@ async function editDeclaredAlertQuantite(client: Client, sale: NonNullable<Pendi
 // ─── CONFIRMATION PAR DÉPÔT D'ARGENT ─────────────────────────────────────────
 
 /**
- * Un dépôt d'un item de paiement confirme toutes les ventes déclarées en
- * attente d'un joueur dans la fenêtre {@link WINDOW_MS}. Seules les ventes
+ * Un dépôt d'un item de paiement confirme toutes les ventes déclarées d'un
+ * joueur dans les {@link WINDOW_MS} qui précèdent CE dépôt — mesurées à
+ * l'heure du message de log, pas du traitement : un dépôt fait pendant un
+ * arrêt du bot confirme bien la vente déclarée avant, et un vieux dépôt
+ * rattrapé ne confirme jamais une vente d'aujourd'hui. Seules les ventes
  * réellement confirmées par CE dépôt (voir `db.confirmDeclaredSale`) sont
  * journalisées : une vente confirmée entre-temps par un autre dépôt n'est ni
  * recréditée ni reloguée.
  */
 async function tryConfirmMoneyDeposit(client: Client, guildId: string, entry: StockEntry): Promise<void> {
-  const sales = await db.getPendingSalesForConfirmation(guildId, entry.joueur, Date.now() - WINDOW_MS);
+  const sales = await db.getPendingSalesForConfirmation(guildId, entry.joueur, entry.timestamp - WINDOW_MS, entry.timestamp);
   if (!sales.length) return;
 
   const confirmed: Array<NonNullable<PendingSale>> = [];
   for (const sale of sales) {
-    const result = await db.confirmDeclaredSale(guildId, sale.id);
-    if (!result) continue;
-    confirmed.push({ ...sale, quantite: result.quantite });
+    const quantite = await db.confirmDeclaredSale(guildId, sale.id, entry.timestamp);
+    if (quantite == null) continue;
+    confirmed.push({ ...sale, quantite });
     await editAlertMessage(client, sale, '✅ Vente confirmée — argent déposé', 0x57F287);
   }
   if (confirmed.length) await sendLogVente(client, guildId, confirmed, entry.quantite);
@@ -235,8 +256,10 @@ async function tryConfirmMoneyDeposit(client: Client, guildId: string, entry: St
  */
 async function tryConfirmRedeposit(client: Client, guildId: string, entry: StockEntry): Promise<void> {
   const saleRepose = await db.getPendingSaleRepose(guildId, entry.joueur, entry.item, Date.now() - WINDOW_MS);
-  if (saleRepose && await db.transitionPendingSale(guildId, saleRepose.id, ['repose'], 'confirme')) {
-    await editAlertMessage(client, saleRepose, '✅ Drogue reposée et vérifiée', 0x57F287);
+  const repose = saleRepose ? await db.applyReposeRedeposit(guildId, saleRepose.id, entry.quantite) : null;
+  if (saleRepose && repose) {
+    if (repose.reste === 0) await editAlertMessage(client, saleRepose, '✅ Drogue reposée et vérifiée', 0x57F287);
+    else await editAlertMessage(client, saleRepose, `📦 Drogue reposée en partie — encore ${repose.reste.toLocaleString('fr-FR')} à redéposer`, 0x5865F2);
     return;
   }
 
@@ -436,8 +459,7 @@ export async function handleModal(interaction: ModalSubmitInteraction): Promise<
   if (id.startsWith('modal_vente_modifier_')) {
     const saleId = parseInt(id.replace('modal_vente_modifier_', ''), 10);
     const sale = await db.getPendingSale(guildId, saleId);
-    const raw = interaction.fields.getTextInputValue('quantite').replace(/[\s\u00a0\u202f]/g, '');
-    const quantite = /^\d+$/.test(raw) ? Number(raw) : NaN;
+    const quantite = parseEntier(interaction.fields.getTextInputValue('quantite')) ?? NaN;
 
     if (!sale || sale.statut !== 'en_attente') {
       await interaction.reply({ content: "❌ Cette vente n'est plus en attente.", flags: MessageFlags.Ephemeral });
@@ -455,7 +477,7 @@ export async function handleModal(interaction: ModalSubmitInteraction): Promise<
 
     const ancienneQuantite = sale.quantite;
     if (!(await db.updatePendingSaleQuantite(guildId, saleId, quantite))) {
-      await interaction.reply({ content: "❌ Cette vente n'est plus en attente.", flags: MessageFlags.Ephemeral });
+      await interaction.reply({ content: "❌ Cette vente n'est plus en attente, ou une partie a été redéposée entre-temps : relance la correction.", flags: MessageFlags.Ephemeral });
       return;
     }
 

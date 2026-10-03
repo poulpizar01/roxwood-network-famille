@@ -16,10 +16,10 @@
  *
  * Un coffre `logs_coffres_admin` n'est visible (dans `/channels`) ou
  * interrogeable en détail (`/:channelId`) que par un admin, et `/history`
- * exclut leurs mouvements — mais `/` (le total global, tous coffres
- * confondus) reste inchangé pour tout le monde : exclure les coffres admin
- * de CE total casserait le stock affiché (il ne reflèterait plus la
- * réalité), voir `db.getAllStocks`, jamais filtré par rôle de salon.
+ * exclut leurs mouvements — mais `/` (le total global) reste le même pour
+ * tout le monde : il somme tous les coffres suivis, admin compris (en
+ * exclure ferait mentir le stock affiché), voir `db.getAllStocks`. Un salon
+ * retiré de la config (`/config channel remove-log-coffre`) n'y compte plus.
  */
 import { Router } from 'express';
 import * as db from '../../db';
@@ -29,7 +29,7 @@ const router = Router();
 
 /** GET /api/stocks — quantité actuelle de chaque item suivi, tous coffres confondus (admin inclus, pour tout le monde — voir docstring de fichier). */
 router.get('/', async (req, res) => {
-  res.json(await db.getAllStocks(req.apiUser!.guildId));
+  res.json(await db.getAllStocks(req.apiUser!.guildId, configStore.coffreChannelIds(req.apiUser!.guildId)));
 });
 
 /**

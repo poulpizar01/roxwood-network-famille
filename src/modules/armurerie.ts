@@ -44,6 +44,11 @@ import * as configStore from '../config-store';
 import { replyAutoDelete, updateAutoDelete } from '../interaction-helpers';
 import { buildChunkedEmbeds } from '../embed-chunks';
 import { upsertPanel } from '../permanent-message';
+import { parseEntier, parseMontant } from '../parse';
+
+/** Plafonds d'une saisie de munitions — au-delà, c'est une faute de frappe (les compteurs sont indicatifs, voir CLAUDE.md). */
+const MAX_MUNITIONS_SAISIE = 100_000;
+const MAX_PRIX_MUNITIONS = 100_000_000;
 
 const ARMURERIE_PANEL_TITLE = '🔫 Armurerie';
 
@@ -149,7 +154,7 @@ export function weightedStockSum(items: string[], stockByItem: Record<string, nu
 async function getMunitionsStock(guildId: string): Promise<number> {
   const c = configStore.get(guildId);
   const items = c.STOCK_GROUPS[MUNITIONS_STOCK_GROUP] ?? [];
-  const stockByItem = await db.getStocksByItems(guildId, items);
+  const stockByItem = await db.getStocksByItems(guildId, items, configStore.coffreChannelIds(guildId));
   return weightedStockSum(items, stockByItem, c.ITEMS_BY_NAME);
 }
 
@@ -196,7 +201,7 @@ export async function getMunitionsSummary(guildId: string) {
     getMunitionsStock(guildId),
     db.getMunitionsFabriqueesDepuis(guildId, sinceReset),
     db.getMunitionsVenduesDepuis(guildId, sinceReset),
-    db.getStock(guildId, MUNITIONS_SMG_ITEM),
+    db.getStock(guildId, MUNITIONS_SMG_ITEM, configStore.coffreChannelIds(guildId)),
   ]);
   return {
     stock,
@@ -703,9 +708,14 @@ export async function handleModal(interaction: ModalSubmitInteraction): Promise<
     return;
   }
 
+  // Le tier a pu changer pendant que le modal était ouvert (voir MUNITIONS_FABRICATION_TIER).
+  if ((id === 'modal_arm_fabrication' || id === 'modal_arm_vente_munitions') && !getMunitionsFabricationType(guildId)) {
+    return replyAutoDelete(interaction, "❌ Aucune fabrication ni vente de munitions pour ce type d'organisation.");
+  }
+
   if (id === 'modal_arm_fabrication') {
-    const quantite = parseInt(interaction.fields.getTextInputValue('quantite').trim(), 10);
-    if (!Number.isInteger(quantite) || quantite <= 0) return replyAutoDelete(interaction, '❌ Quantité invalide.');
+    const quantite = parseEntier(interaction.fields.getTextInputValue('quantite'), MAX_MUNITIONS_SAISIE);
+    if (!quantite) return replyAutoDelete(interaction, `❌ Quantité invalide (nombre entier entre 1 et ${MAX_MUNITIONS_SAISIE.toLocaleString('fr-FR')}).`);
 
     await db.addTransaction(guildId, {
       user_id: interaction.user.id,
@@ -720,13 +730,13 @@ export async function handleModal(interaction: ModalSubmitInteraction): Promise<
   }
 
   if (id === 'modal_arm_vente_munitions') {
-    const quantite = parseInt(interaction.fields.getTextInputValue('quantite').trim(), 10);
+    const quantite = parseEntier(interaction.fields.getTextInputValue('quantite'), MAX_MUNITIONS_SAISIE);
     const acheteurId = interaction.fields.getTextInputValue('acheteur_id').trim();
-    const prix = parseFloat(interaction.fields.getTextInputValue('prix').trim().replace(',', '.'));
+    const prix = parseMontant(interaction.fields.getTextInputValue('prix'), MAX_PRIX_MUNITIONS);
 
-    if (!Number.isInteger(quantite) || quantite <= 0) return replyAutoDelete(interaction, '❌ Quantité invalide.');
+    if (!quantite) return replyAutoDelete(interaction, `❌ Quantité invalide (nombre entier entre 1 et ${MAX_MUNITIONS_SAISIE.toLocaleString('fr-FR')}).`);
     if (!acheteurId) return replyAutoDelete(interaction, '❌ ID acheteur manquant.');
-    if (!Number.isFinite(prix) || prix < 0) return replyAutoDelete(interaction, '❌ Prix invalide.');
+    if (prix == null) return replyAutoDelete(interaction, '❌ Prix invalide (montant positif attendu).');
 
     await db.addMunitionVente(guildId, {
       vendeur_id: interaction.user.id,

@@ -1,8 +1,8 @@
 /**
  * @file src/permanent-message.ts
  * @description Création/édition des messages permanents (Stock Général,
- * panneau d'activités, armurerie, taxes), partagée par tous les modules qui
- * en ont un.
+ * panneau d'activités, armurerie, taxes, documentation) et des publications
+ * à ne jamais poster deux fois, partagées par tous les modules.
  *
  * Un message permanent est retrouvé par son ID stocké en base, puis, à
  * défaut, par le titre de son embed parmi les derniers messages du salon :
@@ -14,10 +14,11 @@
  */
 import { DiscordAPIError, RESTJSONErrorCodes, type Message, type SendableChannels, type BaseMessageOptions } from 'discord.js';
 import * as db from './db';
+import { SerialRunner } from './serial';
 
 const RECENT_MESSAGES_SCANNED = 50;
 
-const chains = new Map<string, Promise<void>>();
+const panels = new SerialRunner();
 
 /** Récupère un message par ID — `null` s'il a été supprimé, erreur propagée dans tous les autres cas. */
 export async function fetchMessageOrNull(channel: SendableChannels, messageId: string): Promise<Message | null> {
@@ -29,6 +30,12 @@ export async function fetchMessageOrNull(channel: SendableChannels, messageId: s
   }
 }
 
+/** Dernier message du bot dans le salon dont le premier embed porte ce titre, ou `null`. */
+export async function findRecentByTitle(channel: SendableChannels, title: string): Promise<Message | null> {
+  const recent = await channel.messages.fetch({ limit: RECENT_MESSAGES_SCANNED });
+  return recent.find(m => m.author.id === channel.client.user.id && m.embeds[0]?.title === title) ?? null;
+}
+
 /**
  * Édite le message permanent identifié par `settingKey` (ID stocké) ou par
  * `title` (titre de son premier embed), ou le crée s'il n'existe plus.
@@ -38,16 +45,13 @@ export async function fetchMessageOrNull(channel: SendableChannels, messageId: s
 export function upsertPanel(
   channel: SendableChannels, guildId: string, settingKey: string, title: string, build: () => Promise<BaseMessageOptions>,
 ): Promise<void> {
-  const chainKey = `${guildId}:${settingKey}`;
-  const previous = chains.get(chainKey) ?? Promise.resolve();
-  const run = previous.then(async () => {
+  return panels.run(`${guildId}:${settingKey}`, async () => {
     const payload = await build();
     const storedId = await db.getSetting(guildId, settingKey);
     let message = storedId ? await fetchMessageOrNull(channel, storedId) : null;
 
     if (!message) {
-      const recent = await channel.messages.fetch({ limit: RECENT_MESSAGES_SCANNED });
-      message = recent.find(m => m.author.id === channel.client.user.id && m.embeds[0]?.title === title) ?? null;
+      message = await findRecentByTitle(channel, title);
       if (message) await db.setSetting(guildId, settingKey, message.id);
     }
 
@@ -58,8 +62,15 @@ export function upsertPanel(
     const created = await channel.send(payload);
     await db.setSetting(guildId, settingKey, created.id);
   });
-  const tail = run.then(() => undefined, () => undefined);
-  chains.set(chainKey, tail);
-  void tail.then(() => { if (chains.get(chainKey) === tail) chains.delete(chainKey); });
-  return run;
+}
+
+/**
+ * Poste une publication (bilan, paie…) sauf si un message du bot portant le
+ * même titre figure déjà parmi les derniers du salon : un arrêt entre l'envoi
+ * et l'enregistrement de l'étape ne la fait pas reposter. Une publication en
+ * plusieurs messages est reconnue par le titre de son premier.
+ */
+export async function sendOnce(channel: SendableChannels, messages: BaseMessageOptions[], title: string): Promise<void> {
+  if (await findRecentByTitle(channel, title)) return;
+  for (const message of messages) await channel.send(message);
 }

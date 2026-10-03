@@ -30,6 +30,8 @@ import * as configStore from '../config-store';
 import { isAdmin } from '../permissions';
 import { buildChunkedEmbeds } from '../embed-chunks';
 import { isGameLogMessage } from './stocks';
+import { fetchPage, fetchPagesAfter, sortById, type HistoryChannel } from '../discord-fetch';
+import { sendOnce } from '../permanent-message';
 
 /** Amende indicative par mise en fourrière — valeur fixe, ne bouge jamais. Exportée pour `/api/garages/impounds`, qui réutilise cette même valeur plutôt que de la dupliquer. */
 export const MONTANT_FOURRIERE = 350;
@@ -133,30 +135,27 @@ export async function handleMessage(message: Message): Promise<void> {
   const cursor = await db.getSetting(guildId, 'last_garages_msg');
   if (cursor && BigInt(message.id) <= BigInt(cursor)) return;
 
-  for (const ligne of extractLignes(message)) {
-    const facturation = await traiterLigne(guildId, ligne, true);
-    if (facturation) await notifierFourriere(message.client, guildId, facturation);
+  try {
+    for (const ligne of extractLignes(message)) {
+      const facturation = await traiterLigne(guildId, ligne, true);
+      if (facturation) await notifierFourriere(message.client, guildId, facturation);
+    }
+    // Curseur avancé APRÈS application : un arrêt au milieu laisse le message
+    // à rejouer par le rattrapage (sans amende rétroactive) plutôt que perdu.
+    if (cursor) await db.setSetting(guildId, 'last_garages_msg', message.id);
+  } catch (err) {
+    // Sans ça, le message suivant ferait avancer le curseur par-dessus celui-ci, jamais rejoué.
+    catchUpPending.add(guildId);
+    throw err;
   }
-  // Curseur avancé APRÈS application : un arrêt au milieu laisse le message
-  // à rejouer par le rattrapage (sans amende rétroactive) plutôt que perdu.
-  if (cursor) await db.setSetting(guildId, 'last_garages_msg', message.id);
 }
 
-/** Guildes dont le dernier rattrapage des garages a échoué (voir `handleMessage`). */
+/** Guildes dont les garages sont à rattraper : rattrapage ou écriture en échec, coupure de connexion à Discord (voir `handleMessage`). */
 const catchUpPending = new Set<string>();
 
-const FETCH_RETRY_DELAYS_MS = [2_000, 5_000, 15_000];
-
-/** Lecture d'une page de messages, retentée puis propagée en cas d'échec — jamais confondue avec "plus de messages". */
-async function fetchPage(channel: Extract<Message['channel'], { messages: unknown }>, options: { limit: number; after?: string; before?: string }) {
-  for (let attempt = 0; ; attempt++) {
-    try {
-      return await channel.messages.fetch({ ...options, cache: false });
-    } catch (err) {
-      if (attempt >= FETCH_RETRY_DELAYS_MS.length) throw err;
-      await new Promise(resolve => setTimeout(resolve, FETCH_RETRY_DELAYS_MS[attempt]));
-    }
-  }
+/** Marque les garages d'une guilde à rattraper — à appeler dès qu'une coupure de connexion à Discord est détectée (même principe que `stocks.markForCatchUp`). */
+export function markForCatchUp(guildId: string): void {
+  if (configStore.get(guildId).CHANNELS.logs_garages) catchUpPending.add(guildId);
 }
 
 /**
@@ -167,11 +166,12 @@ async function fetchPage(channel: Extract<Message['channel'], { messages: unknow
 export async function catchUpMissedMessages(client: Client, guildId: string): Promise<number> {
   const channelId = configStore.get(guildId).CHANNELS.logs_garages;
   if (!channelId) { catchUpPending.delete(guildId); return 0; }
-  const channel = await client.channels.fetch(channelId).catch(() => null);
-  if (!channel || !channel.isTextBased() || channel.isDMBased()) return 0;
 
+  // Marqué avant de lire le salon : un échec de lecture, quel qu'il soit, laisse les garages à rattraper.
   catchUpPending.add(guildId);
   try {
+    const channel = await client.channels.fetch(channelId);
+    if (!channel || !channel.isTextBased() || channel.isDMBased()) return 0;
     const total = await rejouerHistorique(channel, guildId);
     catchUpPending.delete(guildId);
     return total;
@@ -182,7 +182,7 @@ export async function catchUpMissedMessages(client: Client, guildId: string): Pr
 }
 
 /** Corps de `catchUpMissedMessages` : propage toute erreur de lecture (voir `fetchPage`). */
-async function rejouerHistorique(channel: Extract<Message['channel'], { messages: unknown }>, guildId: string): Promise<number> {
+async function rejouerHistorique(channel: HistoryChannel, guildId: string): Promise<number> {
   const lastId = await db.getSetting(guildId, 'last_garages_msg');
   let total = 0;
 
@@ -194,11 +194,11 @@ async function rejouerHistorique(channel: Extract<Message['channel'], { messages
       const batch = await fetchPage(channel, { limit: 100, ...(before ? { before } : {}) });
       if (!batch.size) break;
       collected.push(...batch.values());
-      before = [...batch.values()].sort((a, b) => a.createdTimestamp - b.createdTimestamp)[0].id;
+      before = sortById(batch.values())[0].id;
       if (batch.size < 100) break;
     }
 
-    const sortedInit = collected.sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+    const sortedInit = sortById(collected);
     for (const msg of sortedInit) {
       // Un message humain ne doit jamais être rejoué comme un événement de
       // garage, même en historique — même règle qu'en temps réel (voir
@@ -215,13 +215,8 @@ async function rejouerHistorique(channel: Extract<Message['channel'], { messages
     return total;
   }
 
-  let cursor = lastId;
-  while (true) {
-    const batch = await fetchPage(channel, { limit: 100, after: cursor });
-    if (!batch.size) break;
-
-    const sorted = [...batch.values()].sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1));
-    for (const msg of sorted) {
+  for await (const page of fetchPagesAfter(channel, lastId)) {
+    for (const msg of page) {
       if (isGameLogMessage(msg)) {
         for (const ligne of extractLignes(msg)) {
           await traiterLigne(guildId, ligne, false);
@@ -230,8 +225,6 @@ async function rejouerHistorique(channel: Extract<Message['channel'], { messages
       }
       await db.setSetting(guildId, 'last_garages_msg', msg.id);
     }
-    cursor = sorted[sorted.length - 1].id;
-    if (batch.size < 100) break;
   }
 
   if (total > 0) console.log(`[garages] Rattrapage (${guildId}) : ${total} ligne(s) traitée(s) (état reconstruit, aucune amende rétroactive).`);
@@ -282,9 +275,9 @@ const CLASSEMENT_TITLE = '🚗 Classement des fourrières';
  * ça peut dépasser le seuil de rendu Discord (voir src/embed-chunks.ts),
  * d'où le découpage en plusieurs embeds plutôt qu'un seul `setDescription`.
  */
-async function buildClassementEmbeds(guildId: string, title: string): Promise<EmbedBuilder[]> {
+async function buildClassementEmbeds(guildId: string, title: string, untilTs?: number): Promise<EmbedBuilder[]> {
   const montant = MONTANT_FOURRIERE;
-  const classement = await db.getFourriereClassement(guildId);
+  const classement = await db.getFourriereClassement(guildId, untilTs);
 
   const lignes = classement.map((c, i) => {
     const qui = c.discord_id ? `<@${c.discord_id}>` : `**${c.joueur}**`;
@@ -320,21 +313,25 @@ export async function handleClassementCommand(interaction: ChatInputCommandInter
 /**
  * Reset hebdomadaire du classement des fourrières, appelé par la publication
  * de fin de semaine (`quotas.checkWeeklyReset`, même moment que le
- * bilan/paie). Poste une archive de la semaine écoulée dans `bilan`, puis
- * vide le compteur. L'état courant des véhicules n'est pas affecté, seul le
- * compteur de fourrières l'est. Une erreur d'envoi remonte, sans vider le
- * compteur : l'étape est retentée au passage suivant.
+ * bilan/paie). Poste une archive des fourrières antérieures à `untilTs` (la
+ * fin de la semaine close) dans `bilan`, puis les retire — celles de la
+ * semaine en cours restent, même si la publication est en retard. L'état
+ * courant des véhicules n'est pas affecté. Une erreur d'envoi remonte, sans
+ * rien retirer : l'étape est retentée au passage suivant, sans reposter
+ * l'archive (voir `permanent-message.sendOnce`).
  */
-export async function resetFourrieresHebdo(client: Client, guildId: string, entete: string): Promise<void> {
+export async function resetFourrieresHebdo(client: Client, guildId: string, entete: string, untilTs: number): Promise<void> {
   const c = configStore.get(guildId);
   if (c.CHANNELS.bilan) {
     const channel = await client.channels.fetch(c.CHANNELS.bilan).catch(() => null);
     if (channel && channel.isSendable()) {
-      const embeds = await buildClassementEmbeds(guildId, `📊 Bilan fourrières — ${entete}`);
-      await channel.send({ embeds });
+      const title = `📊 Bilan fourrières — ${entete}`;
+      const embeds = await buildClassementEmbeds(guildId, title, untilTs);
+      // Un message par embed : Discord plafonne aussi le total des embeds d'un même message.
+      await sendOnce(channel, embeds.map(embed => ({ embeds: [embed] })), title);
     }
   }
 
-  await db.clearFourrieres(guildId);
+  await db.clearFourrieres(guildId, untilTs);
   console.log(`[garages] Classement des fourrières remis à zéro (${guildId}) — ${entete}.`);
 }

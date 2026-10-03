@@ -116,10 +116,10 @@ model Item {
   /// Auto-incrémenté, jamais réglable via `/config item` — capture l'ordre
   /// d'INSERTION réel (les items par défaut, ajoutés au tout premier
   /// démarrage, obtiennent les valeurs les plus basses). Départage
-  /// `displayOrder` (toujours 0 en pratique, aucune commande ne le règle
-  /// actuellement) dans `db.getAllItems` : sans lui, le tri retombait sur le
-  /// nom par ordre alphabétique, pas l'ordre d'ajout attendu par le Stock
-  /// Général (voir `stocks.buildStockEmbed`). `@unique`, pas `@id` : la clé
+  /// `displayOrder` (négatif pour quelques items par défaut, 0 pour tous les
+  /// autres : aucune commande ne le règle) dans `db.getAllItems` — c'est lui
+  /// qui donne au Stock Général l'ordre d'ajout plutôt que l'ordre
+  /// alphabétique (voir `stocks.buildStockEmbed`). `@unique`, pas `@id` : la clé
   /// primaire de cette table reste `@@id([guildId, name])` (voir plus bas),
   /// pas cet `id` — convention différente des autres tables de ce schéma
   /// (Braquage, Taxe, Arme, PendingSale…) qui, elles, n'ont pas de clé
@@ -286,7 +286,6 @@ model Stat {
   userId  String @map("user_id")
   action  String
   count   Float  @default(0)
-  points  Float  @default(0)
 
   @@id([guildId, userId, action])
   @@map("stats")

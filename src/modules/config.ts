@@ -52,11 +52,34 @@ import * as armurerie from './armurerie';
 import * as alertes from './alertes';
 import { CONFIRME_VENTE_ITEM } from './ventes';
 import { seedDefaultItems } from '../default-items';
+import { upsertPanel } from '../permanent-message';
 
 const ROLE_TARGETS = [
   { name: 'Rôle admin (commandes sensibles)', value: 'admin' },
   { name: 'Rôle membre (back-office web)', value: 'membre' },
 ];
+
+/**
+ * Catégories de quota du registre d'activités. Proposées en choix fermés à la
+ * création (une faute de frappe créerait une catégorie que rien ne
+ * remplit) ; les sous-commandes `remove` restent en saisie libre, pour
+ * pouvoir retirer une valeur ancienne qui n'en ferait plus partie.
+ */
+function quotaTypeChoices(guildId: string): Array<{ name: string; value: string }> {
+  const types = new Set(Object.values(configStore.get(guildId).ACTIVITY_TYPES).map(cfg => cfg.quotaType).filter((qt): qt is string => !!qt));
+  return [...types].sort().map(qt => ({ name: qt, value: qt }));
+}
+
+/**
+ * Nom exact d'un item suivi, retrouvé sans tenir compte de la casse — `null`
+ * s'il n'est pas suivi. Un taux ou un palier par item enregistré sous un nom
+ * mal orthographié ne correspondrait jamais à aucune vente, sans aucune
+ * erreur (piège n°1 appliqué à la paie).
+ */
+function canonicalItem(guildId: string, saisie: string): string | null {
+  const lower = saisie.trim().toLowerCase();
+  return configStore.get(guildId).ALLOWED_ITEMS.find(name => name.toLowerCase() === lower) ?? null;
+}
 
 /** Déclare la commande `/config` et tous ses sous-groupes (channel, role, item, quota, salaire, palier, classement, category, type-groupe, site-externe). `guildId` : les choix de `labo_lie` viennent du registre d'activités de CETTE guilde (déjà chargé en cache à ce stade — voir `prepareGuild` dans index.ts, qui appelle `configStore.reload()` avant `deployCommandsForGuild`). */
 export function getCommands(guildId: string) {
@@ -139,7 +162,7 @@ export function getCommands(guildId: string) {
     .addSubcommand(s => s
       .setName('set')
       .setDescription("Fixe l'objectif hebdomadaire d'une catégorie de quota")
-      .addStringOption(o => o.setName('quota_type').setDescription('Catégorie de quota (actions, vente, recolte, labos)').setRequired(true))
+      .addStringOption(o => o.setName('quota_type').setDescription('Catégorie de quota').setRequired(true).addChoices(...quotaTypeChoices(guildId)))
       .addIntegerOption(o => o.setName('valeur').setDescription('Objectif hebdomadaire').setRequired(true).setMinValue(0)))
     .addSubcommand(s => s
       .setName('remove')
@@ -153,7 +176,7 @@ export function getCommands(guildId: string) {
     .addSubcommand(s => s
       .setName('set')
       .setDescription("Fixe le taux de paie ($ par unité) d'une catégorie de quota")
-      .addStringOption(o => o.setName('quota_type').setDescription('Catégorie de quota (actions, vente, recolte, labos)').setRequired(true))
+      .addStringOption(o => o.setName('quota_type').setDescription('Catégorie de quota').setRequired(true).addChoices(...quotaTypeChoices(guildId)))
       .addNumberOption(o => o.setName('valeur').setDescription('Montant en $ par unité').setRequired(true).setMinValue(0))
       .addStringOption(o => o.setName('item').setDescription('Optionnel — limite ce taux à cette drogue (quota_type doit être "vente")').setRequired(false).setAutocomplete(true)))
     .addSubcommand(s => s
@@ -189,7 +212,7 @@ export function getCommands(guildId: string) {
     .addSubcommand(s => s
       .setName('set')
       .setDescription("Fixe les points de classement d'une catégorie de quota")
-      .addStringOption(o => o.setName('quota_type').setDescription('Catégorie de quota (actions, vente, recolte, labos)').setRequired(true))
+      .addStringOption(o => o.setName('quota_type').setDescription('Catégorie de quota').setRequired(true).addChoices(...quotaTypeChoices(guildId)))
       .addIntegerOption(o => o.setName('valeur').setDescription('Points par unité').setRequired(true).setMinValue(0))
       .addStringOption(o => o.setName('activite').setDescription('Optionnel — limite ces points à cette activité (quota_type doit être "actions")').setRequired(false)
         .addChoices(...Object.entries(configStore.get(guildId).ACTIVITY_TYPES).filter(([, cfg]) => cfg.quotaType === 'actions').map(([key, cfg]) => ({ name: cfg.label, value: key })))))
@@ -256,7 +279,7 @@ export async function handleCommand(interaction: ChatInputCommandInteraction): P
   // quelqu'un touche /config, quel que soit le moment (y compris un bot déjà
   // en cours d'exécution depuis un moment) — no-op si déjà fait, voir
   // seedDefaultItems.
-  await seedDefaultItems(guildId);
+  if (await seedDefaultItems(guildId)) await stocks.updateStockMessage(interaction.client, guildId);
 
   const group = interaction.options.getSubcommandGroup();
   const sub = interaction.options.getSubcommand();
@@ -291,10 +314,12 @@ async function handleChannel(interaction: ChatInputCommandInteraction, guildId: 
     if (role === 'quotas') await quotas.updatePermanentMessage(interaction.client, guildId);
     if (role === 'taxes') await taxes.initPermanentMessage(interaction.client, guildId);
     if (role === 'documentation') await initDocumentationMessage(interaction.client, guildId);
-    // Idem pour le préfixe 🟢 d'un salon de labo : sans ça, il resterait sans
-    // préfixe (ni rouge ni vert) jusqu'à la première déclaration de ce labo.
-    // No-op silencieux si ce labo n'est pas actif pour le tier courant.
-    if (role.startsWith('labo_')) await alertes.setLaboStatut(interaction.client, guildId, role, true);
+    // Idem pour le préfixe du salon d'un labo actif pour le tier courant : sans
+    // ça, il resterait sans préfixe jusqu'à la première déclaration. Un labo
+    // en pleine production garde son 🔴 et son retour au vert programmé.
+    if (role.startsWith('labo_') && configStore.get(guildId).ACTIVITY_TYPES[role]?.enabled) {
+      await alertes.refreshLaboStatut(interaction.client, guildId, role);
+    }
     await interaction.reply({ content: `✅ Salon **${role}** → <#${salon.id}>`, flags: MessageFlags.Ephemeral });
     return;
   }
@@ -318,6 +343,8 @@ async function handleChannel(interaction: ChatInputCommandInteraction, guildId: 
     await configStore.mutate(guildId, () => sub.startsWith('add-')
       ? db.addChannelToRole(guildId, role, salon.id, nom)
       : db.removeChannelFromRole(guildId, role, salon.id));
+    // Le stock d'un coffre retiré ne compte plus dans le total (voir db.getStock).
+    await stocks.updateStockMessage(interaction.client, guildId);
     const total = configStore.get(guildId).CHANNELS[role].length;
     const roleLabel = role === 'logs_coffres_admin' ? 'coffre admin' : 'coffre';
     const nomSuffix = sub.startsWith('add-') && nom ? ` — nommé **${nom}**` : '';
@@ -362,7 +389,15 @@ async function handleRole(interaction: ChatInputCommandInteraction, guildId: str
 /** `/config item add|remove|list`. */
 async function handleItem(interaction: ChatInputCommandInteraction, guildId: string, sub: string): Promise<void> {
   if (sub === 'add') {
-    const nom = interaction.options.getString('nom', true);
+    const nom = interaction.options.getString('nom', true).trim();
+    // Le stock étant indexé sans tenir compte de la casse, deux items qui ne
+    // diffèrent que par elle partageraient la même quantité et seraient
+    // comptés deux fois dans les totaux.
+    const homonyme = Object.keys(configStore.get(guildId).ITEMS_BY_NAME).find(name => name !== nom && name.toLowerCase() === nom.toLowerCase());
+    if (homonyme) {
+      await interaction.reply({ content: `❌ L'item **${homonyme}** existe déjà avec une autre casse. Garde l'orthographe exacte des logs de coffre : retire l'un des deux (\`/config item remove\`) avant d'enregistrer l'autre.`, flags: MessageFlags.Ephemeral });
+      return;
+    }
     const ventePnj = interaction.options.getBoolean('vente_pnj') ?? false;
     const stockGeneral = interaction.options.getBoolean('visible_stock') ?? true;
     const laboLie = interaction.options.getString('labo_associe');
@@ -415,12 +450,15 @@ async function handleQuota(interaction: ChatInputCommandInteraction, guildId: st
     const quotaType = interaction.options.getString('quota_type', true);
     const valeur = interaction.options.getInteger('valeur', true);
     await configStore.mutate(guildId, () => db.setQuotaTarget(guildId, quotaType, valeur));
+    // Le rappel du dimanche affiche l'objectif vente et qui est en dessous.
+    if (quotaType === 'vente') await quotas.syncQuotaReminder(interaction.client, guildId);
     await interaction.reply({ content: `✅ Objectif **${quotaType}** → ${valeur}/semaine.`, flags: MessageFlags.Ephemeral });
     return;
   }
   if (sub === 'remove') {
     const quotaType = interaction.options.getString('quota_type', true);
     await configStore.mutate(guildId, () => db.deleteQuotaTarget(guildId, quotaType));
+    if (quotaType === 'vente') await quotas.syncQuotaReminder(interaction.client, guildId);
     await interaction.reply({ content: `✅ Objectif **${quotaType}** retiré.`, flags: MessageFlags.Ephemeral });
     return;
   }
@@ -441,9 +479,14 @@ async function handleSalaire(interaction: ChatInputCommandInteraction, guildId: 
   if (sub === 'set') {
     const quotaType = interaction.options.getString('quota_type', true);
     const valeur = interaction.options.getNumber('valeur', true);
-    const item = interaction.options.getString('item');
-    if (item && quotaType !== 'vente') {
+    const saisie = interaction.options.getString('item');
+    if (saisie && quotaType !== 'vente') {
       await interaction.reply({ content: "❌ `item` n'est utilisable qu'avec `quota_type: vente`.", flags: MessageFlags.Ephemeral });
+      return;
+    }
+    const item = saisie ? canonicalItem(guildId, saisie) : null;
+    if (saisie && !item) {
+      await interaction.reply({ content: `❌ **${saisie}** n'est pas un item suivi (voir \`/config item list\`) : ce taux ne s'appliquerait à aucune vente.`, flags: MessageFlags.Ephemeral });
       return;
     }
     if (item) {
@@ -486,11 +529,15 @@ async function handleSalaire(interaction: ChatInputCommandInteraction, guildId: 
 /** Formatte les tranches d'UN barème (déjà triées par `upTo` croissant, la dernière ayant `upTo: null`) en lignes "borne basse → borne haute : montant$/unité", la borne basse de chaque tranche étant la borne haute de la précédente. */
 function formatTierLines(tiers: Array<{ upTo: number | null; amount: number }>): string[] {
   let prev = 0;
-  return tiers.map(t => {
+  const lines = tiers.map(t => {
     const line = t.upTo == null ? `${prev}+ : ${t.amount}$/unité` : `${prev} → ${t.upTo} : ${t.amount}$/unité`;
     prev = t.upTo ?? prev;
     return line;
   });
+  // Sans tranche finale, `quotas.computeTierPay` prolonge la dernière au-delà de sa borne.
+  const last = tiers[tiers.length - 1];
+  if (last && last.upTo != null) lines.push(`${last.upTo}+ : ${last.amount}$/unité _(pas de tranche finale : la dernière s'applique)_`);
+  return lines;
 }
 
 /**
@@ -503,7 +550,12 @@ function formatTierLines(tiers: Array<{ upTo: number | null; amount: number }>):
  */
 async function handlePalier(interaction: ChatInputCommandInteraction, guildId: string, sub: string): Promise<void> {
   if (sub === 'add') {
-    const item = interaction.options.getString('item');
+    const saisie = interaction.options.getString('item');
+    const item = saisie ? canonicalItem(guildId, saisie) : null;
+    if (saisie && !item) {
+      await interaction.reply({ content: `❌ **${saisie}** n'est pas un item suivi (voir \`/config item list\`) : ce barème ne s'appliquerait à aucune vente.`, flags: MessageFlags.Ephemeral });
+      return;
+    }
     const jusqua = interaction.options.getInteger('jusqua');
     const valeur = interaction.options.getNumber('valeur', true);
     const existing = await db.getSalaryTiersFor(guildId, item);
@@ -523,7 +575,8 @@ async function handlePalier(interaction: ChatInputCommandInteraction, guildId: s
 
     await configStore.mutate(guildId, () => db.addSalaryTier(guildId, item, jusqua, valeur));
     const tranche = jusqua != null ? `jusqu'à ${jusqua} unités` : 'au-delà (tranche finale, sans limite)';
-    await interaction.reply({ content: `✅ Tranche ajoutée au barème ${cible} : ${tranche} → ${valeur}$/unité.`, flags: MessageFlags.Ephemeral });
+    const sansFinale = jusqua != null ? `\nℹ️ Pas encore de tranche finale (sans limite) : au-delà de ${jusqua} unités, le taux de cette tranche s'applique.` : '';
+    await interaction.reply({ content: `✅ Tranche ajoutée au barème ${cible} : ${tranche} → ${valeur}$/unité.${sansFinale}`, flags: MessageFlags.Ephemeral });
     return;
   }
   if (sub === 'remove') {
@@ -719,6 +772,8 @@ const MANUEL_URL = 'https://claude.ai/code/artifact/843accbb-86d1-4a5a-ada8-dc38
  * (si le salon vient d'être créé) et `initGuild` (`index.ts`) au
  * démarrage pour chaque guilde déjà connue.
  */
+const DOCUMENTATION_TITLE = "📚 Bienvenue dans le dossier de l'organisation";
+
 export async function initDocumentationMessage(client: Client, guildId: string): Promise<void> {
   const channelId = configStore.get(guildId).CHANNELS.documentation;
   if (!channelId) return;
@@ -727,7 +782,7 @@ export async function initDocumentationMessage(client: Client, guildId: string):
     if (!channel?.isSendable()) return;
 
     const embed = new EmbedBuilder()
-      .setTitle("📚 Bienvenue dans le dossier de l'organisation")
+      .setTitle(DOCUMENTATION_TITLE)
       .setColor(0xcf9f2e)
       .setDescription(
         "Ce salon regroupe tout ce qu'il faut savoir sur le bot : comment déclarer une activité, vendre, " +
@@ -744,13 +799,7 @@ export async function initDocumentationMessage(client: Client, guildId: string):
       new ButtonBuilder().setLabel('📖 Ouvrir le manuel complet').setStyle(ButtonStyle.Link).setURL(MANUEL_URL),
     );
 
-    const storedId = await db.getSetting(guildId, 'documentation_message_id');
-    if (storedId) {
-      const msg = await channel.messages.fetch(storedId).catch(() => null);
-      if (msg) { await msg.edit({ embeds: [embed], components: [row] }); return; }
-    }
-    const newMsg = await channel.send({ embeds: [embed], components: [row] });
-    await db.setSetting(guildId, 'documentation_message_id', newMsg.id);
+    await upsertPanel(channel, guildId, 'documentation_message_id', DOCUMENTATION_TITLE, async () => ({ embeds: [embed], components: [row] }));
   } catch (err) {
     console.error(`[config] initDocumentationMessage(${guildId}):`, (err as Error).message);
   }

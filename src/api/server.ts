@@ -101,14 +101,13 @@ export function startApiServer(client: Client): void {
   // brute-force utile ici (même message d'erreur guilde inconnue/inactive),
   // mais évite un DoS applicatif par répétition de requêtes.
   const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 20, standardHeaders: true, legacyHeaders: false });
-  const apiLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 300, standardHeaders: true, legacyHeaders: false });
-  // Par guilde, APRÈS requireAuth (le JWT, donc `req.apiUser.guildId`, n'existe
-  // qu'à partir de là) — en plus de `apiLimiter` (par IP, avant requireAuth,
-  // première ligne de défense contre un abus non authentifié). Plusieurs
-  // sites externes de guildes différentes peuvent partager la même IP
-  // sortante (même reverse proxy) : sans ce second palier, ils partageraient
-  // aussi le même quota `apiLimiter`, et un tenant très actif épuiserait
-  // celui des autres.
+  // Deux paliers. `apiLimiter`, par IP et avant requireAuth (le JWT n'existe
+  // pas encore), ne sert qu'à freiner un abus non authentifié : il est large,
+  // parce que les sites de plusieurs guildes peuvent appeler l'API depuis la
+  // même IP sortante (même serveur, même proxy) et le partageraient. Le vrai
+  // quota est `guildLimiter`, par guilde, après requireAuth : un tenant très
+  // actif n'épuise jamais celui d'un autre.
+  const apiLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 3_000, standardHeaders: true, legacyHeaders: false });
   const guildLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     limit: 300,

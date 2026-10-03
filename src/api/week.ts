@@ -7,28 +7,11 @@
  */
 import type { Request, Response } from 'express';
 import * as db from '../db';
+import { parisWallToUtc } from '../paris-time';
 
 export interface WeekRange {
   since: number;
   until: number;
-}
-
-/**
- * Instant UTC correspondant à une heure murale de Paris — le décalage
- * (heure d'hiver/d'été) est celui de Paris à cette date, pas celui du serveur.
- */
-function parisWallToUtc(year: number, month: number, day: number, hour: number): number {
-  const guess = Date.UTC(year, month, day, hour);
-  const offsetAt = (ts: number) => {
-    const parts = new Intl.DateTimeFormat('en-US', {
-      timeZone: 'Europe/Paris', hourCycle: 'h23',
-      year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
-    }).formatToParts(new Date(ts));
-    const get = (type: string) => Number(parts.find(part => part.type === type)!.value);
-    return Date.UTC(get('year'), get('month') - 1, get('day'), get('hour'), get('minute')) - ts;
-  };
-  const first = guess - offsetAt(guess);
-  return guess - offsetAt(first);
 }
 
 /**

@@ -95,6 +95,12 @@ export function assertAuthEnv(): void {
       'En générer un avec : openssl rand -hex 32',
     );
   }
+  // En clair, le code OAuth et le cookie anti-CSRF (sans `secure`) circuleraient lisibles sur le réseau.
+  const base = new URL(process.env.API_BASE_URL!);
+  const local = base.hostname === 'localhost' || base.hostname === '127.0.0.1';
+  if (base.protocol !== 'https:' && !local) {
+    throw new Error('[api/auth] API_BASE_URL doit être en https:// (http:// seulement pour localhost en développement).');
+  }
 }
 
 /**

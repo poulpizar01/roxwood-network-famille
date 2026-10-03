@@ -79,10 +79,10 @@ export const GROUP_TIERS: Array<{ key: GroupTier; label: string }> = [
 export const TYPE_GROUPE_SETTING_KEY = 'type_groupe';
 
 /**
- * Tier appliqué tant qu'aucun `/config type-groupe set` n'a jamais été fait.
- * Choisi égal aux anciennes valeurs codées en dur (Fleeca/Armurerie 6,
- * Bijouterie/Pinebank 1) pour qu'un déploiement existant qui ne configure pas
- * immédiatement son tier ne voie pas ses limites de braquage changer.
+ * Tier appliqué tant qu'aucun `/config type-groupe set` n'a jamais été fait :
+ * Petite Frappe (Fleeca/Armurerie 6, Bijouterie/Pinebank 1), pour qu'un
+ * serveur qui ne configure pas immédiatement son tier garde des limites de
+ * braquage raisonnables plutôt qu'aucune.
  */
 const DEFAULT_GROUP_TIER: GroupTier = 'petite_frappe';
 
@@ -350,9 +350,12 @@ export async function reloadAll(guildIds: string[]): Promise<void> {
  * répété à la main dans chaque handler de `/config`.
  */
 export async function mutate<T>(guildId: string, fn: () => Promise<T>): Promise<T> {
-  const result = await fn();
-  await reload(guildId);
-  return result;
+  try {
+    return await fn();
+  } finally {
+    // Même en cas d'échec : une écriture partielle doit être visible, pas masquée par un cache périmé.
+    await reload(guildId);
+  }
 }
 
 /**
@@ -375,4 +378,22 @@ export function has(guildId: string): boolean {
 /** Retire une guilde du cache (voir `guildDelete` dans src/index.ts) — ses données restent en base, seul le cache en mémoire est vidé. */
 export function remove(guildId: string): void {
   cache.delete(guildId);
+}
+
+/**
+ * Salons `logs_coffres`/`logs_coffres_admin` surveillés — les deux listes sont
+ * traitées de façon identique ici, `logs_coffres_admin` obtenant en plus le
+ * badge 🛡️ (voir `stocks.logStockToChannel`). Un salon donné n'appartient normalement
+ * qu'à UNE SEULE des deux listes (voir `handleChannel` dans `modules/config.ts`,
+ * qui rejette l'ajout à l'un des deux rôles si déjà présent dans l'autre) —
+ * le `Set` ici est un filet de sécurité pur (ex. données historiques
+ * antérieures à cette règle), pas la garantie principale : sans lui, un salon
+ * cumulant les deux rôles serait traité deux fois par `catchUpMissedMessages`
+ * et `fullResync`, doublant ses mouvements de stock à chaque
+ * redémarrage/`/sync-stock` (`handleMessage`, un simple test d'appartenance,
+ * n'est lui pas affecté par un éventuel cumul).
+ */
+export function coffreChannelIds(guildId: string): string[] {
+  const c = get(guildId).CHANNELS;
+  return [...new Set([...c.logs_coffres, ...c.logs_coffres_admin])];
 }

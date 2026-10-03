@@ -23,7 +23,7 @@
  */
 import 'dotenv/config';
 
-import { Client, GatewayIntentBits, Partials, REST, Routes, MessageFlags, type Guild } from 'discord.js';
+import { Client, GatewayIntentBits, Partials, REST, Routes, MessageFlags, type Guild, type Message } from 'discord.js';
 import cron from 'node-cron';
 
 import * as configStore from './config-store';
@@ -118,10 +118,19 @@ async function prepareGuild(guild: Guild): Promise<void> {
   }
   await guildRegistry.registerGuild(guildId, guild.name);
   await configStore.reload(guildId);
-  // N'écrase jamais un item déjà configuré ; recharge le cache seulement si
-  // quelque chose a effectivement été inséré (voir src/default-items.ts).
-  await seedDefaultItems(guildId);
+  try {
+    // N'écrase jamais un item déjà configuré (voir src/default-items.ts).
+    await seedDefaultItems(guildId);
+  } catch (err) {
+    // Config retirée du cache : la guilde reste "non préparée", donc retentée
+    // par le cron de reprise au lieu de rester à moitié initialisée.
+    configStore.remove(guildId);
+    throw err;
+  }
 }
+
+/** Guildes dont le premier rattrapage des logs est terminé (voir `logsCaughtUp`). */
+const caughtUp = new Set<string>();
 
 /** Exécute une étape d'initialisation sans que son échec n'empêche les suivantes, qui n'en dépendent pas. */
 async function step(guildId: string, label: string, fn: () => Promise<unknown>): Promise<void> {
@@ -148,6 +157,7 @@ async function initGuild(guild: Guild): Promise<void> {
     await catchUpLogs(guildId);
   } finally {
     logsCaughtUp.get(guildId)?.release();
+    caughtUp.add(guildId);
   }
 
   await step(guildId, 'stocks.updateStockMessage', () => stocks.updateStockMessage(client, guildId));
@@ -238,11 +248,10 @@ async function startup(): Promise<void> {
 
   await forEachActiveGuild(guildId => quotas.checkWeeklyReset(client, guildId));
   await forEachActiveGuild(guildId => quotas.checkQuotaReminder(client, guildId));
-  startupDone = true;
 }
 
-/** Faux tant que le premier démarrage n'est pas terminé — un `shardReady` antérieur est celui du démarrage, pas une reconnexion. */
-let startupDone = false;
+/** Faux jusqu'au premier `shardReady` : celui du démarrage, pas une reconnexion. */
+let firstShardReadySeen = false;
 
 /**
  * Dernier nombre de braquages connu par guilde et par activité (fenêtre
@@ -268,12 +277,19 @@ function scheduleCrons(): void {
   // ventes.purgeOldPendingSales / armurerie.purgeOldMunitionVentes.
   cron.schedule('0 4 * * *', () => forEachActiveGuild(guildId => ventes.purgeOldPendingSales(guildId)), { timezone: 'Europe/Paris' });
   cron.schedule('0 4 * * *', () => forEachActiveGuild(guildId => armurerie.purgeOldMunitionVentes(guildId)), { timezone: 'Europe/Paris' });
+  cron.schedule('0 4 * * *', () => forEachActiveGuild(guildId => taxes.purgeOldDeletedTaxes(guildId)), { timezone: 'Europe/Paris' });
 
   // ── CRON : Vérif cooldowns expirés chaque minute ──────────────────────────
   cron.schedule('* * * * *', () => forEachActiveGuild(guildId => alertes.checkExpiredCooldowns(client, guildId)));
 
   // ── CRON : Expiration des ventes sans action (toutes les 10 min) ──────────
-  cron.schedule('*/10 * * * *', () => forEachActiveGuild(guildId => ventes.cleanupExpiredSales(client, guildId)));
+  // Pas avant la fin du rattrapage de la guilde, et dans sa file : un dépôt
+  // d'argent posté pendant l'arrêt du bot, pas encore rejoué, doit pouvoir
+  // confirmer sa vente avant qu'elle n'expire.
+  cron.schedule('*/10 * * * *', () => forEachActiveGuild(async guildId => {
+    if (!caughtUp.has(guildId)) return;
+    await runExclusive(guildId, () => ventes.cleanupExpiredSales(client, guildId));
+  }));
 
   // ── CRON : Slots de braquage libérés + purge (toutes les heures) ─────────
   // Un slot se libère quand un braquage sort de la fenêtre glissante de 7
@@ -354,13 +370,21 @@ client.on('guildCreate', async (guild) => {
  * reprise de session (`shardResume`) rejoue, elle, les événements : rien à faire.
  */
 client.on('shardReady', () => {
-  if (!startupDone) return;
+  if (!firstShardReadySeen) {
+    firstShardReadySeen = true;
+    return;
+  }
   console.log('[index] Nouvelle session Discord — rattrapage des logs manqués.');
-  void (async () => {
-    for (const guildId of client.guilds.cache.keys()) {
-      if (configStore.has(guildId)) await catchUpLogs(guildId);
-    }
-  })();
+  // Marquage immédiat de toutes les guildes, avant tout message temps réel :
+  // le premier reçu relance le rattrapage de son salon au lieu d'avancer le
+  // curseur par-dessus la coupure. Les rattrapages sont ensuite mis en file
+  // ensemble, chacun dans celle de sa guilde, sans s'attendre entre guildes.
+  for (const guildId of client.guilds.cache.keys()) {
+    if (!configStore.has(guildId)) continue;
+    stocks.markForCatchUp(guildId);
+    garages.markForCatchUp(guildId);
+    void catchUpLogs(guildId);
+  }
 });
 
 client.on('guildDelete', async (guild) => {
@@ -368,6 +392,7 @@ client.on('guildDelete', async (guild) => {
   configStore.remove(guild.id);
   logsCaughtUp.get(guild.id)?.release();
   logsCaughtUp.delete(guild.id);
+  caughtUp.delete(guild.id);
   try {
     await guildRegistry.deactivateGuild(guild.id);
   } catch (err) {
@@ -376,6 +401,22 @@ client.on('guildDelete', async (guild) => {
 });
 
 // ─── RÉACTION 🗑️ → SUPPRESSION DU MESSAGE DU BOT ────────────────────────────
+
+/**
+ * Messages du bot qu'aucune réaction 🗑️ ne doit supprimer (et qui n'en
+ * reçoivent donc pas) : archives, journaux et panneaux, plus le rappel de
+ * quota et les notifications de fourrière, reconnus par le titre de leur embed.
+ */
+function isProtectedMessage(guildId: string, message: Message): boolean {
+  const c = configStore.get(guildId).CHANNELS;
+  const protectedChannels = [
+    c.stock_general, c.bilan, c.paie, c.historique_stock, c.log_ventes,
+    c.logs_activites, c.ventes_drogue, c.alertes_braquages, c.alertes_actions,
+  ];
+  return protectedChannels.includes(message.channelId)
+    || quotas.isQuotaReminderMessage(message)
+    || garages.isFourriereNotification(message);
+}
 client.on('messageReactionAdd', async (reaction, user) => {
   try {
     if (user.bot) return;
@@ -397,24 +438,7 @@ client.on('messageReactionAdd', async (reaction, user) => {
     const message = reaction.message.partial ? null : reaction.message;
     if (!message) return; // fetch() ci-dessus a échoué silencieusement (message supprimé entre-temps)
 
-    // Archives et journaux : un membre ne doit pas pouvoir les effacer d'une réaction.
-    const c = configStore.get(guildId);
-    const noDeleteChannels = [
-      c.CHANNELS.stock_general,
-      c.CHANNELS.bilan,
-      c.CHANNELS.alertes_braquages,
-      c.CHANNELS.alertes_actions,
-      c.CHANNELS.paie,
-      c.CHANNELS.historique_stock,
-      c.CHANNELS.log_ventes,
-      c.CHANNELS.logs_activites,
-      c.CHANNELS.ventes_drogue,
-    ];
-    if (noDeleteChannels.includes(message.channelId)) return;
-
-    if (quotas.isQuotaReminderMessage(message)) return;
-    if (garages.isFourriereNotification(message)) return;
-
+    if (isProtectedMessage(guildId, message)) return;
     if (message.components?.length) return;
 
     await message.delete().catch(() => null);
@@ -431,23 +455,7 @@ client.on('messageCreate', async (message) => {
     // en cours) : ignoré — un message de log sera repris par le rattrapage.
     if (!guildId || !configStore.has(guildId)) return;
     const c = configStore.get(guildId);
-    const noTrashChannels = [
-      c.CHANNELS.stock_general,
-      c.CHANNELS.bilan,
-      c.CHANNELS.paie,
-      c.CHANNELS.historique_stock,
-      c.CHANNELS.log_ventes,
-      c.CHANNELS.logs_activites,
-      c.CHANNELS.ventes_drogue,
-      c.CHANNELS.alertes_braquages,
-      c.CHANNELS.alertes_actions,
-    ];
-    if (
-      message.author.id === client.user?.id &&
-      !noTrashChannels.includes(message.channelId) &&
-      !quotas.isQuotaReminderMessage(message) &&
-      !garages.isFourriereNotification(message)
-    ) {
+    if (message.author.id === client.user?.id && !isProtectedMessage(guildId, message)) {
       if (!message.components?.length) message.react('🗑️').catch(() => null);
     }
 
@@ -612,7 +620,8 @@ if (!process.env.DATABASE_URL) {
   process.exit(1);
 }
 if (process.env.DATABASE_URL.includes(':change_me@')) {
-  console.warn('⚠️ Mot de passe PostgreSQL d\'exemple (change_me) — à remplacer avant la mise en production (POSTGRES_PASSWORD en Docker).');
+  console.error('❌ Mot de passe PostgreSQL d\'exemple (change_me) — à remplacer (POSTGRES_PASSWORD en Docker, DATABASE_URL sinon).');
+  process.exit(1);
 }
 // Vérifié ICI plutôt que seulement au moment de startApiServer() (appelée
 // depuis clientReady, sans try/catch) : un throw synchrone à ce stade-là
@@ -621,6 +630,11 @@ if (process.env.DATABASE_URL.includes(':change_me@')) {
 // seulement l'API — après que le bot Discord se soit déjà connecté, en
 // boucle de crash si une variable manque durablement.
 if (process.env.API_PORT) {
+  const port = Number(process.env.API_PORT);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    console.error(`❌ API_PORT invalide (${process.env.API_PORT}) : un numéro de port entre 1 et 65535 est attendu.`);
+    process.exit(1);
+  }
   try {
     assertAuthEnv();
   } catch (err) {

@@ -13,7 +13,7 @@
  * (config-store.ts) : un item pré-rempli reste ensuite un item de config
  * comme un autre, modifiable ou supprimable via `/config item` — cette liste
  * ne fait qu'insérer une valeur de départ, une seule fois, jamais écraser un
- * item déjà présent (vérifié par nom exact avant toute insertion).
+ * item déjà présent (vérifié par nom, sans tenir compte de la casse, avant toute insertion).
  *
  * **Piège n°1 du projet (voir CLAUDE.md)** : chaque `name` ci-dessous doit
  * être l'orthographe EXACTE (accents, casse) telle qu'écrite par le bot de
@@ -118,23 +118,26 @@ const DEFAULT_ITEMS: db.ItemInput[] = [
 
 /**
  * Insère chaque item de {@link DEFAULT_ITEMS} qui n'existe pas encore dans la
- * config actuelle (comparaison par nom exact) — ne touche jamais à un item
- * déjà configuré, même si ses options diffèrent de la valeur par défaut ici.
- * Idempotent — safe à appeler à répétition (voir docstring de fichier).
+ * config actuelle (comparaison insensible à la casse) — ne touche jamais à
+ * un item déjà configuré, même si ses options diffèrent de la valeur par
+ * défaut ici. Idempotent — safe à appeler à répétition (voir docstring de
+ * fichier).
+ * @returns `true` si au moins un item a été inséré (le Stock Général est alors à rafraîchir).
  */
-export async function seedDefaultItems(guildId: string): Promise<void> {
+export async function seedDefaultItems(guildId: string): Promise<boolean> {
   // Comparaison insensible à la casse : un admin qui a saisi "argent sale"
   // ne doit pas se retrouver avec un doublon "Argent Sale" — le stock étant
   // indexé en minuscules, les deux lignes afficheraient la même quantité.
   const existing = new Set(Object.keys(configStore.get(guildId).ITEMS_BY_NAME).map(name => name.toLowerCase()));
-  let inserted = false;
+  const manquants = DEFAULT_ITEMS.filter(item => !existing.has(item.name.toLowerCase()));
+  if (!manquants.length) return false;
 
-  for (const item of DEFAULT_ITEMS) {
-    if (existing.has(item.name.toLowerCase())) continue;
-    await db.upsertItem(guildId, item);
-    inserted = true;
-    console.log(`[default-items] Item pré-rempli (${guildId}) : ${item.name}`);
-  }
-
-  if (inserted) await configStore.reload(guildId);
+  // Via `mutate` : le cache est rechargé même si une insertion échoue en route.
+  await configStore.mutate(guildId, async () => {
+    for (const item of manquants) {
+      await db.upsertItem(guildId, item);
+      console.log(`[default-items] Item pré-rempli (${guildId}) : ${item.name}`);
+    }
+  });
+  return true;
 }

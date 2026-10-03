@@ -16,6 +16,7 @@
 import { EmbedBuilder, type Client } from 'discord.js';
 import * as db from '../db';
 import * as configStore from '../config-store';
+import { isMissingAccess } from '../discord-fetch';
 
 // ─── COOLDOWNS EXPIRÉS ───────────────────────────────────────────────────────
 
@@ -52,17 +53,25 @@ export async function checkExpiredCooldowns(client: Client, guildId: string): Pr
       const rowCfg = c.ACTIVITY_TYPES[row.action];
       const label = rowCfg ? rowCfg.label : row.action;
       // Marqué notifié seulement si l'envoi a réussi : sinon le prochain passage le retente.
-      const sent = await channel.send({
-        content: `<@${row.userId}>`,
-        embeds: [
-          new EmbedBuilder()
-            .setColor(0x57F287)
-            .setTitle('✅ Cooldown expiré')
-            .setDescription(`**${label}** est à nouveau disponible pour toi !`)
-            .setTimestamp(),
-        ],
-      }).catch(() => null);
-      if (sent) await db.markCooldownNotified(guildId, row.userId, row.action);
+      try {
+        await channel.send({
+          content: `<@${row.userId}>`,
+          embeds: [
+            new EmbedBuilder()
+              .setColor(0x57F287)
+              .setTitle('✅ Cooldown expiré')
+              .setDescription(`**${label}** est à nouveau disponible pour toi !`)
+              .setTimestamp(),
+          ],
+        });
+      } catch (err) {
+        if (isMissingAccess(err)) {
+          console.warn(`[alertes] Permission manquante dans alertes_actions (${guildId}) — notifications suspendues jusqu'au prochain passage.`);
+          return;
+        }
+        continue;
+      }
+      await db.markCooldownNotified(guildId, row.userId, row.action);
     }
   } catch (err) {
     console.error(`[alertes] checkExpiredCooldowns(${guildId}):`, (err as Error).message);
@@ -176,6 +185,19 @@ export async function setLaboStatut(client: Client, guildId: string, laboKey: st
   } catch (err) {
     console.error(`[alertes] setLaboStatut(${guildId}):`, (err as Error).message);
   }
+}
+
+/**
+ * Remet le salon d'un labo dans l'état qu'il doit avoir (après une
+ * réassociation de salon par `/config channel`) : 🔴 avec son retour au vert
+ * reprogrammé s'il est encore en production, 🟢 sinon — jamais remis au vert
+ * en pleine production, ce qui laisserait relancer un cycle.
+ */
+export async function refreshLaboStatut(client: Client, guildId: string, laboKey: string): Promise<void> {
+  const endsAt = parseInt((await db.getSetting(guildId, `labo_end_${laboKey}`)) || '0', 10);
+  const restantMinutes = Math.ceil((endsAt - Date.now()) / 60_000);
+  if (restantMinutes > 0) await setLaboStatut(client, guildId, laboKey, false, restantMinutes);
+  else await setLaboStatut(client, guildId, laboKey, true);
 }
 
 /**
