@@ -1,9 +1,8 @@
 /**
  * @file src/api/routes/taxes.ts
  * @description Lecture seule des taxes — même accès que le reste de l'API :
- * `requireAuth` (membre du serveur) seul, pas de rôle dédié, cohérent avec
- * le module Discord `taxes.ts` qui n'a lui-même jamais eu de restriction de
- * rôle propre.
+ * `requireAuth` (membre du serveur, porteur du rôle membre ou
+ * admin), pas de rôle dédié aux taxes.
  *
  * `?type=` accepte, au choix : un type fixe (`sporex`, `heroine`, `vente`,
  * `fertilisant`, `cannabis`, `mexicana`, `cocaine`, `salvia`), le type fictif `zone`

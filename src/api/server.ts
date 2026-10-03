@@ -46,6 +46,7 @@ import armurerieRouter from './routes/armurerie';
 import ventesRouter from './routes/ventes';
 import usersRouter from './routes/users';
 import garagesRouter from './routes/garages';
+import rolesRouter from './routes/roles';
 
 /** Démarre l'API REST. N'a d'effet que si `API_PORT` est défini dans `.env` — absent = API désactivée, déploiement existant inchangé. */
 export function startApiServer(client: Client): void {
@@ -126,6 +127,7 @@ export function startApiServer(client: Client): void {
   api.use('/armurerie', armurerieRouter);
   api.use('/ventes', ventesRouter);
   api.use('/garages', garagesRouter);
+  api.use('/roles', rolesRouter(client));
   app.use('/api', api);
 
   // Signature à 4 paramètres obligatoire : Express reconnaît un middleware

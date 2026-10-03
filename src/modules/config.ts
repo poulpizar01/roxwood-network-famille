@@ -53,6 +53,7 @@ import { seedDefaultItems } from '../default-items';
 
 const ROLE_TARGETS = [
   { name: 'Rôle admin (commandes sensibles)', value: 'admin' },
+  { name: 'Rôle membre (back-office web)', value: 'membre' },
 ];
 
 /** Déclare la commande `/config` et tous ses sous-groupes (channel, role, item, quota, salaire, type-groupe). `guildId` : les choix de `labo_lie` viennent du registre d'activités de CETTE guilde (déjà chargé en cache à ce stade — voir `bootstrapGuild` dans index.ts, qui appelle `configStore.reload()` avant `deployCommandsForGuild`). */
@@ -349,6 +350,7 @@ async function handleRole(interaction: ChatInputCommandInteraction, guildId: str
     const c = configStore.get(guildId);
     const lines = [
       `**admin** : ${c.ADMIN_ROLE_ID ? `<@&${c.ADMIN_ROLE_ID}>` : '_non configuré (permissions Discord natives utilisées)_'}`,
+      `**membre** : ${c.MEMBER_ROLE_ID ? `<@&${c.MEMBER_ROLE_ID}>` : '_non configuré — ⚠️ seuls les admins ont accès au back-office web_'}`,
     ];
     const embed = new EmbedBuilder().setTitle('⚙️ Rôles configurés').setDescription(lines.join('\n')).setColor(0x5865f2);
     await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });

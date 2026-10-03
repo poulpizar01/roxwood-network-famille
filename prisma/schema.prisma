@@ -81,7 +81,7 @@ model Channel {
 }
 
 /// Association usage du bot → rôle Discord ('admin' : commandes sensibles ;
-/// 'taxes' : accès back-office taxes), pilotée par `/config role`.
+/// 'membre' : accès à l'API du site externe), pilotée par `/config role`.
 model DiscordRole {
   guildId String @map("guild_id")
   target  String

@@ -32,7 +32,7 @@ import jwt from 'jsonwebtoken';
 import type { Request, Response, NextFunction } from 'express';
 import type { Client } from 'discord.js';
 import * as guildRegistry from '../guild-registry';
-import { isAdmin } from '../permissions';
+import { isAdmin, hasApiAccess } from '../permissions';
 
 const API_JWT_SECRET = process.env.API_JWT_SECRET;
 const DISCORD_CLIENT_SECRET = process.env.DISCORD_CLIENT_SECRET;
@@ -202,6 +202,11 @@ export function handleCallback(client: Client): (req: Request, res: Response) =>
         res.status(403).send('Tu n\'es pas membre du serveur Discord de cette organisation.');
         return;
       }
+      // Pas de token sans le rôle membre (quand il est configuré) : voir `permissions.hasApiAccess`.
+      if (!hasApiAccess(guildId, member)) {
+        res.status(403).send('Il te manque le rôle requis sur le serveur Discord de cette organisation pour accéder à ces données.');
+        return;
+      }
 
       const admin = isAdmin(guildId, member);
 
@@ -228,7 +233,7 @@ export function handleCallback(client: Client): (req: Request, res: Response) =>
  * `/config site-externe remove` ou un retrait du bot resterait valable
  * jusqu'à expiration (7 jours), à l'encontre du message affiché à l'admin.
  *
- * Les droits (`isAdmin`) et l'appartenance à la guilde sont
+ * Les droits (`isAdmin`), le rôle membre (`hasApiAccess`) et l'appartenance à la guilde sont
  * RE-RÉSOLUS À CHAQUE REQUÊTE depuis le client du bot (`guild.members`,
  * tenu à jour par l'intent `GuildMembers`) plutôt que lus tels quels dans le
  * token : sans ça, un membre dont on retire le rôle admin (ou qui est
@@ -270,6 +275,11 @@ export function requireAuth(client: Client): (req: Request, res: Response, next:
     const member = guild.members.cache.get(claims.id) ?? await guild.members.fetch(claims.id).catch(() => null);
     if (!member) {
       res.status(403).json({ error: "Tu n'es plus membre du serveur Discord de cette organisation." });
+      return;
+    }
+    // Rôle membre revérifié à chaque requête, comme le rôle admin : le retirer coupe l'accès aussitôt, sans attendre l'expiration du token.
+    if (!hasApiAccess(claims.guildId, member)) {
+      res.status(403).json({ error: 'Il te manque le rôle requis sur le serveur Discord de cette organisation.' });
       return;
     }
     const admin = isAdmin(claims.guildId, member);

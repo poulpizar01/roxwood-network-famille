@@ -187,6 +187,8 @@ export interface BotConfig {
   ACTIVITY_TYPES: Record<string, ActivityTypeConfig>;
   QUOTA_TARGETS: Record<string, number>;
   ADMIN_ROLE_ID: string | null;
+  /** Rôle exigé pour utiliser l'API du site externe (voir `/config role set membre` et `permissions.hasApiAccess`). `null` = non configuré : seuls les admins passent. */
+  MEMBER_ROLE_ID: string | null;
   /** $ par unité, par catégorie de quota — voir `/config salaire` et `computeSalaire` dans quotas.ts. Catégorie absente = aucune paie pour elle. */
   SALARY_RATES: Record<string, number>;
   /** $ par unité, par item vendu — remplace `SALARY_RATES.vente` pour cet item précis (voir `/config salaire ... item:`). Vide pour la grande majorité des guildes : ne JAMAIS relire `Transaction` en détail par item si cette map est vide (voir `quotas.getVenteByItemMap`). */
@@ -313,6 +315,7 @@ export async function reload(guildId: string): Promise<BotConfig> {
     ACTIVITY_TYPES,
     QUOTA_TARGETS,
     ADMIN_ROLE_ID: rolesByTarget.admin ?? null,
+    MEMBER_ROLE_ID: rolesByTarget.membre ?? null,
     SALARY_RATES,
     ITEM_SALARY_RATES,
     VENTE_PALIERS,

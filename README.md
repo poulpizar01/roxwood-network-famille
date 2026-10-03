@@ -203,7 +203,9 @@ Pas de clé API statique : l'utilisateur se connecte avec son compte Discord, et
 3. Chaque appel à `/api/*` doit inclure `Authorization: Bearer <jwt>`. Le token expire au bout de 7 jours (pas de refresh token — se reconnecter via `/auth/login`) et reste scopé au serveur choisi à l'étape 1 : impossible de l'utiliser pour lire les données d'un autre serveur.
 4. Les **rôles ne sont pas figés dans le token** : à chaque requête, l'API revérifie via le client du bot que l'utilisateur est toujours membre du serveur et recalcule `isAdmin` depuis ses rôles actuels. Un rôle retiré (ou une expulsion) prend effet immédiatement, pas à l'expiration du token. `/api/me` renvoie donc toujours les droits du moment.
 
-Un seul niveau d'accès de base : **membre du serveur Discord**, suffit pour toutes les ressources en lecture (`/api/stocks`, `/api/quotas`, `/api/armurerie`, `/api/ventes`, `/api/taxes`) — cohérent avec le module Discord `taxes.ts`, qui n'a lui-même jamais eu de rôle dédié (accès via la simple visibilité du salon). Deux restrictions supplémentaires, plus fines qu'un simple accès admin/non-admin :
+**Rôle membre (back-office web) — à configurer** : `/config role set membre <@rôle>` réserve l'API aux porteurs de ce rôle (et aux admins). Il donne accès à tout le back-office web (stocks, quotas, ventes, taxes, armurerie, garages) ; les restrictions admin ci-dessous s'y ajoutent. Le rôle est exigé pour obtenir un token (`/auth/login`) et revérifié à chaque requête (`403` sinon). Être sur le serveur Discord ne suffit pas : sans ce rôle, aucun token n'est délivré et aucune requête n'aboutit. Tant qu'il n'est pas configuré, **seuls les admins** ont accès — à configurer dès la mise en service. `/config role list` signale le cas.
+
+Un seul niveau d'accès de base : **membre du serveur Discord porteur du rôle membre** (les admins seulement tant que ce rôle n'est pas configuré), suffit pour toutes les ressources en lecture (`/api/stocks`, `/api/quotas`, `/api/armurerie`, `/api/ventes`, `/api/taxes`) — pas de rôle dédié aux taxes. Deux restrictions supplémentaires, plus fines qu'un simple accès admin/non-admin :
 - **Soi-même ou admin** (`requireSelfOrAdmin`) sur toute route `:userId` (`/api/quotas/:userId`, `/api/quotas/pay/:userId`, `/api/ventes/:userId`) : un membre normal ne peut consulter que ses propres données, jamais celles d'un autre joueur.
 - **Coffres admin réservés aux admins** sur `/api/stocks/channels` et `/api/stocks/:channelId` : un coffre `logs_coffres_admin` n'apparaît dans la liste, ni n'est interrogeable en détail, que pour un admin. `/api/stocks` (le total global) reste inchangé pour tout le monde — l'exclure casserait le total affiché.
 
@@ -213,6 +215,7 @@ Un seul niveau d'accès de base : **membre du serveur Discord**, suffit pour tou
 |----------|-------|----------|
 | `GET /api/me` | Membre | Identité résolue (id, username, isAdmin) |
 | `GET /api/users` | Membre | Comptes Discord connus de la guilde (userId + dernier nom connu) — un non-admin ne reçoit que lui-même |
+| `GET /api/roles` | Membre | Rôles du serveur Discord (`id`, `name`, `color`), du plus haut au plus bas, sans @everyone ni rôles d'intégration — pour qu'un site externe propose les rôles par leur nom |
 | `GET /api/stocks` | Membre | Stock actuel de chaque item suivi, tous coffres confondus (admin inclus, pour tout le monde) |
 | `GET /api/stocks/channels` | Membre/Admin | Liste des coffres surveillés (`logs_coffres` + `logs_coffres_admin` avec leur label) — coffres admin réservés aux admins |
 | `GET /api/stocks/items` | Membre | Catalogue des objets suivis (`/config item`), dans l'ordre du Stock Général — référentiel pour grouper/ordonner comme le panneau Discord |
@@ -275,7 +278,7 @@ Les salons auto-créés (voir `/config category` ci-dessous) sont préfixés d'u
 L'ordre d'affichage des salons auto-créés (dans la liste Discord) est réappliqué après toute création/déplacement, selon un ordre fixe dans le code (`documentation`, puis les panneaux d'activité, puis les salons de labo, puis stock/paie/bilan, puis les logs/alertes en dernier).
 
 ### `/config role`
-Associe un rôle Discord à un usage (`admin` : commandes sensibles).
+Associe un rôle Discord à un usage (`admin` : commandes sensibles ; `membre` : accès aux données via le site externe — voir la section API REST).
 - `/config role set <cible> <@rôle>` / `list`
 
 ### `/config item`
@@ -385,7 +388,7 @@ PostgreSQL via [Prisma](https://www.prisma.io/) (`prisma/schema.prisma`, migrati
 
 **Multi-tenant** : toutes les tables métier ci-dessous ont une colonne `guild_id` qui fait partie de leur clé primaire/unique — chaque ligne appartient à un seul serveur Discord, jamais partagée entre deux. La table `guilds` (voir `src/guild-registry.ts`) est à part : c'est le registre des serveurs connus (actif/inactif, site externe autorisé), pas une table de config métier.
 
-Tables de configuration (pilotées par `/config`) : `channels` (rôle fonctionnel → salon(s)), `discord_roles` (admin/taxes → rôle Discord), `items` (nom, groupe, `vente`/`visibleStock`/`laboLie`), `quota_targets`, `salary_rates`. Le type d'organisation (`/config type-groupe`) est stocké comme un `Setting` scalaire (clé `type_groupe`). Le registre des activités déclarables et les barèmes par tier (braquage, labos) n'ont pas de table — ce sont des constantes fixes dans `src/config-store.ts` (voir plus haut).
+Tables de configuration (pilotées par `/config`) : `channels` (rôle fonctionnel → salon(s)), `discord_roles` (admin/membre → rôle Discord), `items` (nom, groupe, `vente`/`visibleStock`/`laboLie`), `quota_targets`, `salary_rates`. Le type d'organisation (`/config type-groupe`) est stocké comme un `Setting` scalaire (clé `type_groupe`). Le registre des activités déclarables et les barèmes par tier (braquage, labos) n'ont pas de table — ce sont des constantes fixes dans `src/config-store.ts` (voir plus haut).
 Tables métier (génériques) : `coffre_stocks` (détail par coffre — seule table de stock, le total global se recalcule à la lecture, voir section Interopérabilité), `stock_history`, `transactions`, `stats`, `cooldowns`, `braquages`, `taxes`, `armurerie`, `user_mapping`, `pending_sales`, `vehicules`, `fourrieres`, `munitions_ventes`.
 
 ---
