@@ -13,7 +13,9 @@
  * `EmbedBuilder` n'a pas de `.setName()`, donc ce pattern ne matche jamais un
  * embed. Ne gère que les littéraux simples (`'...'`/`"..."`), pas les
  * template literals avec expression — une description dynamique n'a de toute
- * façon pas de longueur fixe à vérifier statiquement.
+ * façon pas de longueur fixe à vérifier statiquement. Le libellé d'un choix
+ * (`{ name: '...', value: ... }` dans un `.addChoices(...)`) est soumis à la
+ * même limite et vérifié de la même façon.
  *
  * Lancer : `npx tsx scripts/check-description-lengths.ts`.
  */
@@ -24,6 +26,7 @@ const SRC_DIR = join(__dirname, '..', 'src');
 const LIMIT = 100;
 
 const NAME_THEN_DESCRIPTION = /\.setName\(\s*(['"])((?:\\.|(?!\1).)*)\1\s*\)\s*\.setDescription\(\s*(['"])((?:\\.|(?!\3).)*)\3\s*\)/gs;
+const CHOICE_NAME = /\{\s*name:\s*(['"])((?:\\.|(?!\1).)*)\1\s*,\s*value:/g;
 
 function unescapeLiteral(raw: string): string {
   return raw.replace(/\\(['"\\])/g, '$1');
@@ -64,9 +67,19 @@ for (const file of listTsFiles(SRC_DIR)) {
       violations.push({ file: relative(join(__dirname, '..'), file), line, name, length: description.length, description });
     }
   }
+
+  CHOICE_NAME.lastIndex = 0;
+  while ((match = CHOICE_NAME.exec(content))) {
+    checked++;
+    const label = unescapeLiteral(match[2]);
+    if (label.length > LIMIT) {
+      const line = content.slice(0, match.index).split('\n').length;
+      violations.push({ file: relative(join(__dirname, '..'), file), line, name: '(choix)', length: label.length, description: label });
+    }
+  }
 }
 
-console.log(`[check-description-lengths] ${checked} description(s) de commande/option vérifiée(s).`);
+console.log(`[check-description-lengths] ${checked} description(s) de commande/option et libellé(s) de choix vérifié(s).`);
 
 if (violations.length) {
   console.error(`\n❌ ${violations.length} description(s) dépassent ${LIMIT} caractères :\n`);

@@ -85,6 +85,18 @@ import * as db from '../db';
 import * as configStore from '../config-store';
 import type { GroupTier } from '../config-store';
 import { replyAutoDelete, updateAutoDelete } from '../interaction-helpers';
+import { upsertPanel } from '../permanent-message';
+
+/** Plafond d'un nombre de jours saisi (création, renouvellement) — un an. */
+const MAX_JOURS_TAXE = 365;
+
+/** Nombre de jours saisi dans un modal, entier entre 1 et {@link MAX_JOURS_TAXE}, ou `null`. */
+function parseJours(raw: string): number | null {
+  const cleaned = raw.trim();
+  if (!/^\d+$/.test(cleaned)) return null;
+  const jours = Number(cleaned);
+  return jours >= 1 && jours <= MAX_JOURS_TAXE ? jours : null;
+}
 
 type Taxe = NonNullable<Awaited<ReturnType<typeof db.getTaxe>>>;
 
@@ -279,9 +291,11 @@ function buildTaxeEmbed(taxe: Taxe): EmbedBuilder {
 
 /** Bouton bascule payée/non payée pour une taxe. */
 function buildPayeToggleRow(taxe: Taxe): ActionRowBuilder<ButtonBuilder> {
+  // L'état visé est encodé dans le bouton : deux clics sur un message pas
+  // encore rafraîchi posent deux fois le même état au lieu de s'annuler.
   return new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
-      .setCustomId(`tax_toggle_paye_${taxe.id}`)
+      .setCustomId(`tax_toggle_paye_${taxe.id}_${taxe.paye ? 0 : 1}`)
       .setLabel(taxe.paye ? 'Marquer Non payée' : 'Marquer Payée')
       .setStyle(taxe.paye ? ButtonStyle.Secondary : ButtonStyle.Success)
       .setEmoji(taxe.paye ? '❌' : '✅'),
@@ -297,6 +311,8 @@ function buildAlertButtons(taxeId: number): ActionRowBuilder<ButtonBuilder> {
 }
 
 // ─── MESSAGE PERMANENT ────────────────────────────────────────────────────────
+
+const TAXES_PANEL_TITLE = '💰 Gestion des Taxes & Rackets';
 
 /** Discord limite à 5 ActionRows par message — la 5e est toujours réservée à la rangée Rechercher/Supprimer (voir `initPermanentMessage`), donc 4 rangées de 5 boutons max ici. */
 const MAX_CREATION_BUTTONS = 20;
@@ -350,7 +366,7 @@ export async function initPermanentMessage(client: Client, guildId: string): Pro
     const zones = currentZones(guildId);
 
     const embed = new EmbedBuilder()
-      .setTitle('💰 Gestion des Taxes & Rackets')
+      .setTitle(TAXES_PANEL_TITLE)
       .setColor(0xFEE75C)
       .setDescription(
         'Utilisez les boutons ci-dessous pour enregistrer une taxe.\n\n' +
@@ -366,14 +382,7 @@ export async function initPermanentMessage(client: Client, guildId: string): Pro
 
     const components = [...buildCreationButtonRows(guildId), searchRow];
 
-    const storedId = await db.getSetting(guildId, 'taxes_message_id');
-    if (storedId) {
-      const msg = await channel.messages.fetch(storedId).catch(() => null);
-      if (msg) { await msg.edit({ embeds: [embed], components }); return; }
-    }
-
-    const newMsg = await channel.send({ embeds: [embed], components });
-    await db.setSetting(guildId, 'taxes_message_id', newMsg.id);
+    await upsertPanel(channel, guildId, 'taxes_message_id', TAXES_PANEL_TITLE, async () => ({ embeds: [embed], components }));
   } catch (err) {
     console.error(`[taxes] initPermanentMessage(${guildId}):`, (err as Error).message);
   }
@@ -402,8 +411,9 @@ export async function checkExpiredTaxes(client: Client, guildId: string): Promis
         .addFields({ name: 'Échéance', value: formatDateFull(taxe.echeance), inline: true })
         .setTimestamp();
 
-      await channel.send({ embeds: [embed], components: [buildAlertButtons(taxe.id)] }).catch(() => null);
-      await db.markTaxeAlerteSent(guildId, taxe.id);
+      // Marquée envoyée seulement si l'envoi a réussi : sinon le prochain passage la retente.
+      const sent = await channel.send({ embeds: [embed], components: [buildAlertButtons(taxe.id)], allowedMentions: { parse: [] } }).catch(() => null);
+      if (sent) await db.markTaxeAlerteSent(guildId, taxe.id);
     }
   } catch (err) {
     console.error(`[taxes] checkExpiredTaxes(${guildId}):`, (err as Error).message);
@@ -504,11 +514,12 @@ export async function handleButton(interaction: ButtonInteraction): Promise<void
   }
 
   if (id.startsWith('tax_toggle_paye_')) {
-    const taxeId = parseInt(id.replace('tax_toggle_paye_', ''), 10);
+    const [rawId, rawCible] = id.replace('tax_toggle_paye_', '').split('_');
+    const taxeId = parseInt(rawId, 10);
     const taxe = await db.getTaxe(guildId, taxeId);
     if (!taxe) return replyAutoDelete(interaction, '❌ Taxe introuvable.');
 
-    await db.setTaxePaye(guildId, taxeId, !taxe.paye);
+    await db.setTaxePaye(guildId, taxeId, rawCible === undefined ? !taxe.paye : rawCible === '1');
     const updated = (await db.getTaxe(guildId, taxeId))!;
     const components = [buildPayeToggleRow(updated), buildAlertButtons(updated.id)];
 
@@ -529,28 +540,50 @@ export async function handleButton(interaction: ButtonInteraction): Promise<void
 
 // ─── HANDLER MODALS ───────────────────────────────────────────────────────────
 
-/** Traite la soumission du modal de création (`modal_tax_create_<type>`) — vérifie l'absence de taxe active pour CE GROUPE sur ce type (sauf `vente`, sans limite) avant d'insérer. */
-async function handleCreationModal(interaction: ModalSubmitInteraction, guildId: string, type: string): Promise<void> {
-  const nom = interaction.fields.getTextInputValue('nom').trim();
+/** Vrai si `type` (type fixe ou clé de zone) peut être créé pour le tier actuel. */
+function isTypeDisponible(guildId: string, type: string): boolean {
+  if (type === 'vente') return true;
+  if (isZoneType(type)) return currentZones(guildId).some(zone => slugifyZone(zone) === type);
+  return (currentTaxesFixes(guildId) as readonly string[]).includes(type);
+}
 
-  // La taxe Vente se paie par vente, pas par groupe : un même groupe peut en
-  // cumuler plusieurs actives, pas de vérification pour ce type.
-  const existing = type === 'vente' ? undefined : await db.getActiveTaxeByTypeAndNom(guildId, type, nom);
-  if (existing) {
-    return replyAutoDelete(interaction, `🚫 **${existing.nom}** a déjà une taxe ${typeLabel(type)} active (expire le ${formatDate(existing.echeance)}). Renouvelle-la plutôt que d'en créer une nouvelle, ou supprime-la d'abord.`);
+/**
+ * Traite la soumission du modal de création (`modal_tax_create_<type>`). Le
+ * type est revérifié contre le tier actuel (il a pu changer pendant que le
+ * modal était ouvert) ; l'absence de taxe active pour CE GROUPE sur ce type
+ * (sauf `vente`, sans limite) est vérifiée dans la même transaction que
+ * l'insertion (voir `db.addTaxeIfFree`).
+ */
+async function handleCreationModal(interaction: ModalSubmitInteraction, guildId: string, type: string): Promise<void> {
+  if (!isTypeDisponible(guildId, type)) {
+    return replyAutoDelete(interaction, `❌ **${typeLabel(type)}** n'est pas disponible pour le type d'organisation actuel.`);
   }
 
-  const jours = parseInt(interaction.fields.getTextInputValue('jours'), 10);
+  const nom = interaction.fields.getTextInputValue('nom').trim();
+  const jours = parseJours(interaction.fields.getTextInputValue('jours'));
   const mdp = interaction.fields.getTextInputValue('mot_de_passe').trim();
   let tel = '';
   try { tel = interaction.fields.getTextInputValue('telephone').trim(); } catch { /* absent hors zone */ }
 
-  if (isNaN(jours) || jours <= 0) return replyAutoDelete(interaction, '❌ Nombre de jours invalide.');
+  if (jours == null) return replyAutoDelete(interaction, `❌ Nombre de jours invalide (entier entre 1 et ${MAX_JOURS_TAXE}).`);
 
   const echeance = Date.now() + jours * 24 * 60 * 60 * 1000;
-  await db.addTaxe(guildId, { nom, type, telephone: tel || null, echeance, mot_de_passe: mdp || null });
+  // La taxe Vente se paie par vente, pas par groupe : un même groupe peut en
+  // cumuler plusieurs actives, pas de vérification pour ce type.
+  const taxeId = await db.addTaxeIfFree(guildId, { nom, type, telephone: tel || null, echeance, mot_de_passe: mdp || null }, type !== 'vente');
+  if (taxeId == null) {
+    const existing = await db.getActiveTaxeByTypeAndNom(guildId, type, nom);
+    const expire = existing ? ` (expire le ${formatDate(existing.echeance)})` : '';
+    return replyAutoDelete(interaction, {
+      content: `🚫 **${existing?.nom ?? nom}** a déjà une taxe ${typeLabel(type)} active${expire}. Renouvelle-la plutôt que d'en créer une nouvelle, ou supprime-la d'abord.`,
+      allowedMentions: { parse: [] },
+    });
+  }
 
-  return replyAutoDelete(interaction, `✅ Taxe ${typeLabel(type)} **${nom}** enregistrée — échéance le **${formatDate(echeance)}**.`);
+  return replyAutoDelete(interaction, {
+    content: `✅ Taxe ${typeLabel(type)} **${nom}** enregistrée — échéance le **${formatDate(echeance)}**.`,
+    allowedMentions: { parse: [] },
+  });
 }
 
 /** Route les soumissions de modal (`modal_tax_*`) : création, renouvellement, recherche. */
@@ -564,15 +597,26 @@ export async function handleModal(interaction: ModalSubmitInteraction): Promise<
 
   if (id.startsWith('modal_tax_renew_')) {
     const taxeId = parseInt(id.replace('modal_tax_renew_', ''), 10);
-    const jours = parseInt(interaction.fields.getTextInputValue('jours'), 10);
-
-    if (isNaN(jours) || jours <= 0) return replyAutoDelete(interaction, '❌ Nombre de jours invalide.');
-
-    const newDate = await db.renewTaxe(guildId, taxeId, jours);
-    if (!newDate) return replyAutoDelete(interaction, '❌ Taxe introuvable.');
+    const jours = parseJours(interaction.fields.getTextInputValue('jours'));
+    if (jours == null) return replyAutoDelete(interaction, `❌ Nombre de jours invalide (entier entre 1 et ${MAX_JOURS_TAXE}).`);
 
     const taxe = await db.getTaxe(guildId, taxeId);
-    if (taxe && isZoneType(taxe.type)) await db.setTaxePaye(guildId, taxeId, true);
+    if (!taxe) return replyAutoDelete(interaction, '❌ Taxe introuvable.');
+    // Renouveler une taxe expirée la réactive : refusé si le même groupe en a
+    // entre-temps créé une autre, active, sur ce type (même règle qu'à la création).
+    if (taxe.type !== 'vente' && taxe.echeance <= Date.now()) {
+      const active = await db.getActiveTaxeByTypeAndNom(guildId, taxe.type, taxe.nom);
+      if (active && active.id !== taxe.id) {
+        return replyAutoDelete(interaction, {
+          content: `🚫 **${active.nom}** a déjà une autre taxe ${typeLabel(taxe.type)} active (expire le ${formatDate(active.echeance)}) — renouvelle plutôt celle-ci.`,
+          allowedMentions: { parse: [] },
+        });
+      }
+    }
+
+    // Une zone se paie d'avance : renouvelée = payée ; les autres repartent "non payée".
+    const newDate = await db.renewTaxe(guildId, taxeId, jours, isZoneType(taxe.type));
+    if (!newDate) return replyAutoDelete(interaction, '❌ Taxe introuvable.');
 
     return replyAutoDelete(interaction, `✅ Taxe renouvelée jusqu'au **${formatDate(newDate)}**.`);
   }

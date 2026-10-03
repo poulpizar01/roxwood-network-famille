@@ -24,7 +24,9 @@
  * Chaque sous-commande `add`/`set` fait un upsert complet de la ligne
  * concernée : les champs optionnels omis reprennent leur valeur par défaut,
  * pas leur ancienne valeur. Ré-exécuter la commande avec des options
- * différentes remplace donc entièrement la configuration de cette entrée.
+ * différentes remplace donc entièrement la configuration de cette entrée —
+ * sauf, pour `/config item add`, le groupe de stock et l'ordre d'affichage,
+ * qu'elle n'expose pas et que `db.upsertItem` conserve.
  */
 import {
   SlashCommandBuilder,
@@ -56,7 +58,7 @@ const ROLE_TARGETS = [
   { name: 'Rôle membre (back-office web)', value: 'membre' },
 ];
 
-/** Déclare la commande `/config` et tous ses sous-groupes (channel, role, item, quota, salaire, type-groupe). `guildId` : les choix de `labo_lie` viennent du registre d'activités de CETTE guilde (déjà chargé en cache à ce stade — voir `bootstrapGuild` dans index.ts, qui appelle `configStore.reload()` avant `deployCommandsForGuild`). */
+/** Déclare la commande `/config` et tous ses sous-groupes (channel, role, item, quota, salaire, palier, classement, category, type-groupe, site-externe). `guildId` : les choix de `labo_lie` viennent du registre d'activités de CETTE guilde (déjà chargé en cache à ce stade — voir `prepareGuild` dans index.ts, qui appelle `configStore.reload()` avant `deployCommandsForGuild`). */
 export function getCommands(guildId: string) {
   const cmd = new SlashCommandBuilder()
     .setName('config')
@@ -714,7 +716,7 @@ const MANUEL_URL = 'https://claude.ai/code/artifact/843accbb-86d1-4a5a-ada8-dc38
  * permanents) le message d'accueil du salon `documentation` : résumé du bot
  * + sommaire du manuel + bouton lien vers {@link MANUEL_URL}. Déclenchée
  * depuis `/config channel set role:documentation`, `/config category set`
- * (si le salon vient d'être créé) et `bootstrapGuild` (`index.ts`) au
+ * (si le salon vient d'être créé) et `initGuild` (`index.ts`) au
  * démarrage pour chaque guilde déjà connue.
  */
 export async function initDocumentationMessage(client: Client, guildId: string): Promise<void> {

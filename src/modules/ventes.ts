@@ -54,11 +54,24 @@ type PendingSale = Awaited<ReturnType<typeof db.getPendingSale>>;
 
 // ─── POINT D'ENTRÉE DEPUIS STOCKS ────────────────────────────────────────────
 
-/** Point d'entrée appelé par `stocks.handleMessage` pour chaque mouvement détecté : route vers création de vente en attente ou tentative de confirmation selon l'item et le sens du mouvement. */
-export async function onStockEntry(client: Client, guildId: string, entry: StockEntry): Promise<void> {
+/**
+ * Point d'entrée appelé par `stocks` pour chaque mouvement de coffre appliqué :
+ * route vers création de vente en attente ou tentative de confirmation selon
+ * l'item et le sens du mouvement. `replay` : mouvement plus ancien que le
+ * démarrage du bot, rattrapé après coup — seul un dépôt d'argent est alors
+ * traité (il confirme une vente déjà déclarée dans sa fenêtre) ; un retrait
+ * ou un redépôt passé ne crée ni ne modifie aucune vente, faute de savoir à
+ * quelle alerte il se rapportait.
+ */
+export async function onStockEntry(client: Client, guildId: string, entry: StockEntry, opts: { replay?: boolean } = {}): Promise<void> {
   const c = configStore.get(guildId);
   const itemLower = entry.item.toLowerCase();
   const venteItems = c.VENTE_ITEMS.map(i => i.toLowerCase());
+
+  if (opts.replay) {
+    if (entry.action === 'depose' && itemLower === CONFIRME_VENTE_ITEM.toLowerCase()) await tryConfirmMoneyDeposit(client, guildId, entry);
+    return;
+  }
 
   if (entry.action === 'retire' && venteItems.includes(itemLower)) {
     await createPendingSale(client, guildId, entry);
@@ -101,10 +114,11 @@ async function createPendingSale(client: Client, guildId: string, entry: StockEn
 
   const existing = await db.getPendingSaleForAccumulation(guildId, entry.joueur, entry.item, Date.now() - ACCUMULATION_WINDOW_MS);
   if (existing) {
-    const newQuantite = existing.quantite + entry.quantite;
-    await db.applyPendingSaleMovement(guildId, existing.id, newQuantite, entry.quantite, Date.now());
-    await editAccumulatedAlert(client, existing, newQuantite);
-    return;
+    const newQuantite = await db.accumulatePendingSale(guildId, existing.id, entry.quantite, Date.now());
+    if (newQuantite != null) {
+      await editAccumulatedAlert(client, existing, newQuantite);
+      return;
+    }
   }
 
   const channel = await client.channels.fetch(channelId).catch(() => null);
@@ -183,23 +197,25 @@ async function editDeclaredAlertQuantite(client: Client, sale: NonNullable<Pendi
 
 // ─── CONFIRMATION PAR DÉPÔT D'ARGENT ─────────────────────────────────────────
 
-/** Un dépôt d'un item de paiement confirme toutes les ventes déclarées en attente d'un joueur dans la fenêtre {@link WINDOW_MS}. */
+/**
+ * Un dépôt d'un item de paiement confirme toutes les ventes déclarées en
+ * attente d'un joueur dans la fenêtre {@link WINDOW_MS}. Seules les ventes
+ * réellement confirmées par CE dépôt (voir `db.confirmDeclaredSale`) sont
+ * journalisées : une vente confirmée entre-temps par un autre dépôt n'est ni
+ * recréditée ni reloguée.
+ */
 async function tryConfirmMoneyDeposit(client: Client, guildId: string, entry: StockEntry): Promise<void> {
   const sales = await db.getPendingSalesForConfirmation(guildId, entry.joueur, Date.now() - WINDOW_MS);
   if (!sales.length) return;
 
+  const confirmed: Array<NonNullable<PendingSale>> = [];
   for (const sale of sales) {
-    // Confirmation + crédit du quota en une seule transaction DB quand le
-    // joueur est mappé — voir docstring de `db.confirmSaleAndCredit`. Sans
-    // discordId, rien à créditer : `sendLogVente` alertera à la place.
-    if (sale.discordId) {
-      await db.confirmSaleAndCredit(guildId, sale.id, sale.discordId, sale.joueur, sale.item, sale.quantite);
-    } else {
-      await db.confirmPendingSale(guildId, sale.id);
-    }
+    const result = await db.confirmDeclaredSale(guildId, sale.id);
+    if (!result) continue;
+    confirmed.push({ ...sale, quantite: result.quantite });
     await editAlertMessage(client, sale, '✅ Vente confirmée — argent déposé', 0x57F287);
   }
-  await sendLogVente(client, guildId, sales, entry.quantite);
+  if (confirmed.length) await sendLogVente(client, guildId, confirmed, entry.quantite);
 }
 
 // ─── CONFIRMATION PAR RETOUR DE DROGUE ───────────────────────────────────────
@@ -219,8 +235,7 @@ async function tryConfirmMoneyDeposit(client: Client, guildId: string, entry: St
  */
 async function tryConfirmRedeposit(client: Client, guildId: string, entry: StockEntry): Promise<void> {
   const saleRepose = await db.getPendingSaleRepose(guildId, entry.joueur, entry.item, Date.now() - WINDOW_MS);
-  if (saleRepose) {
-    await db.confirmPendingSale(guildId, saleRepose.id);
+  if (saleRepose && await db.transitionPendingSale(guildId, saleRepose.id, ['repose'], 'confirme')) {
     await editAlertMessage(client, saleRepose, '✅ Drogue reposée et vérifiée', 0x57F287);
     return;
   }
@@ -228,22 +243,20 @@ async function tryConfirmRedeposit(client: Client, guildId: string, entry: Stock
   const saleActive = await db.getPendingSaleForReduction(guildId, entry.joueur, entry.item, Date.now() - WINDOW_MS);
   if (!saleActive) return;
 
-  const nouvelleQuantite = saleActive.quantite - entry.quantite;
-  if (nouvelleQuantite <= 0) {
-    await db.updatePendingSaleStatut(guildId, saleActive.id, 'ignore');
+  const result = await db.applyRedeposit(guildId, saleActive.id, entry.quantite);
+  if (!result) return;
+  if (result.annulee) {
     await editAlertMessage(client, saleActive, '📦 Drogue intégralement reposée — vente annulée', 0x95A5A6);
-  } else if (saleActive.statut === 'declare') {
-    await db.applyPendingSaleMovement(guildId, saleActive.id, nouvelleQuantite, -entry.quantite);
-    await editDeclaredAlertQuantite(client, saleActive, nouvelleQuantite);
+  } else if (result.statut === 'declare') {
+    await editDeclaredAlertQuantite(client, saleActive, result.quantite);
   } else {
-    await db.applyPendingSaleMovement(guildId, saleActive.id, nouvelleQuantite, -entry.quantite, Date.now());
-    await editAccumulatedAlert(client, saleActive, nouvelleQuantite);
+    await editAccumulatedAlert(client, saleActive, result.quantite);
   }
 }
 
 // ─── LOG FINAL DANS log_ventes ────────────────────────────────────────────────
 
-/** Poste le log final dans `log_ventes` pour une ou plusieurs ventes confirmées ensemble (le crédit de quota lui-même a déjà été fait de façon atomique avec la confirmation, voir `tryConfirmMoneyDeposit`/`db.confirmSaleAndCredit`) — alerte seulement si un joueur n'est pas mappé. */
+/** Poste le log final dans `log_ventes` pour une ou plusieurs ventes confirmées ensemble (le crédit de quota lui-même a déjà été fait de façon atomique avec la confirmation, voir `tryConfirmMoneyDeposit`/`db.confirmDeclaredSale`) — alerte seulement si un joueur n'est pas mappé. */
 async function sendLogVente(client: Client, guildId: string, sales: Array<NonNullable<PendingSale>>, montantDepose: number): Promise<void> {
   const channelId = configStore.get(guildId).CHANNELS.log_ventes;
   if (!channelId) return;
@@ -301,7 +314,7 @@ export async function handleTrashReaction(reaction: MessageReaction | PartialMes
     return true;
   }
 
-  await db.updatePendingSaleStatut(guildId, saleId, 'ignore');
+  if (!(await db.transitionPendingSale(guildId, saleId, ['en_attente'], 'ignore'))) return true;
   const embed = EmbedBuilder.from(msg.embeds[0]).setTitle('🗑️ Vente ignorée').setColor(0x95A5A6);
   await msg.edit({ embeds: [embed], components: [] }).catch(() => null);
   return true;
@@ -361,7 +374,10 @@ export async function handleButton(interaction: ButtonInteraction): Promise<void
       return;
     }
     if (!(await authorizeSaleInteraction(interaction, guildId, sale))) return;
-    await db.updatePendingSaleStatut(guildId, saleId, 'declare');
+    if (!(await db.transitionPendingSale(guildId, saleId, ['en_attente'], 'declare'))) {
+      await interaction.reply({ content: "❌ Cette vente n'est plus en attente.", flags: MessageFlags.Ephemeral });
+      return;
+    }
     const embed = EmbedBuilder.from(interaction.message.embeds[0]).setTitle("💰 Vente déclarée — en attente du dépôt d'argent").setColor(0xFEE75C);
     await interaction.update({ embeds: [embed], components: [] });
     return;
@@ -375,7 +391,10 @@ export async function handleButton(interaction: ButtonInteraction): Promise<void
       return;
     }
     if (!(await authorizeSaleInteraction(interaction, guildId, sale))) return;
-    await db.updatePendingSaleStatut(guildId, saleId, 'repose');
+    if (!(await db.transitionPendingSale(guildId, saleId, ['en_attente'], 'repose'))) {
+      await interaction.reply({ content: "❌ Cette vente n'est plus en attente.", flags: MessageFlags.Ephemeral });
+      return;
+    }
     const embed = EmbedBuilder.from(interaction.message.embeds[0]).setTitle('📦 Drogue reposée — en attente de vérification').setColor(0x5865F2);
     await interaction.update({ embeds: [embed], components: [] });
     return;
@@ -417,8 +436,8 @@ export async function handleModal(interaction: ModalSubmitInteraction): Promise<
   if (id.startsWith('modal_vente_modifier_')) {
     const saleId = parseInt(id.replace('modal_vente_modifier_', ''), 10);
     const sale = await db.getPendingSale(guildId, saleId);
-    const raw = interaction.fields.getTextInputValue('quantite').replace(/[\s ]/g, '');
-    const quantite = parseInt(raw, 10);
+    const raw = interaction.fields.getTextInputValue('quantite').replace(/[\s\u00a0\u202f]/g, '');
+    const quantite = /^\d+$/.test(raw) ? Number(raw) : NaN;
 
     if (!sale || sale.statut !== 'en_attente') {
       await interaction.reply({ content: "❌ Cette vente n'est plus en attente.", flags: MessageFlags.Ephemeral });
@@ -435,7 +454,10 @@ export async function handleModal(interaction: ModalSubmitInteraction): Promise<
     }
 
     const ancienneQuantite = sale.quantite;
-    await db.updatePendingSaleQuantite(guildId, saleId, quantite);
+    if (!(await db.updatePendingSaleQuantite(guildId, saleId, quantite))) {
+      await interaction.reply({ content: "❌ Cette vente n'est plus en attente.", flags: MessageFlags.Ephemeral });
+      return;
+    }
 
     try {
       const channel = sale.channelId ? await interaction.client.channels.fetch(sale.channelId).catch(() => null) : null;
@@ -471,7 +493,7 @@ export async function cleanupExpiredSales(client: Client, guildId: string): Prom
   try {
     const expired = await db.getExpiredPendingSales(guildId, Date.now() - WINDOW_MS);
     for (const sale of expired) {
-      await db.updatePendingSaleStatut(guildId, sale.id, 'expire');
+      if (!(await db.transitionPendingSale(guildId, sale.id, ['en_attente', 'declare', 'repose'], 'expire'))) continue;
       await editAlertMessage(client, sale, '⏰ Vente expirée — aucune action', 0x95A5A6);
     }
   } finally {

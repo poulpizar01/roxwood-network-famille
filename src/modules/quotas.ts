@@ -58,6 +58,7 @@ import * as garages from './garages';
 import { isAdmin } from '../permissions';
 import { replyAutoDelete, updateAutoDelete } from '../interaction-helpers';
 import { buildChunkedEmbeds } from '../embed-chunks';
+import { upsertPanel, fetchMessageOrNull } from '../permanent-message';
 
 /**
  * Un labo passe par un select de participants PUIS un modal (temps restant) —
@@ -65,17 +66,25 @@ import { buildChunkedEmbeds } from '../embed-chunks';
  * caractères, trop court pour y encoder jusqu'à 25 IDs Discord (18 chiffres
  * chacun) : on ne transmet donc au modal qu'un token de quelques caractères
  * référençant la liste réelle ici, en mémoire (expire après 5 min si le modal
- * n'est jamais soumis).
+ * n'est jamais soumis). La carte est commune à toutes les guildes : chaque
+ * entrée porte la guilde et le membre pour qui elle a été émise, vérifiés à
+ * la soumission — un token n'est pas une preuve à lui seul.
  */
-const pendingLaboParticipants = new Map<string, string[]>();
+const pendingLaboParticipants = new Map<string, { guildId: string; userId: string; partnerIds: string[] }>();
 
 /** Enregistre une liste de participants labo sous un token éphémère (voir docstring de `pendingLaboParticipants`) et retourne ce token. */
-function createLaboParticipantToken(partnerIds: string[]): string {
+function createLaboParticipantToken(guildId: string, userId: string, partnerIds: string[]): string {
   const token = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-  pendingLaboParticipants.set(token, partnerIds);
+  pendingLaboParticipants.set(token, { guildId, userId, partnerIds });
   setTimeout(() => pendingLaboParticipants.delete(token), 5 * 60 * 1000);
   return token;
 }
+
+/** Plafond d'une quantité déclarée à la main (récolte, vente saisie) : rien d'autre ne borne cette saisie, qui alimente directement le quota et la paie. */
+const MAX_QUANTITE_DECLARATION = 100_000;
+
+/** Au-delà, `setTimeout` déborde (2^31 ms ≈ 24,8 jours) et se déclencherait immédiatement : le labo repasserait au vert aussitôt. */
+const MAX_TEMPS_LABO_MINUTES = 35_000;
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
 
@@ -177,7 +186,7 @@ async function buildMainEmbed(guildId: string): Promise<EmbedBuilder> {
   });
 
   const embed = new EmbedBuilder()
-    .setTitle('🎮 Gestion des Activités')
+    .setTitle(MAIN_PANEL_TITLE)
     .setColor(0x5865F2)
     .setDescription(
       'Enregistre tes activités de la semaine en cliquant sur les boutons ci-dessous.\n' +
@@ -267,20 +276,35 @@ function computeVentePay(
   if (!venteByItem) {
     return generalTiers.length ? computeTierPay(totalVente, generalTiers) : totalVente * generalRate;
   }
+  const ratesByItem = lowerKeys(itemRates);
+  const tiersByItem = lowerKeys(itemTiers);
   let pooled = totalVente;
   let sum = 0;
   for (const [item, qty] of Object.entries(venteByItem)) {
-    const tiers = itemTiers[item];
+    const tiers = tiersByItem[item];
     if (tiers?.length) {
       sum += computeTierPay(qty, tiers);
       pooled -= qty;
-    } else if (itemRates[item] != null) {
-      sum += qty * itemRates[item];
+    } else if (ratesByItem[item] != null) {
+      sum += qty * ratesByItem[item];
       pooled -= qty;
     }
   }
+  pooled = Math.max(0, pooled);
   sum += generalTiers.length ? computeTierPay(pooled, generalTiers) : pooled * generalRate;
   return sum;
+}
+
+/**
+ * Même carte, clés en minuscules. Un taux/palier par item est enregistré sous
+ * le nom configuré ("Cannabis") alors qu'une vente porte le nom tel que lu
+ * dans les logs de coffre, en minuscules ("cannabis") : toute comparaison
+ * entre les deux se fait en minuscules, comme partout ailleurs pour un item.
+ */
+function lowerKeys<T>(record: Record<string, T>): Record<string, T> {
+  const out: Record<string, T> = {};
+  for (const [key, value] of Object.entries(record)) out[key.toLowerCase()] = value;
+  return out;
 }
 
 /**
@@ -323,7 +347,8 @@ async function getVenteByItemMap(guildId: string, sinceTs: number, untilTs: numb
   const map = new Map<string, Record<string, number>>();
   for (const r of rows) {
     const userMap = map.get(r.userId) ?? {};
-    userMap[r.item] = (userMap[r.item] ?? 0) + r.quantite;
+    const item = r.item.toLowerCase();
+    userMap[item] = (userMap[item] ?? 0) + r.quantite;
     map.set(r.userId, userMap);
   }
   return map;
@@ -385,7 +410,7 @@ export async function getBraquageSummary(guildId: string): Promise<Array<{ actio
 //
 // Les fonctions au-dessus (getUserQuotaSummary, getAllUserQuotaSummaries,
 // getSalaryRanking) lisent le cache `Stat`, qui ne connaît QUE la période en
-// cours (vidé entièrement à chaque reset hebdo, voir weeklyReset). Les
+// cours (vidé entièrement à chaque reset hebdo, voir checkWeeklyReset). Les
 // fonctions ci-dessous reconstruisent le même calcul depuis `Transaction`
 // (jamais purgée, juste soft-delete) sur une plage [since, until) arbitraire
 // — utilisées par l'API pour interroger une semaine passée (voir
@@ -405,9 +430,13 @@ function quantityActionKeys(guildId: string): string[] {
   return Object.entries(configStore.get(guildId).ACTIVITY_TYPES).filter(([, c]) => c.quantity).map(([k]) => k);
 }
 
+/** `Transaction` contient aussi des actions hors registre (ex. `fabrication_munitions`, compteur de l'armurerie) : seules celles d'`ACTIVITY_TYPES` sont des activités, comme dans `Stat`. */
 function summaryFromActionTotals(guildId: string, rows: Array<{ action: string; total: number }>): QuotaSummary {
+  const activityTypes = configStore.get(guildId).ACTIVITY_TYPES;
   const map: Record<string, { count: number; points: number }> = {};
-  for (const r of rows) map[r.action] = { count: r.total, points: 0 };
+  for (const r of rows) {
+    if (activityTypes[r.action]) map[r.action] = { count: r.total, points: 0 };
+  }
   return { byQuotaType: summarizeByQuotaType(guildId, map), map };
 }
 
@@ -471,11 +500,9 @@ export async function getClassementRankingForRange(guildId: string, range: Quota
 export async function getGroupSummaryForRange(guildId: string, range: QuotaRange): Promise<Array<{ action: string; label: string; total: number }>> {
   const activityTypes = configStore.get(guildId).ACTIVITY_TYPES;
   const totals = await db.getGroupActionTotals(guildId, range.since, quantityActionKeys(guildId), range.until);
-  return totals.map(({ action, total }) => ({
-    action,
-    label: activityTypes[action]?.label ?? action,
-    total,
-  }));
+  return totals
+    .filter(({ action }) => activityTypes[action])
+    .map(({ action, total }) => ({ action, label: activityTypes[action].label, total }));
 }
 
 /**
@@ -501,18 +528,24 @@ function buildVenteDetailLines(
       : [`• Vente : ${totalVente} × ${generalRate}$ = **${fmt(totalVente * generalRate)}$**`];
   }
   const lines: string[] = [];
+  const ratesByItem = lowerKeys(itemRates);
+  const tiersByItem = lowerKeys(itemTiers);
+  // Nom tel que configuré ("Cannabis"), pour l'affichage d'un item connu en minuscules.
+  const labels: Record<string, string> = {};
+  for (const name of [...Object.keys(itemRates), ...Object.keys(itemTiers)]) labels[name.toLowerCase()] = name;
   let pooled = totalVente;
   for (const item of Object.keys(venteByItem).sort()) {
     const qty = venteByItem[item];
-    const tiers = itemTiers[item];
+    const tiers = tiersByItem[item];
     if (tiers?.length) {
-      lines.push(`• Vente ${item} : ${qty} unités (palier) = **${fmt(computeTierPay(qty, tiers))}$**`);
+      lines.push(`• Vente ${labels[item] ?? item} : ${qty} unités (palier) = **${fmt(computeTierPay(qty, tiers))}$**`);
       pooled -= qty;
-    } else if (itemRates[item] != null) {
-      lines.push(`• Vente ${item} : ${qty} × ${itemRates[item]}$ = **${fmt(qty * itemRates[item])}$**`);
+    } else if (ratesByItem[item] != null) {
+      lines.push(`• Vente ${labels[item] ?? item} : ${qty} × ${ratesByItem[item]}$ = **${fmt(qty * ratesByItem[item])}$**`);
       pooled -= qty;
     }
   }
+  pooled = Math.max(0, pooled);
   if (pooled > 0 || !lines.length) {
     const label = lines.length ? 'Vente (reste)' : 'Vente';
     lines.push(generalTiers.length
@@ -630,11 +663,11 @@ async function buildClassementEmbed(client: Client, guildId: string): Promise<Em
  * même si elle a un total historique (elle a pu être active plus tôt dans la
  * semaine, avant un changement de tier).
  */
-async function buildBilanEmbed(guildId: string, sinceTs?: number): Promise<EmbedBuilder> {
+async function buildBilanEmbed(guildId: string, sinceTs?: number, untilTs: number = Date.now()): Promise<EmbedBuilder> {
   const since = sinceTs ?? Number((await db.getSetting(guildId, LAST_RESET_KEY)) || 0);
   const activityTypes = configStore.get(guildId).ACTIVITY_TYPES;
   const quantityKeys = Object.entries(activityTypes).filter(([, c]) => c.quantity).map(([k]) => k);
-  const totals = await db.getGroupActionTotals(guildId, since, quantityKeys);
+  const totals = await db.getGroupActionTotals(guildId, since, quantityKeys, untilTs);
   const map: Record<string, number> = {};
   for (const row of totals) map[row.action] = row.total;
 
@@ -774,6 +807,8 @@ function buildButtonRows(guildId: string) {
 
 // ─── MESSAGE PERMANENT ────────────────────────────────────────────────────────
 
+const MAIN_PANEL_TITLE = '🎮 Gestion des Activités';
+
 /** Édite le panneau d'activités permanent (ou le crée s'il n'existe pas encore/plus). */
 export async function initPermanentMessage(client: Client, guildId: string): Promise<void> {
   const c = configStore.get(guildId);
@@ -782,20 +817,10 @@ export async function initPermanentMessage(client: Client, guildId: string): Pro
     const channel = await client.channels.fetch(c.CHANNELS.quotas).catch(() => null);
     if (!channel || !channel.isSendable()) return;
 
-    const embed = await buildMainEmbed(guildId);
-    const rows = buildButtonRows(guildId);
-
-    const storedId = await db.getSetting(guildId, 'quota_message_id');
-    if (storedId) {
-      const msg = await channel.messages.fetch(storedId).catch(() => null);
-      if (msg) {
-        await msg.edit({ embeds: [embed], components: rows });
-        return;
-      }
-    }
-
-    const newMsg = await channel.send({ embeds: [embed], components: rows });
-    await db.setSetting(guildId, 'quota_message_id', newMsg.id);
+    await upsertPanel(channel, guildId, 'quota_message_id', MAIN_PANEL_TITLE, async () => ({
+      embeds: [await buildMainEmbed(guildId)],
+      components: buildButtonRows(guildId),
+    }));
   } catch (err) {
     console.error(`[quotas] initPermanentMessage(${guildId}):`, (err as Error).message);
   }
@@ -870,7 +895,7 @@ async function triggerActivity(interaction: ButtonInteraction | StringSelectMenu
     }, { deleteAfterMs: 60_000 });
   }
 
-  if (cfg.braquageWeeklyLimit) {
+  if (cfg.braquageWeeklyLimit != null) {
     if (!(await checkBraquageLimit(guildId, key))) {
       const used = await db.getBraquageCount(guildId, key);
       return replyAutoDelete(interaction, `🚫 La limite hebdomadaire de **${cfg.label}** est atteinte (${used}/${cfg.braquageWeeklyLimit} sur 7 jours).`);
@@ -899,7 +924,8 @@ async function triggerActivity(interaction: ButtonInteraction | StringSelectMenu
         ),
         new ActionRowBuilder<TextInputBuilder>().addComponents(
           new TextInputBuilder().setCustomId('quantite').setLabel('Quantité')
-            .setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(10),
+            .setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(10)
+            .setPlaceholder(`Nombre entier, ${MAX_QUANTITE_DECLARATION.toLocaleString('fr-FR')} au plus`),
         ),
       );
     if (interaction.isButton() || interaction.isStringSelectMenu()) return interaction.showModal(modal);
@@ -962,7 +988,7 @@ async function handleMinuterie(interaction: ButtonInteraction, guildId: string):
   const entries = Object.entries(activityTypes).sort((a, b) => a[1].displayOrder - b[1].displayOrder);
 
   const cooldownLines = await Promise.all(
-    entries.filter(([, cfg]) => cfg.cooldownMs && !cfg.labo && !cfg.braquageWeeklyLimit).map(async ([key, cfg]) => {
+    entries.filter(([, cfg]) => cfg.cooldownMs && !cfg.labo && cfg.braquageWeeklyLimit == null).map(async ([key, cfg]) => {
       const remaining = await checkCooldown(guildId, userId, key);
       const status = remaining ? `⏳ ${formatTime(remaining)}` : '✅ Dispo';
       return `**${cfg.label}** : ${status}`;
@@ -1021,42 +1047,74 @@ export async function handleStringSelect(interaction: StringSelectMenuInteractio
 
 // ─── HANDLER MODALS ───────────────────────────────────────────────────────────
 
-/** Route les soumissions de modal (`modal_act_*`, `modal_actlabo_*`) : enregistre la transaction et met à jour stats/cooldown/panneau. */
+/** Nombre entier strictement positif saisi dans un champ de modal, ou `null` — `parseInt` seul accepterait `12abc` (12) ou `1e5` (1). */
+function parsePositiveInt(raw: string): number | null {
+  const cleaned = raw.replace(/[\s\u00a0\u202f]/g, '');
+  if (!/^\d+$/.test(cleaned)) return null;
+  const value = Number(cleaned);
+  return Number.isSafeInteger(value) ? value : null;
+}
+
+/**
+ * Suites d'une déclaration déjà enregistrée et déjà confirmée au membre :
+ * log dans `logs_activites`, panneau. Après la réponse à l'interaction,
+ * jamais avant — Discord n'attend que 3 secondes, et un membre qui voit un
+ * échec alors que tout est enregistré déclare une seconde fois.
+ */
+async function publishDeclaration(client: Client, guildId: string, embed: EmbedBuilder, extra?: () => Promise<void>): Promise<void> {
+  try {
+    if (extra) await extra();
+    await logActivite(client, guildId, embed);
+    await updatePermanentMessage(client, guildId);
+  } catch (err) {
+    console.error(`[quotas] suites d'une déclaration (${guildId}) :`, (err as Error).message);
+  }
+}
+
+/**
+ * Route les soumissions de modal (`modal_act_*`, `modal_actlabo_*`). Tout ce
+ * qui a été vérifié à l'ouverture (activité disponible pour le tier,
+ * cooldown) est revérifié ici : un modal peut rester ouvert longtemps, ou
+ * être ouvert sur deux appareils.
+ */
 export async function handleModal(interaction: ModalSubmitInteraction): Promise<void> {
   const id = interaction.customId;
   const guildId = interaction.guildId!;
+  const user = interaction.user;
 
   if (id.startsWith('modal_act_') && !id.startsWith('modal_actlabo_')) {
     const key = id.slice('modal_act_'.length);
     const cfg = configStore.get(guildId).ACTIVITY_TYPES[key];
     if (!cfg) return;
+    if (!cfg.enabled) return replyAutoDelete(interaction, `❌ **${cfg.label}** n'est pas disponible pour le type d'organisation actuel.`);
 
     if (cfg.quantity) {
       const type = interaction.fields.getTextInputValue('type').trim();
-      const rawQty = interaction.fields.getTextInputValue('quantite').trim();
-      const quantite = parseInt(rawQty, 10);
-      if (isNaN(quantite) || quantite <= 0) return replyAutoDelete(interaction, '❌ Quantité invalide.');
+      const quantite = parsePositiveInt(interaction.fields.getTextInputValue('quantite'));
+      if (quantite == null || quantite <= 0) return replyAutoDelete(interaction, '❌ Quantité invalide (nombre entier attendu).');
+      if (quantite > MAX_QUANTITE_DECLARATION) {
+        return replyAutoDelete(interaction, `❌ Quantité trop élevée : **${MAX_QUANTITE_DECLARATION.toLocaleString('fr-FR')}** au plus par déclaration.`);
+      }
 
-      const txId = await db.addTransaction(guildId, { user_id: interaction.user.id, username: interaction.user.tag, action: key, quantite, type, timestamp: Date.now() });
-      await db.incrementStat(guildId, interaction.user.id, key, quantite, 0);
+      const result = await db.recordActivity(guildId, { userId: user.id, username: user.tag, action: key, quantite, type, statDelta: quantite });
+      if (!result.ok) return;
 
-      const embed = buildTransactionEmbed(guildId, txId, interaction.user.id, interaction.user.tag, key, { Type: type, Quantité: quantite.toLocaleString('fr-FR') });
-      await logActivite(interaction.client, guildId, embed);
-      await updatePermanentMessage(interaction.client, guildId);
-      return replyAutoDelete(interaction, `✅ **${cfg.label}** — ${quantite.toLocaleString('fr-FR')} × ${type} enregistrés (ID #${txId}).`);
+      await replyAutoDelete(interaction, { content: `✅ **${cfg.label}** — ${quantite.toLocaleString('fr-FR')} × ${type} enregistrés (ID #${result.txId}).`, allowedMentions: { parse: [] } });
+      const embed = buildTransactionEmbed(guildId, result.txId, user.id, user.tag, key, { Type: type, Quantité: quantite.toLocaleString('fr-FR') });
+      return publishDeclaration(interaction.client, guildId, embed);
     }
 
     const confirm = interaction.fields.getTextInputValue('confirm').trim().toLowerCase();
     if (confirm !== 'oui') return replyAutoDelete(interaction, '❌ Action annulée.');
 
-    const txId = await db.addTransaction(guildId, { user_id: interaction.user.id, username: interaction.user.tag, action: key, timestamp: Date.now() });
-    await db.incrementStat(guildId, interaction.user.id, key, 1, 0);
-    if (cfg.cooldownMs) await db.setCooldown(guildId, interaction.user.id, key, Date.now() + cfg.cooldownMs);
+    const result = await db.recordActivity(guildId, { userId: user.id, username: user.tag, action: key, statDelta: 1, cooldownMs: cfg.cooldownMs });
+    if (!result.ok) {
+      const detail = result.reason === 'cooldown' ? ` encore **${formatTime(result.remainingMs)}**` : '';
+      return replyAutoDelete(interaction, `⏳ Tu es en cooldown pour **${cfg.label}**${detail}.`);
+    }
 
-    const embed = buildTransactionEmbed(guildId, txId, interaction.user.id, interaction.user.tag, key, {});
-    await logActivite(interaction.client, guildId, embed);
-    await updatePermanentMessage(interaction.client, guildId);
-    return replyAutoDelete(interaction, `✅ **${cfg.label}** enregistré (ID #${txId}).`);
+    await replyAutoDelete(interaction, `✅ **${cfg.label}** enregistré (ID #${result.txId}).`);
+    return publishDeclaration(interaction.client, guildId, buildTransactionEmbed(guildId, result.txId, user.id, user.tag, key, {}));
   }
 
   if (id.startsWith('modal_actlabo_')) {
@@ -1064,43 +1122,37 @@ export async function handleModal(interaction: ModalSubmitInteraction): Promise<
     const [key, token = ''] = withoutPrefix.split('|');
     const cfg = configStore.get(guildId).ACTIVITY_TYPES[key];
     if (!cfg) return;
+    if (!cfg.enabled) return replyAutoDelete(interaction, `❌ **${cfg.label}** n'est pas disponible pour le type d'organisation actuel.`);
 
     const tempsRaw = interaction.fields.getTextInputValue('temps_restant').trim();
-    const tempsMinutes = parseInt(tempsRaw, 10);
     // 0 accepté : certains labos n'ont pas de délai de production réel — le
     // salon reste disponible (voir setLaboStatut, alertes.ts).
-    if (isNaN(tempsMinutes) || tempsMinutes < 0) return replyAutoDelete(interaction, '❌ Temps restant invalide.');
+    const tempsMinutes = tempsRaw === '0' ? 0 : parsePositiveInt(tempsRaw);
+    if (tempsMinutes == null) return replyAutoDelete(interaction, '❌ Temps restant invalide (nombre entier de minutes attendu).');
+    if (tempsMinutes > MAX_TEMPS_LABO_MINUTES) {
+      return replyAutoDelete(interaction, `❌ Temps restant trop long : **${MAX_TEMPS_LABO_MINUTES.toLocaleString('fr-FR')}** minutes au plus.`);
+    }
 
-    const partnerIds = token ? (pendingLaboParticipants.get(token) || []) : [];
-    if (token && !partnerIds.length) {
+    const pending = token ? pendingLaboParticipants.get(token) : undefined;
+    if (token && (!pending || pending.guildId !== guildId || pending.userId !== user.id)) {
       return replyAutoDelete(interaction, '❌ La sélection de participants a expiré. Recommence.');
     }
     if (token) pendingLaboParticipants.delete(token);
+    const partnerIds = (pending?.partnerIds ?? []).filter(pid => pid !== user.id);
 
-    const filteredPartnerIds = partnerIds.filter(pid => pid !== interaction.user.id);
-    const allIds = [interaction.user.id, ...filteredPartnerIds];
+    const result = await db.recordActivity(guildId, {
+      userId: user.id, username: user.tag, action: key,
+      partenaires: partnerIds, tempsRestant: String(tempsMinutes), statDelta: 1,
+    });
+    if (!result.ok) return;
 
-    await replyAutoDelete(interaction, `✅ **${cfg.label}** validé. Enregistrement en cours...`);
-
-    void (async () => {
-      try {
-        const txId = await db.addTransaction(guildId, {
-          user_id: interaction.user.id, username: interaction.user.tag, action: key,
-          partenaires: partnerIds, temps_restant: String(tempsMinutes), timestamp: Date.now(),
-        });
-        for (const uid of allIds) await db.incrementStat(guildId, uid, key, 1, 0);
-        await alertes.setLaboStatut(interaction.client, guildId, key, false, tempsMinutes);
-
-        const partnerMentions = partnerIds.length ? partnerIds.map(pid => `<@${pid}>`).join(', ') : '*Aucun*';
-        const embed = buildTransactionEmbed(guildId, txId, interaction.user.id, interaction.user.tag, key, {
-          'Temps restant': `${tempsMinutes} min`, Participants: `${allIds.length}`, Partenaires: partnerMentions,
-        });
-        await logActivite(interaction.client, guildId, embed);
-        await updatePermanentMessage(interaction.client, guildId);
-      } catch (err) {
-        console.error('[quotas] erreur traitement labo:', (err as Error).message);
-      }
-    })();
+    await replyAutoDelete(interaction, `✅ **${cfg.label}** enregistré (ID #${result.txId}).`);
+    const embed = buildTransactionEmbed(guildId, result.txId, user.id, user.tag, key, {
+      'Temps restant': `${tempsMinutes} min`,
+      Participants: `${partnerIds.length + 1}`,
+      Partenaires: partnerIds.length ? partnerIds.map(pid => `<@${pid}>`).join(', ') : '*Aucun*',
+    });
+    return publishDeclaration(interaction.client, guildId, embed, () => alertes.setLaboStatut(interaction.client, guildId, key, false, tempsMinutes));
   }
 }
 
@@ -1114,10 +1166,14 @@ export async function handleSelect(interaction: UserSelectMenuInteraction): Prom
   const key = id.slice('act_select_'.length);
   const cfg = configStore.get(guildId).ACTIVITY_TYPES[key];
   if (!cfg) return;
+  // Le menu reste utilisable 60 s : le tier a pu changer entre-temps.
+  if (!cfg.enabled) {
+    return updateAutoDelete(interaction, { content: `❌ **${cfg.label}** n'est pas disponible pour le type d'organisation actuel.`, components: [] });
+  }
 
   if (cfg.labo) {
     const selectedIds = interaction.values.filter(uid => uid !== interaction.user.id);
-    const token = selectedIds.length ? createLaboParticipantToken(selectedIds) : '';
+    const token = selectedIds.length ? createLaboParticipantToken(guildId, interaction.user.id, selectedIds) : '';
     const modal = new ModalBuilder()
       .setCustomId(`modal_actlabo_${key}${token ? `|${token}` : ''}`)
       .setTitle(`${cfg.label} — Temps restant`.slice(0, 45))
@@ -1131,25 +1187,30 @@ export async function handleSelect(interaction: UserSelectMenuInteraction): Prom
     return interaction.showModal(modal);
   }
 
-  // Braquage : partenaires sélectionnés → enregistrement direct
+  // Braquage : partenaires sélectionnés → enregistrement direct. La limite
+  // hebdomadaire, vérifiée au clic sur le bouton, est revérifiée dans la
+  // transaction d'écriture : plusieurs menus peuvent être ouverts en même
+  // temps pour un seul slot restant.
   const selectedIds = interaction.values.filter(uid => uid !== interaction.user.id);
   const allIds = [interaction.user.id, ...selectedIds];
 
-  await db.addBraquage(guildId, interaction.user.id, key);
-  const txId = await db.addTransaction(guildId, { user_id: interaction.user.id, username: interaction.user.tag, action: key, partenaires: selectedIds, timestamp: Date.now() });
-  for (const uid of allIds) await db.incrementStat(guildId, uid, key, 1, 0);
-
-  const embed = buildTransactionEmbed(guildId, txId, interaction.user.id, interaction.user.tag, key, {
-    Partenaires: selectedIds.length ? selectedIds.map(p => `<@${p}>`).join(', ') : '*Aucun*',
+  const result = await db.recordActivity(guildId, {
+    userId: interaction.user.id, username: interaction.user.tag, action: key,
+    partenaires: selectedIds, statDelta: 1, braquageLimit: cfg.braquageWeeklyLimit,
   });
-  await logActivite(interaction.client, guildId, embed);
-  await alertes.postBraquageAlert(interaction.client, guildId, key);
-  await updatePermanentMessage(interaction.client, guildId);
+  if (!result.ok) {
+    const detail = result.reason === 'limite' ? ` (${result.used}/${cfg.braquageWeeklyLimit} sur 7 jours)` : '';
+    return updateAutoDelete(interaction, { content: `🚫 La limite hebdomadaire de **${cfg.label}** est atteinte${detail}.`, components: [] });
+  }
 
-  return updateAutoDelete(interaction, {
-    content: `✅ **${cfg.label}** enregistré (ID #${txId}). Participants : ${allIds.map(p => `<@${p}>`).join(', ')}.`,
+  await updateAutoDelete(interaction, {
+    content: `✅ **${cfg.label}** enregistré (ID #${result.txId}). Participants : ${allIds.map(p => `<@${p}>`).join(', ')}.`,
     components: [],
   });
+  const embed = buildTransactionEmbed(guildId, result.txId, interaction.user.id, interaction.user.tag, key, {
+    Partenaires: selectedIds.length ? selectedIds.map(p => `<@${p}>`).join(', ') : '*Aucun*',
+  });
+  return publishDeclaration(interaction.client, guildId, embed, () => alertes.postBraquageAlert(interaction.client, guildId, key));
 }
 
 // ─── COMMANDE /supp ───────────────────────────────────────────────────────────
@@ -1170,23 +1231,24 @@ export async function handleSuppCommand(interaction: ChatInputCommandInteraction
   }
 
   const cfg = configStore.get(guildId).ACTIVITY_TYPES[tx.action];
-  const allIds = [tx.userId, ...tx.partenaires];
+  // `!= null` et pas un test de véracité : une limite à 0 (activité fermée au
+  // tier courant) reste un braquage, dont les partenaires ont été crédités.
+  const estBraquage = cfg?.braquageWeeklyLimit != null;
+  const collectif = !!cfg && !cfg.quantity && (cfg.labo || estBraquage);
 
-  if (cfg) {
-    if (cfg.quantity) {
-      await db.decrementStat(guildId, tx.userId, tx.action, tx.quantite, 0);
-    } else if (cfg.labo || cfg.braquageWeeklyLimit) {
-      for (const uid of allIds) await db.decrementStat(guildId, uid, tx.action, 1, 0);
-      // Le braquage consommait un slot hebdomadaire partagé : le libérer aussi,
-      // sinon le groupe reste bloqué à un slot de moins jusqu'à ce que l'entrée
-      // sorte de la fenêtre glissante de 7 jours (voir db.removeMostRecentBraquage).
-      if (cfg.braquageWeeklyLimit) await db.removeMostRecentBraquage(guildId, tx.userId, tx.action);
-    } else {
-      await db.decrementStat(guildId, tx.userId, tx.action, 1, 0);
-    }
+  // Le braquage consommait un slot hebdomadaire partagé : `suppTransaction`
+  // le libère aussi, sinon le groupe reste à un slot de moins jusqu'à ce que
+  // l'entrée sorte de la fenêtre glissante de 7 jours.
+  const supprimee = await db.suppTransaction(guildId, txId, interaction.user.tag, {
+    statUserIds: !cfg ? [] : collectif ? [tx.userId, ...tx.partenaires] : [tx.userId],
+    statDelta: cfg?.quantity ? tx.quantite : 1,
+    sinceTs: Number((await db.getSetting(guildId, LAST_RESET_KEY)) || 0),
+    freeBraquage: estBraquage,
+  });
+  if (!supprimee) {
+    await interaction.reply({ content: `❌ Transaction #${txId} introuvable ou déjà supprimée.`, flags: MessageFlags.Ephemeral });
+    return;
   }
-
-  await db.deleteTransaction(guildId, txId, interaction.user.tag);
 
   const embed = new EmbedBuilder()
     .setTitle(`🗑️ Transaction #${txId} supprimée`)
@@ -1240,13 +1302,120 @@ async function isWeeklyResetDue(guildId: string): Promise<boolean> {
   return wallLast.getTime() < boundary.getTime();
 }
 
-/** Cron (toutes les 15 min) : déclenche le reset hebdomadaire s'il est en retard (voir `isWeeklyResetDue`) — auto-réparant si le bot était down au moment prévu. */
+/** Publication de fin de semaine restant à faire après un reset (voir `db.performWeeklyReset`) : la période, et ce qui a déjà été posté. */
+const PUBLICATION_KEY = 'weekly_publication';
+interface PendingPublication { since: number; until: number; bilan: boolean; paie: boolean; fourrieres: boolean }
+
+const weeklyResetRunning = new Set<string>();
+
+/**
+ * Cron (toutes les 15 min, et au démarrage) : reset hebdomadaire s'il est dû
+ * (voir `isWeeklyResetDue`), puis publication de la semaine écoulée.
+ *
+ * Les deux sont découplés. Le reset est une seule transaction DB (stats
+ * vidées, date avancée, publication notée à faire). La publication (bilan,
+ * paie, fourrières) est calculée depuis `Transaction` sur la période close,
+ * jamais depuis `Stat` déjà vidé, et chaque étape postée est cochée : une
+ * erreur Discord ou un arrêt du process en cours de route la fait reprendre
+ * au passage suivant, là où elle s'était arrêtée, sans rien reposter.
+ */
 export async function checkWeeklyReset(client: Client, guildId: string): Promise<void> {
-  if (!(await isWeeklyResetDue(guildId))) return;
-  const previousReset = Number((await db.getSetting(guildId, LAST_RESET_KEY)) || 0);
-  await db.setSetting(guildId, LAST_RESET_KEY, Date.now());
-  console.log(`[quotas] Reset hebdomadaire en retard détecté (${guildId}) — déclenchement automatique.`);
-  await weeklyReset(client, guildId, previousReset);
+  if (weeklyResetRunning.has(guildId)) return;
+  weeklyResetRunning.add(guildId);
+  try {
+    const stored = await db.getSetting(guildId, LAST_RESET_KEY);
+    if (stored == null) {
+      // Guilde jamais remise à zéro : aucune semaine à clôturer, la première part de maintenant.
+      await db.setSetting(guildId, LAST_RESET_KEY, Date.now());
+      return;
+    }
+    if (await isWeeklyResetDue(guildId)) {
+      await publishPendingWeek(client, guildId).catch(err => console.error(`[quotas] publication de la semaine précédente (${guildId}) abandonnée :`, (err as Error).message));
+      await db.performWeeklyReset(guildId, LAST_RESET_KEY, PUBLICATION_KEY, Number(stored) || 0, Date.now());
+      console.log(`[quotas] Reset hebdomadaire effectué (${guildId}).`);
+      await deleteQuotaReminder(client, guildId);
+    }
+    await publishPendingWeek(client, guildId);
+  } catch (err) {
+    console.error(`[quotas] checkWeeklyReset(${guildId}) — nouvelle tentative au prochain passage :`, (err as Error).message);
+  } finally {
+    weeklyResetRunning.delete(guildId);
+  }
+}
+
+/** Salon de publication, ou `null` s'il n'est pas configuré, n'existe plus ou n'accepte pas de message (l'étape est alors considérée faite : rien à retenter). */
+async function publicationChannel(client: Client, channelId: string | null | undefined) {
+  if (!channelId) return null;
+  const channel = await client.channels.fetch(channelId).catch(() => null);
+  return channel?.isSendable() ? channel : null;
+}
+
+/** Publie ce qui reste à publier de la dernière semaine close (voir `checkWeeklyReset`). Une erreur d'envoi remonte : l'étape reste à faire. */
+async function publishPendingWeek(client: Client, guildId: string): Promise<void> {
+  const raw = await db.getSetting(guildId, PUBLICATION_KEY);
+  if (!raw) return;
+  let pending: PendingPublication;
+  try { pending = JSON.parse(raw); } catch { await db.deleteSetting(guildId, PUBLICATION_KEY); return; }
+
+  const c = configStore.get(guildId);
+  const range: QuotaRange = { since: pending.since, until: pending.until };
+  const debut = pending.since > 0 ? pending.since : pending.until - 7 * 24 * 60 * 60 * 1000;
+  const entete = `${formatDate(debut)} — ${formatDate(pending.until)}`;
+  const cocher = async (etape: 'bilan' | 'paie' | 'fourrieres') => {
+    pending[etape] = true;
+    await db.setSetting(guildId, PUBLICATION_KEY, JSON.stringify(pending));
+  };
+
+  if (!pending.bilan) {
+    const channel = await publicationChannel(client, c.CHANNELS.bilan);
+    if (channel) {
+      const bilanEmbed = await buildBilanEmbed(guildId, range.since, range.until);
+      bilanEmbed.setTitle(`📊 Bilan hebdomadaire — ${entete}`);
+      await channel.send({ embeds: [bilanEmbed] });
+    }
+    await cocher('bilan');
+  }
+
+  if (!pending.paie) {
+    const channel = await publicationChannel(client, c.CHANNELS.paie);
+    const ranking = channel
+      ? (await getAllUserPayForRange(guildId, range)).filter(r => r.salaire > 0).sort((a, b) => b.salaire - a.salaire)
+      : [];
+    if (channel && ranking.length) {
+      const guild = client.guilds.cache.get(guildId);
+      const targets = c.QUOTA_TARGETS;
+      const lines: string[] = [];
+      for (let i = 0; i < ranking.length; i++) {
+        const r = ranking[i];
+        const member = guild ? await guild.members.fetch(r.userId).catch(() => null) : null;
+        const name = member?.displayName || `<@${r.userId}>`;
+        const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i + 1}.`;
+        const quotaLine = Object.keys(targets).sort()
+          .map(qt => `${capitalize(qt)} ${r.byQuotaType[qt] ?? 0}/${targets[qt]}`)
+          .join(' | ');
+
+        lines.push(
+          `${medal} **${name}** — 💵 ${Math.round(r.salaire).toLocaleString('fr-FR')} $\n` +
+          (quotaLine ? `    ${quotaLine}` : ''),
+        );
+      }
+      const paieEmbed = new EmbedBuilder()
+        .setTitle(`💰 Paie hebdomadaire — ${entete}`)
+        .setColor(0xFEE75C)
+        .setDescription(lines.join('\n\n'))
+        .setTimestamp();
+      await channel.send({ embeds: [paieEmbed] });
+    }
+    await cocher('paie');
+  }
+
+  if (!pending.fourrieres) {
+    await garages.resetFourrieresHebdo(client, guildId, entete);
+    await cocher('fourrieres');
+  }
+
+  await db.deleteSetting(guildId, PUBLICATION_KEY);
+  console.log(`[quotas] Semaine publiée (${guildId}) — ${entete}`);
 }
 
 // ─── RAPPEL DE QUOTA DU DIMANCHE (00h → 19h) — spécifique à la catégorie "vente" ──
@@ -1313,7 +1482,7 @@ async function ensureQuotaReminderMessage(client: Client, guildId: string): Prom
 
   const messageId = await db.getSetting(guildId, QUOTA_REMINDER_KEY);
   if (messageId) {
-    const existing = await channel.messages.fetch(messageId).catch(() => null);
+    const existing = await fetchMessageOrNull(channel, messageId);
     if (existing) return existing;
     console.log(`[quotas] Rappel de quota introuvable (${guildId}, supprimé manuellement) — recréation.`);
   }
@@ -1356,65 +1525,6 @@ async function deleteQuotaReminder(client: Client, guildId: string): Promise<voi
     if (msg) await msg.delete().catch(() => null);
   } catch (err) {
     console.error(`[quotas] deleteQuotaReminder(${guildId}):`, (err as Error).message);
-  }
-}
-
-/** Reset hebdomadaire : publie bilan + paie, remet les stats à zéro. */
-export async function weeklyReset(client: Client, guildId: string, sinceTs?: number): Promise<void> {
-  try {
-    const c = configStore.get(guildId);
-    const since = sinceTs ?? Number((await db.getSetting(guildId, LAST_RESET_KEY)) || 0);
-    const now = new Date();
-    const endDate = formatDate(now.getTime());
-    const startTs = now.getTime() - 7 * 24 * 60 * 60 * 1000;
-    const startDate = formatDate(startTs);
-    const entete = `${startDate} — ${endDate}`;
-
-    if (c.CHANNELS.bilan) {
-      const bilanEmbed = await buildBilanEmbed(guildId, since);
-      bilanEmbed.setTitle(`📊 Bilan hebdomadaire — ${entete}`);
-      const bilanChannel = await client.channels.fetch(c.CHANNELS.bilan).catch(() => null);
-      if (bilanChannel?.isSendable()) await bilanChannel.send({ embeds: [bilanEmbed] }).catch(() => null);
-    }
-
-    if (c.CHANNELS.paie) {
-      const ranking = await getSalaryRanking(guildId);
-      const paieChannel = await client.channels.fetch(c.CHANNELS.paie).catch(() => null);
-      const guild = client.guilds.cache.get(guildId);
-
-      if (paieChannel?.isSendable() && ranking.length) {
-        const targets = c.QUOTA_TARGETS;
-        const lines: string[] = [];
-        for (let i = 0; i < ranking.length; i++) {
-          const r = ranking[i];
-          const member = guild ? await guild.members.fetch(r.userId).catch(() => null) : null;
-          const name = member?.displayName || `<@${r.userId}>`;
-          const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i + 1}.`;
-          const quotaLine = Object.keys(targets).sort()
-            .map(qt => `${capitalize(qt)} ${r.byQuotaType[qt] ?? 0}/${targets[qt]}`)
-            .join(' | ');
-
-          lines.push(
-            `${medal} **${name}** — 💵 ${Math.round(r.salaire).toLocaleString('fr-FR')} $\n` +
-            (quotaLine ? `    ${quotaLine}` : ''),
-          );
-        }
-
-        const paieEmbed = new EmbedBuilder()
-          .setTitle(`💰 Paie hebdomadaire — ${entete}`)
-          .setColor(0xFEE75C)
-          .setDescription(lines.join('\n\n'))
-          .setTimestamp();
-        await paieChannel.send({ embeds: [paieEmbed] }).catch(() => null);
-      }
-    }
-
-    await db.resetAllStats(guildId);
-    await deleteQuotaReminder(client, guildId);
-    await garages.resetFourrieresHebdo(client, guildId, entete);
-    console.log(`[quotas] Reset hebdomadaire effectué (${guildId}) — ${entete}`);
-  } catch (err) {
-    console.error(`[quotas] weeklyReset(${guildId}):`, (err as Error).message);
   }
 }
 

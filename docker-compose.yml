@@ -33,6 +33,9 @@ services:
   roxwood-network-famille:
     build: .
     restart: unless-stopped
+    # Processus init en PID 1 : relaie SIGTERM au bot (arrêt propre, voir index.ts)
+    # et récupère les processus orphelins.
+    init: true
     depends_on:
       db:
         condition: service_healthy

@@ -32,7 +32,7 @@ import { CONFIRME_VENTE_ITEM } from './modules/ventes';
 // Drogues de production/Matériaux, voir stocks.buildStockEmbed). Négatif,
 // pas juste 1-5 : garantit qu'ils restent TOUJOURS avant un item ajouté par
 // un admin (qui reste au défaut 0), même après une correction manuelle de
-// display_order sur un de ces 5 (voir db.upsertItem, qui ne touche plus
+// display_order sur un de ces 5 (voir db.upsertItem, qui ne touche pas
 // display_order si `display_order` est omis — un simple 1-5 se ferait
 // dépasser par le premier item admin qui recevrait un jour un display_order
 // positif bas).
@@ -52,6 +52,7 @@ const DEFAULT_ITEMS: db.ItemInput[] = [
   { name: MUNITIONS_SMG_ITEM, display_order: -1 },
   // Butin/outils de casse — simple suivi de stock, pas de vente:true (pas
   // déclarables via le circuit de vente PNJ, contrairement aux drogues).
+  // Noms vérifiés avec l'utilisateur (piège n°1).
   { name: 'Or Rouge' },
   { name: 'Or Bleu' },
   { name: 'Jetons ETI' },
@@ -61,7 +62,8 @@ const DEFAULT_ITEMS: db.ItemInput[] = [
   { name: 'Carte Piratage Fleeca' },
   // Drogues vendables aux PNJ sans lien avec un labo particulier (variantes
   // de pureté/formes commerciales) — noms vérifiés avec l'utilisateur avant
-  // ajout (piège n°1).
+  // ajout (piège n°1). "Cocaine Pure" s'écrit bien sans tréma dans les logs,
+  // contrairement à l'item "Cocaïne" du labo plus bas.
   { name: 'Mexicana Pure À 99', vente: true },
   { name: 'Mexicana Pure À 90', vente: true },
   { name: 'Mexicana Pure À 70', vente: true },
@@ -121,11 +123,14 @@ const DEFAULT_ITEMS: db.ItemInput[] = [
  * Idempotent — safe à appeler à répétition (voir docstring de fichier).
  */
 export async function seedDefaultItems(guildId: string): Promise<void> {
-  const existing = configStore.get(guildId).ITEMS_BY_NAME;
+  // Comparaison insensible à la casse : un admin qui a saisi "argent sale"
+  // ne doit pas se retrouver avec un doublon "Argent Sale" — le stock étant
+  // indexé en minuscules, les deux lignes afficheraient la même quantité.
+  const existing = new Set(Object.keys(configStore.get(guildId).ITEMS_BY_NAME).map(name => name.toLowerCase()));
   let inserted = false;
 
   for (const item of DEFAULT_ITEMS) {
-    if (existing[item.name]) continue;
+    if (existing.has(item.name.toLowerCase())) continue;
     await db.upsertItem(guildId, item);
     inserted = true;
     console.log(`[default-items] Item pré-rempli (${guildId}) : ${item.name}`);

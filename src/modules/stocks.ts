@@ -8,16 +8,22 @@
  * a retiré 50x Cannabis".
  *
  * La liste des items suivis, leurs regroupements d'affichage (STOCK_GROUPS)
- * et leur éligibilité à la vente ne sont plus codés en dur : ils viennent de
- * `/config item` (voir src/modules/config.ts) — tout item absent de cette
- * liste est silencieusement ignoré lors du parsing des logs (piège n°1 déjà
- * documenté dans le projet source : vérifier l'orthographe EXACTE des logs
- * FiveM avant d'ajouter un item).
+ * et leur éligibilité à la vente viennent de `/config item` (voir
+ * src/modules/config.ts) — tout item absent de cette liste est
+ * silencieusement ignoré lors du parsing des logs (piège n°1 : vérifier
+ * l'orthographe EXACTE des logs FiveM avant d'ajouter un item).
+ *
+ * Tout traitement d'un message de log (temps réel, rattrapage, resync) doit
+ * tourner dans la file de sa guilde (`guild-queue.ts`) : `handleMessage` et
+ * `catchUpMissedMessages` supposent que l'appelant les y a placés (voir
+ * `index.ts`), `fullResync` s'y place lui-même.
  */
 import { EmbedBuilder, SlashCommandBuilder, MessageFlags, ChannelType, type Client, type Message, type ChatInputCommandInteraction, type AutocompleteInteraction, type TextBasedChannel } from 'discord.js';
 import * as db from '../db';
 import * as configStore from '../config-store';
 import { isAdmin } from '../permissions';
+import { runExclusive } from '../guild-queue';
+import { upsertPanel } from '../permanent-message';
 import * as ventes from './ventes';
 import * as armurerie from './armurerie';
 
@@ -32,6 +38,20 @@ export interface StockEntry {
   stock_avant: number;
   stock_apres: number;
 }
+
+/** Les effets "en direct" (alertes, ventes en attente) ne valent que pour un message publié pendant que ce process tournait — voir `runSideEffects`. */
+const PROCESS_START = Date.now();
+
+/** Au-delà, la ligne est ignorée : la quantité ne tiendrait pas dans une colonne `Int` et ferait échouer tout le message. */
+const MAX_QUANTITE_LOG = 1_000_000_000;
+
+/**
+ * Salons dont le dernier rattrapage a échoué (`${guildId}:${channelId}`). Tant
+ * qu'un salon y figure, un message temps réel n'est pas appliqué directement
+ * (il ferait avancer le curseur au-delà des messages jamais récupérés) : il
+ * relance le rattrapage du salon, qui le récupère avec les autres.
+ */
+const needsCatchUp = new Set<string>();
 
 // ─── NOUVEAU MESSAGE ──────────────────────────────────────────────────────────
 
@@ -79,102 +99,167 @@ function coffreLogChannelIds(guildId: string): string[] {
 }
 
 /**
+ * Vrai si le message peut venir du bot de jeu. Un message humain ne déclenche
+ * jamais de mouvement (voir Sécurité dans CLAUDE.md) ; la réponse d'une
+ * commande d'application est elle aussi écartée : son auteur est bien un bot,
+ * mais c'est un membre qui l'a déclenchée, éventuellement avec sa propre
+ * application installée, pour faire poster une fausse ligne de log.
+ */
+export function isGameLogMessage(message: Message): boolean {
+  return message.author.bot && !message.interactionMetadata;
+}
+
+/**
+ * Applique un message de log (mouvements, historique et curseur en une seule
+ * transaction, voir `db.applyStockMessage`). `null` si le message avait déjà
+ * été appliqué : temps réel et rattrapage peuvent livrer le même.
+ */
+async function applyMessage(guildId: string, message: Message, channelId: string): Promise<StockEntry[] | null> {
+  const movements = isGameLogMessage(message) ? parseMessage(guildId, extractText(message)) : [];
+  return db.applyStockMessage(guildId, channelId, message.id, movements, Date.now());
+}
+
+/**
+ * Effets d'un message appliqué, hors stock : journal `historique_stock`,
+ * alerte "joueur non mappé", cycle de vente. Complets pour un message publié
+ * pendant que le process tournait (temps réel, ou rattrapé après une coupure
+ * de connexion) ; pour un message plus ancien que le démarrage, seule la
+ * confirmation d'une vente déjà déclarée est rejouée — ni alerte ni nouvelle
+ * vente en attente sur des mouvements passés. Une entrée en échec n'empêche
+ * pas les suivantes.
+ */
+async function runSideEffects(client: Client, guildId: string, message: Message, channelId: string, entries: StockEntry[]): Promise<void> {
+  const live = message.createdTimestamp >= PROCESS_START;
+  for (const entry of entries) {
+    try {
+      if (live) {
+        await logStockToChannel(client, guildId, entry, channelId);
+        if (!(await db.getUserMappings(guildId, entry.joueur)).length) {
+          await alertJoueurNonMappe(client, guildId, entry);
+        }
+      }
+      await ventes.onStockEntry(client, guildId, entry, { replay: !live });
+    } catch (err) {
+      console.error(`[stocks] suites du mouvement (${guildId}, ${entry.item}) :`, (err as Error).message);
+    }
+  }
+}
+
+/** Rafraîchit le Stock Général après des mouvements — l'armurerie seulement s'ils touchent ses munitions (voir docstring de `updateStockMessage`). */
+async function refreshPanels(client: Client, guildId: string, entries: StockEntry[]): Promise<void> {
+  // `entry.item` est en minuscules (voir parseLine), comme les items comparés ici.
+  const munitionsItems = new Set([
+    ...(configStore.get(guildId).STOCK_GROUPS[armurerie.MUNITIONS_STOCK_GROUP] ?? []),
+    armurerie.MUNITIONS_SMG_ITEM,
+  ].map(i => i.toLowerCase()));
+  const toucheMunitions = entries.some(e => munitionsItems.has(e.item));
+  await updateStockMessage(client, guildId, { skipArmurerie: !toucheMunitions });
+  if (toucheMunitions) await armurerie.updatePermanentMessage(client, guildId);
+}
+
+/**
  * Point d'entrée temps réel : traite un nouveau message posté dans un salon
- * `logs_coffres`/`logs_coffres_admin` suivi. Un message dont l'ID n'est pas
- * postérieur au curseur du salon a déjà été appliqué par
- * `catchUpMissedMessages` (un message arrivé pendant le rattrapage est à la
- * fois récupéré par celui-ci et livré en temps réel) — l'appliquer à nouveau
- * doublerait le mouvement.
+ * `logs_coffres`/`logs_coffres_admin` suivi. À appeler dans la file de la
+ * guilde.
  */
 export async function handleMessage(message: Message): Promise<void> {
   const guildId = message.guildId;
   if (!guildId || !coffreLogChannelIds(guildId).includes(message.channelId)) return;
+  const client = message.client;
 
-  const cursorKey = `last_stock_msg_${message.channelId}`;
-  const cursor = await db.getSetting(guildId, cursorKey);
-  if (cursor && BigInt(message.id) <= BigInt(cursor)) return;
-  await db.setSetting(guildId, cursorKey, message.id);
-
-  const entries = await parseAndApplyAll(guildId, extractText(message), message.channelId, true);
-  if (entries.length > 0) {
-    // `entry.item` est déjà en minuscules (voir parseAndApply) — comparé tel
-    // quel aux items affichés dans l'armurerie (groupe munitions de pistolet
-    // + munitions SMG, hors groupe) pour éviter de la rafraîchir sur un
-    // mouvement qui n'a rien à voir (voir docstring de updateStockMessage).
-    const munitionsItems = new Set([
-      ...(configStore.get(guildId).STOCK_GROUPS[armurerie.MUNITIONS_STOCK_GROUP] ?? []),
-      armurerie.MUNITIONS_SMG_ITEM,
-    ].map(i => i.toLowerCase()));
-    const toucheMunitions = entries.some(e => munitionsItems.has(e.item));
-    await updateStockMessage(message.client, guildId, { skipArmurerie: !toucheMunitions });
-    if (toucheMunitions) await armurerie.updatePermanentMessage(message.client, guildId);
-    for (const entry of entries) {
-      await logStockToChannel(message.client, guildId, entry, message.channelId);
-      if (!(await db.getUserMappings(guildId, entry.joueur)).length) {
-        await alertJoueurNonMappe(message.client, guildId, entry);
-      }
-      await ventes.onStockEntry(message.client, guildId, entry);
-    }
+  if (needsCatchUp.has(`${guildId}:${message.channelId}`)) {
+    const entries = await catchUpChannel(client, guildId, message.channelId);
+    if (entries.length) await refreshPanels(client, guildId, entries);
+    return;
   }
+
+  const entries = await applyMessage(guildId, message, message.channelId);
+  if (!entries?.length) return;
+  await refreshPanels(client, guildId, entries);
+  await runSideEffects(client, guildId, message, message.channelId, entries);
 }
 
-// ─── RATTRAPAGE AU DÉMARRAGE ──────────────────────────────────────────────────
+// ─── RATTRAPAGE ───────────────────────────────────────────────────────────────
 
 /**
- * Rejoue les messages de stock publiés pendant le downtime. Ne déclenche PAS
- * le module ventes (évite de flooder les alertes sur des mouvements passés).
+ * Rejoue les messages d'un salon postérieurs à son curseur. Un échec de
+ * lecture (après plusieurs tentatives) laisse le salon marqué dans
+ * `needsCatchUp` et le curseur sur le dernier message réellement appliqué :
+ * rien n'est sauté, la suite sera reprise au prochain message ou rattrapage.
  */
-export async function catchUpMissedMessages(client: Client, guildId: string): Promise<number> {
-  let total = 0;
+async function catchUpChannel(client: Client, guildId: string, channelId: string): Promise<StockEntry[]> {
+  const key = `${guildId}:${channelId}`;
+  const lastId = await db.getSetting(guildId, `last_stock_msg_${channelId}`);
+  if (!lastId) { needsCatchUp.delete(key); return []; }
 
-  for (const channelId of coffreLogChannelIds(guildId)) {
-    const lastId = await db.getSetting(guildId, `last_stock_msg_${channelId}`);
-    if (!lastId) continue;
+  const channel = await client.channels.fetch(channelId).catch(() => null);
+  if (!channel || !channel.isTextBased() || channel.isDMBased()) return [];
 
-    const channel = await client.channels.fetch(channelId).catch(() => null);
-    if (!channel || !channel.isTextBased() || channel.isDMBased()) continue;
-
-    const messages = await fetchMessagesAfter(channel, lastId);
-    for (const msg of messages) {
-      await db.setSetting(guildId, `last_stock_msg_${channelId}`, msg.id);
-      total += (await parseAndApplyAll(guildId, extractText(msg), channelId, true)).length;
+  const all: StockEntry[] = [];
+  needsCatchUp.add(key);
+  try {
+    for await (const page of fetchPagesAfter(channel, lastId)) {
+      for (const msg of page) {
+        const entries = await applyMessage(guildId, msg, channelId);
+        if (!entries?.length) continue;
+        all.push(...entries);
+        await runSideEffects(client, guildId, msg, channelId, entries);
+      }
     }
+    needsCatchUp.delete(key);
+  } catch (err) {
+    console.error(`[stocks] Rattrapage interrompu (${guildId}, salon ${channelId}) — repris au prochain message :`, (err as Error).message);
   }
-
-  if (total > 0) {
-    console.log(`[stocks] Rattrapage (${guildId}) : ${total} message(s) manqué(s) traité(s)`);
-    await updateStockMessage(client, guildId);
-  }
-  return total;
+  return all;
 }
 
-/** Récupère tous les messages d'un salon postés après un ID donné, du plus ancien au plus récent. */
-async function fetchMessagesAfter(channel: Extract<TextBasedChannel, { messages: unknown }>, afterId: string): Promise<Message[]> {
-  const collected: Message[] = [];
-  let cursor = afterId;
+/**
+ * Rejoue les messages de coffre manqués (bot arrêté, connexion à Discord
+ * coupée) pour tous les salons suivis d'une guilde. À appeler dans la file de
+ * la guilde.
+ */
+export async function catchUpMissedMessages(client: Client, guildId: string): Promise<number> {
+  const all: StockEntry[] = [];
+  for (const channelId of coffreLogChannelIds(guildId)) {
+    all.push(...await catchUpChannel(client, guildId, channelId));
+  }
+  if (all.length) {
+    console.log(`[stocks] Rattrapage (${guildId}) : ${all.length} mouvement(s) manqué(s) appliqué(s)`);
+    await updateStockMessage(client, guildId);
+  }
+  return all.length;
+}
 
+const FETCH_RETRY_DELAYS_MS = [2_000, 5_000, 15_000];
+
+/**
+ * Pages de messages d'un salon postérieurs à un ID, de la plus ancienne à la
+ * plus récente, chacune triée — une page à la fois et hors cache discord.js,
+ * pour qu'un salon ancien ne se retrouve jamais entièrement en mémoire. Une
+ * erreur de lecture est retentée puis PROPAGÉE : s'arrêter en silence ferait
+ * passer une lecture partielle pour une lecture complète.
+ */
+async function* fetchPagesAfter(channel: Extract<TextBasedChannel, { messages: unknown }>, afterId: string): AsyncGenerator<Message[]> {
+  let cursor = afterId;
   while (true) {
     let batch;
-    try {
-      batch = await channel.messages.fetch({ limit: 100, after: cursor });
-    } catch {
-      break;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        batch = await channel.messages.fetch({ limit: 100, after: cursor, cache: false });
+        break;
+      } catch (err) {
+        if (attempt >= FETCH_RETRY_DELAYS_MS.length) throw err;
+        await new Promise(resolve => setTimeout(resolve, FETCH_RETRY_DELAYS_MS[attempt]));
+      }
     }
-    if (!batch.size) break;
+    if (!batch.size) return;
 
-    const sorted = [...batch.values()].sort((a, b) => a.createdTimestamp - b.createdTimestamp);
-    // Un message humain ne doit jamais être rejoué comme un mouvement de
-    // stock, même en historique (voir `handleMessage`, le point d'entrée
-    // temps réel, qui applique la même règle) — filtré ici, au point de
-    // collecte unique de resync/rattrapage, pour ne pas dupliquer la
-    // vérification à chaque appelant.
-    collected.push(...sorted.filter(m => m.author.bot));
+    const sorted = [...batch.values()].sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1));
+    yield sorted;
 
-    if (batch.size < 100) break;
+    if (batch.size < 100) return;
     cursor = sorted[sorted.length - 1].id;
   }
-
-  return collected;
 }
 
 /** Poste une ligne de log dans `historique_stock` pour un mouvement donné. */
@@ -206,19 +291,15 @@ function extractText(msg: Message): string {
 // ─── PARSING D'UNE LIGNE ─────────────────────────────────────────────────────
 
 /**
- * Parse une ligne de log de coffre (retrait/dépôt) et applique le delta au
- * stock si l'item est suivi ; `false` si la ligne ne matche rien ou que
- * l'item est inconnu (voir piège n°1 du projet : orthographe exacte).
- * `channelId` : salon `logs_coffres` d'origine — le delta est appliqué au
- * détail par coffre (`CoffreStock`, seule source de vérité, voir README
- * section Interopérabilité) ; le total global retourné par
- * `db.applyStockMovement` est recalculé à la volée comme la somme de tous
- * les coffres pour cet item.
+ * Parse une ligne de log de coffre (retrait/dépôt) ; `null` si la ligne ne
+ * matche rien, que l'item n'est pas suivi (voir piège n°1 du projet :
+ * orthographe exacte) ou que la quantité est aberrante. Ne touche pas à la
+ * base : l'application se fait par message entier (`db.applyStockMessage`).
  */
-async function parseAndApply(guildId: string, line: string, channelId: string, log = false): Promise<StockEntry | false> {
+function parseLine(guildId: string, line: string): db.StockMovementInput | null {
   const retireMatch = line.match(RE_RETIRE);
   const deposeMatch = line.match(RE_DEPOSE);
-  if (!retireMatch && !deposeMatch) return false;
+  if (!retireMatch && !deposeMatch) return null;
 
   const match = retireMatch || deposeMatch!;
   const joueur = match[1].replace(/\*\*/g, '').trim();
@@ -226,52 +307,75 @@ async function parseAndApply(guildId: string, line: string, channelId: string, l
   const item = match[3].trim().toLowerCase().replace(/\s*\([^)]*\)$/, '');
 
   const allowedLower = configStore.get(guildId).ALLOWED_ITEMS.map(i => i.toLowerCase());
-  if (!allowedLower.includes(item)) return false;
+  if (!allowedLower.includes(item)) return null;
+  if (!Number.isSafeInteger(quantite) || quantite > MAX_QUANTITE_LOG) {
+    console.warn(`[stocks] Ligne ignorée (${guildId}) — quantité hors limite : ${line.slice(0, 120)}`);
+    return null;
+  }
 
-  const action: 'retire' | 'depose' = retireMatch ? 'retire' : 'depose';
-  const delta = retireMatch ? -quantite : quantite;
-  const { avant: stockAvant, apres: stockApres } = await db.applyStockMovement(guildId, channelId, item, delta);
-
-  const entry: StockEntry = { joueur, action, item, quantite, stock_avant: stockAvant, stock_apres: stockApres };
-
-  if (log) await db.addStockHistory(guildId, { timestamp: Date.now(), ...entry, channel_id: channelId });
-
-  return entry;
+  return { joueur, action: retireMatch ? 'retire' : 'depose', item, quantite };
 }
 
-/** Applique `parseAndApply` à chaque ligne d'un contenu de message et retourne les mouvements de stock effectivement appliqués. */
-async function parseAndApplyAll(guildId: string, content: string, channelId: string, log = false): Promise<StockEntry[]> {
-  const entries: StockEntry[] = [];
+/** Mouvements de stock décrits par le contenu d'un message (une ligne = au plus un mouvement). */
+function parseMessage(guildId: string, content: string): db.StockMovementInput[] {
+  const movements: db.StockMovementInput[] = [];
   for (const line of content.split('\n')) {
-    const entry = await parseAndApply(guildId, line, channelId, log);
-    if (entry) entries.push(entry);
+    const movement = parseLine(guildId, line);
+    if (movement) movements.push(movement);
   }
-  return entries;
+  return movements;
 }
 
 // ─── RESYNC COMPLÈTE DEPUIS LE DÉBUT ─────────────────────────────────────────
 
-/** Repart de zéro : supprime tout le stock/historique et rejoue l'intégralité de chaque salon suivi. */
+const resyncRunning = new Set<string>();
+
+/** Vrai si une resynchronisation complète est en cours pour cette guilde. */
+export function isResyncRunning(guildId: string): boolean {
+  return resyncRunning.has(guildId);
+}
+
+/**
+ * Repart de zéro : supprime tout le stock/historique et rejoue l'intégralité
+ * de chaque salon suivi, dans la file de la guilde — le temps réel attend
+ * donc la fin, et retrouve ensuite un curseur à jour. Le curseur de chaque
+ * salon repart de `0` avant d'être rejoué : si la lecture échoue en route,
+ * l'erreur remonte (jamais de "terminé" sur un stock partiel) et le salon
+ * reste marqué à rattraper depuis le dernier message réellement appliqué.
+ */
 export async function fullResync(client: Client, guildId: string): Promise<number> {
-  await db.resetAllStocks(guildId);
-  await db.clearStockHistory(guildId);
+  resyncRunning.add(guildId);
+  try {
+    return await runExclusive(guildId, async () => {
+      const channelIds = coffreLogChannelIds(guildId);
+      await db.resetAllStocks(guildId);
+      await db.clearStockHistory(guildId);
+      for (const channelId of channelIds) {
+        await db.setSetting(guildId, `last_stock_msg_${channelId}`, '0');
+        needsCatchUp.add(`${guildId}:${channelId}`);
+      }
 
-  let total = 0;
+      let total = 0;
+      try {
+        for (const channelId of channelIds) {
+          const channel = await client.channels.fetch(channelId).catch(() => null);
+          if (!channel || !channel.isTextBased() || channel.isDMBased()) continue;
 
-  for (const channelId of coffreLogChannelIds(guildId)) {
-    const channel = await client.channels.fetch(channelId).catch(() => null);
-    if (!channel || !channel.isTextBased() || channel.isDMBased()) continue;
+          for await (const page of fetchPagesAfter(channel, '0')) {
+            for (const msg of page) total += (await applyMessage(guildId, msg, channelId))?.length ?? 0;
+          }
+          needsCatchUp.delete(`${guildId}:${channelId}`);
+        }
+      } finally {
+        await updateStockMessage(client, guildId);
+      }
 
-    const messages = await fetchMessagesAfter(channel, '0');
-    for (const msg of messages) {
-      await db.setSetting(guildId, `last_stock_msg_${channelId}`, msg.id);
-      total += (await parseAndApplyAll(guildId, extractText(msg), channelId, true)).length;
-    }
+      console.log(`[stocks] Resync complet (${guildId}) : ${total} mouvement(s) traité(s)`);
+      return total;
+    });
+  } finally {
+    resyncRunning.delete(guildId);
   }
-
-  console.log(`[stocks] Resync complet (${guildId}) : ${total} mouvement(s) traité(s)`);
-  await updateStockMessage(client, guildId);
-  return total;
 }
 
 // ─── MESSAGE PERMANENT ────────────────────────────────────────────────────────
@@ -295,19 +399,10 @@ export async function updateStockMessage(client: Client, guildId: string, opts: 
     try {
       const channel = await client.channels.fetch(c.CHANNELS.stock_general).catch(() => null);
       if (channel?.isSendable()) {
-        const stocks = await db.getAllStocks(guildId);
-        const embed = buildStockEmbed(guildId, stocks);
-
-        const storedId = await db.getSetting(guildId, 'stock_message_id');
-        let edited = false;
-        if (storedId) {
-          const msg = await channel.messages.fetch(storedId).catch(() => null);
-          if (msg) { await msg.edit({ embeds: [embed] }); edited = true; }
-        }
-        if (!edited) {
-          const newMsg = await channel.send({ embeds: [embed] });
-          await db.setSetting(guildId, 'stock_message_id', newMsg.id);
-        }
+        await upsertPanel(channel, guildId, 'stock_message_id', STOCK_PANEL_TITLE, async () => {
+          const stocks = await db.getAllStocks(guildId);
+          return { embeds: [buildStockEmbed(guildId, stocks)] };
+        });
       }
     } catch (err) {
       console.error(`[stocks] updateStockMessage(${guildId}):`, (err as Error).message);
@@ -317,10 +412,12 @@ export async function updateStockMessage(client: Client, guildId: string, opts: 
   if (!opts.skipArmurerie) await armurerie.updatePermanentMessage(client, guildId);
 }
 
+const STOCK_PANEL_TITLE = '📦 Stock Général';
+
 /** Construit l'embed affichant l'état actuel des stocks, avec regroupements STOCK_GROUPS. */
 function buildStockEmbed(guildId: string, stocks: Array<{ item: string; quantite: number }>): EmbedBuilder {
   const c = configStore.get(guildId);
-  const embed = new EmbedBuilder().setTitle('📦 Stock Général').setColor(0x2b2d31).setTimestamp().setFooter({ text: 'Dernière mise à jour' });
+  const embed = new EmbedBuilder().setTitle(STOCK_PANEL_TITLE).setColor(0x2b2d31).setTimestamp().setFooter({ text: 'Dernière mise à jour' });
 
   const stockMap: Record<string, number> = {};
   for (const s of stocks) stockMap[s.item] = s.quantite;
@@ -484,10 +581,20 @@ export async function handleSetStockCommand(interaction: ChatInputCommandInterac
     return;
   }
 
-  const item = interaction.options.getString('item', true);
+  const item = interaction.options.getString('item', true).trim().toLowerCase();
   const quantite = interaction.options.getInteger('quantite', true);
   const coffre = interaction.options.getChannel('coffre', true);
-  const itemLabel = configStore.get(guildId).ALLOWED_ITEMS.find(i => i.toLowerCase() === item) || item;
+  // L'autocomplete ne contraint rien : une valeur libre créerait une ligne de
+  // stock pour un item non suivi, ou dans un salon qui n'est pas un coffre.
+  const itemLabel = configStore.get(guildId).ALLOWED_ITEMS.find(i => i.toLowerCase() === item);
+  if (!itemLabel) {
+    await interaction.reply({ content: "❌ Cet item n'est pas suivi (voir `/config item list`).", flags: MessageFlags.Ephemeral });
+    return;
+  }
+  if (!coffreLogChannelIds(guildId).includes(coffre.id)) {
+    await interaction.reply({ content: `❌ <#${coffre.id}> n'est pas un coffre suivi (voir \`/config channel list\`).`, flags: MessageFlags.Ephemeral });
+    return;
+  }
 
   // Corrige CE coffre précis (SET absolu) — `coffre` obligatoire : le total
   // global n'est jamais stocké séparément (voir db.ts), il se recalcule tout
@@ -539,13 +646,14 @@ export async function handleCoffreStockCommand(interaction: ChatInputCommandInte
   await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
 }
 
-/** `/historique-stock` : affiche les derniers mouvements de stock, filtrés par item si fourni. */
+/** `/historique-stock` : affiche les derniers mouvements de stock, filtrés par item si fourni — sans ceux des coffres admin pour un non-admin (même règle que `/api/stocks/history`). */
 export async function handleHistoriqueCommand(interaction: ChatInputCommandInteraction): Promise<void> {
   const guildId = interaction.guildId!;
   const item = interaction.options.getString('item') || null;
   const lignes = interaction.options.getInteger('lignes') || 20;
 
-  const rows = await db.getRecentStockHistory(guildId, item, lignes);
+  const coffresMasques = isAdmin(guildId, interaction.member) ? [] : configStore.get(guildId).CHANNELS.logs_coffres_admin;
+  const rows = await db.getRecentStockHistory(guildId, item, lignes, null, coffresMasques);
   if (!rows.length) {
     await interaction.reply({ content: '❌ Aucun mouvement enregistré.', flags: MessageFlags.Ephemeral });
     return;
@@ -587,9 +695,24 @@ export async function handleSyncStockCommand(interaction: ChatInputCommandIntera
     return;
   }
 
+  if (isResyncRunning(guildId)) {
+    await interaction.reply({ content: '⏳ Une resynchronisation est déjà en cours.', flags: MessageFlags.Ephemeral });
+    return;
+  }
+
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-  const total = await fullResync(interaction.client, guildId);
-  await interaction.editReply({ content: `✅ Resync terminé — **${total}** mouvement(s) traité(s).` });
+  let content: string;
+  try {
+    const total = await fullResync(interaction.client, guildId);
+    content = `✅ Resync terminé — **${total}** mouvement(s) traité(s).`;
+  } catch (err) {
+    console.error(`[stocks] fullResync(${guildId}):`, (err as Error).message);
+    content = "❌ Resync interrompue : l'historique d'un salon de coffre n'a pas pu être lu jusqu'au bout. Le stock affiché est **partiel** — relance `/sync-stock`.";
+  }
+  // Le jeton d'une interaction expire après 15 minutes, une resync peut durer plus.
+  await interaction.editReply({ content }).catch(async () => {
+    if (interaction.channel?.isSendable()) await interaction.channel.send({ content: `<@${interaction.user.id}> ${content}` }).catch(() => null);
+  });
 }
 
 /** `/drogues-a-vendre` (admin) : détail par item + total du stock des items actuellement vendables en PNJ (`VENTE_ITEMS`, dépend du tier — voir docstring de config-store.ts). */

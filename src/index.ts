@@ -15,10 +15,11 @@
  *
  * **Multi-tenant** : un seul process sert plusieurs guildes Discord à la
  * fois (voir src/guild-registry.ts pour le registre, src/config-store.ts
- * pour la config par guilde). Chaque guilde connue est "bootstrapée"
- * (`bootstrapGuild`) soit au démarrage (toutes les guildes déjà présentes
- * dans `client.guilds.cache`), soit à la volée (`guildCreate`, une guilde
- * qui vient d'inviter le bot) — même chemin de code dans les deux cas.
+ * pour la config par guilde). Chaque guilde connue est initialisée
+ * (`prepareGuild` puis `initGuild`) soit au démarrage (toutes les guildes
+ * déjà présentes dans `client.guilds.cache`), soit à la volée (`guildCreate`,
+ * une guilde qui vient d'inviter le bot) — même chemin de code dans les deux
+ * cas, retenté par un cron tant qu'il échoue.
  */
 import 'dotenv/config';
 
@@ -28,6 +29,7 @@ import cron from 'node-cron';
 import * as configStore from './config-store';
 import * as guildRegistry from './guild-registry';
 import * as db from './db';
+import { runExclusive, drain } from './guild-queue';
 import { seedDefaultItems } from './default-items';
 import * as configModule from './modules/config';
 import * as stocks from './modules/stocks';
@@ -121,23 +123,64 @@ async function prepareGuild(guild: Guild): Promise<void> {
   await seedDefaultItems(guildId);
 }
 
-/** Phase lourde : commandes slash, rattrapage des logs, panneaux permanents. */
+/** Exécute une étape d'initialisation sans que son échec n'empêche les suivantes, qui n'en dépendent pas. */
+async function step(guildId: string, label: string, fn: () => Promise<unknown>): Promise<void> {
+  try {
+    await fn();
+  } catch (err) {
+    console.error(`[index] ${label}(${guildId}) :`, (err as Error).message);
+  }
+}
+
+/** Rattrapage des logs coffres puis garages d'une guilde, dans sa file (voir `guild-queue.ts`). */
+function catchUpLogs(guildId: string): Promise<void> {
+  return runExclusive(guildId, async () => {
+    await step(guildId, 'stocks.catchUpMissedMessages', () => stocks.catchUpMissedMessages(client, guildId));
+    await step(guildId, 'garages.catchUpMissedMessages', () => garages.catchUpMissedMessages(client, guildId));
+  });
+}
+
+/** Phase lourde : commandes slash, rattrapage des logs, panneaux permanents — chaque étape indépendante des autres. */
 async function initGuild(guild: Guild): Promise<void> {
   const guildId = guild.id;
   try {
-    await deployCommandsForGuild(guildId);
-    await stocks.catchUpMissedMessages(client, guildId);
-    await garages.catchUpMissedMessages(client, guildId);
+    await step(guildId, 'deployCommandsForGuild', () => deployCommandsForGuild(guildId));
+    await catchUpLogs(guildId);
   } finally {
     logsCaughtUp.get(guildId)?.release();
   }
 
-  await stocks.updateStockMessage(client, guildId);
-  await quotas.initPermanentMessage(client, guildId);
-  await armurerie.initPermanentMessage(client, guildId);
-  await taxes.initPermanentMessage(client, guildId);
-  await configModule.initDocumentationMessage(client, guildId);
-  await alertes.initLaboTimers(client, guildId);
+  await step(guildId, 'stocks.updateStockMessage', () => stocks.updateStockMessage(client, guildId));
+  await step(guildId, 'quotas.initPermanentMessage', () => quotas.initPermanentMessage(client, guildId));
+  await step(guildId, 'armurerie.initPermanentMessage', () => armurerie.initPermanentMessage(client, guildId));
+  await step(guildId, 'taxes.initPermanentMessage', () => taxes.initPermanentMessage(client, guildId));
+  await step(guildId, 'initDocumentationMessage', () => configModule.initDocumentationMessage(client, guildId));
+  await step(guildId, 'alertes.initLaboTimers', () => alertes.initLaboTimers(client, guildId));
+}
+
+/** Guildes en cours d'initialisation — évite que `guildCreate` et le cron de reprise initialisent la même en parallèle. */
+const initializing = new Set<string>();
+
+/**
+ * Initialise une guilde (préparation puis phase lourde). Une préparation en
+ * échec (base momentanément injoignable…) laisse la guilde sans config : elle
+ * sera retentée par le cron de reprise (voir `startup`), au lieu de rester
+ * inutilisable jusqu'au prochain redémarrage du process.
+ */
+async function setupGuild(guild: Guild): Promise<void> {
+  if (initializing.has(guild.id)) return;
+  initializing.add(guild.id);
+  try {
+    try {
+      await prepareGuild(guild);
+    } catch (err) {
+      console.error(`[index] prepareGuild(${guild.id}) — nouvelle tentative dans 5 min :`, (err as Error).message);
+      return;
+    }
+    if (configStore.has(guild.id)) await initGuild(guild);
+  } finally {
+    initializing.delete(guild.id);
+  }
 }
 
 // ─── READY ────────────────────────────────────────────────────────────────────
@@ -168,30 +211,53 @@ async function startup(): Promise<void> {
   // en échec n'empêche pas les suivantes.
   const guilds = [...client.guilds.cache.values()];
   for (const guild of guilds) {
+    initializing.add(guild.id);
     try {
       await prepareGuild(guild);
     } catch (err) {
-      console.error(`[index] prepareGuild(${guild.id}) :`, (err as Error).message);
-    }
-  }
-  for (const guild of guilds) {
-    if (!configStore.has(guild.id)) continue;
-    try {
-      await initGuild(guild);
-    } catch (err) {
-      console.error(`[index] initGuild(${guild.id}) :`, (err as Error).message);
+      console.error(`[index] prepareGuild(${guild.id}) — nouvelle tentative dans 5 min :`, (err as Error).message);
     }
   }
 
+  // API et crons ne dépendent que de la phase légère : les démarrer avant la
+  // phase lourde évite qu'un long rattrapage de logs sur une guilde retarde
+  // `/health`, l'API et le reset hebdomadaire de toutes les autres.
   await guildRegistry.warmCorsCache();
   startApiServer(client);
+  scheduleCrons();
 
-  // ── CRON : Reset hebdomadaire (dimanche 19h Europe/Paris), auto-réparant ──
+  for (const guild of guilds) {
+    try {
+      if (configStore.has(guild.id)) await initGuild(guild);
+    } catch (err) {
+      console.error(`[index] initGuild(${guild.id}) :`, (err as Error).message);
+    } finally {
+      initializing.delete(guild.id);
+    }
+  }
+
   await forEachActiveGuild(guildId => quotas.checkWeeklyReset(client, guildId));
+  await forEachActiveGuild(guildId => quotas.checkQuotaReminder(client, guildId));
+  startupDone = true;
+}
+
+/** Faux tant que le premier démarrage n'est pas terminé — un `shardReady` antérieur est celui du démarrage, pas une reconnexion. */
+let startupDone = false;
+
+/**
+ * Dernier nombre de braquages connu par guilde et par activité (fenêtre
+ * glissante de 7 jours), pour détecter un slot libéré d'une heure sur
+ * l'autre. En mémoire : après un redémarrage, la première heure ne sert que
+ * de référence.
+ */
+const lastBraquageCounts = new Map<string, Record<string, number>>();
+
+function scheduleCrons(): void {
+  // ── CRON : Reset hebdomadaire (dimanche 19h Europe/Paris), auto-réparant ──
   cron.schedule('*/15 * * * *', () => forEachActiveGuild(guildId => quotas.checkWeeklyReset(client, guildId)));
 
+
   // ── CRON : Rappel de quota du dimanche (00h-19h) ──────────────────────────
-  await forEachActiveGuild(guildId => quotas.checkQuotaReminder(client, guildId));
   cron.schedule('*/15 * * * *', () => forEachActiveGuild(guildId => quotas.checkQuotaReminder(client, guildId)));
 
   // ── CRON : Vérif taxes expirées chaque jour à 10h00 ──────────────────────
@@ -209,26 +275,35 @@ async function startup(): Promise<void> {
   // ── CRON : Expiration des ventes sans action (toutes les 10 min) ──────────
   cron.schedule('*/10 * * * *', () => forEachActiveGuild(guildId => ventes.cleanupExpiredSales(client, guildId)));
 
-  // ── CRON : Nettoyage braquages anciens (toutes les heures) ────────────────
-  // Liste des activités "braquage" dérivée du registre ACTIVITY_TYPES (voir
+  // ── CRON : Slots de braquage libérés + purge (toutes les heures) ─────────
+  // Un slot se libère quand un braquage sort de la fenêtre glissante de 7
+  // jours : le compte de la fenêtre baisse d'une heure sur l'autre. Liste des
+  // activités "braquage" dérivée du registre ACTIVITY_TYPES (voir
   // config-store.ts) plutôt qu'un tableau de clés en dur ici.
   cron.schedule('0 * * * *', () => forEachActiveGuild(async guildId => {
     const braquageActions = Object.entries(configStore.get(guildId).ACTIVITY_TYPES)
       .filter(([, cfg]) => cfg.enabled && cfg.braquageWeeklyLimit != null)
       .map(([key]) => key);
-    // getBraquageCounts (groupBy, 1 requête pour TOUTES les actions) plutôt
-    // que getBraquageCount en boucle (1 par action, ×2 pour avant/après) —
-    // même fonction que quotas.ts pour le même genre d'affichage groupé.
-    const before = await db.getBraquageCounts(guildId, braquageActions);
-    await db.cleanOldBraquages();
-    const after = await db.getBraquageCounts(guildId, braquageActions);
-    for (const action of braquageActions) {
-      if ((after[action] ?? 0) < (before[action] ?? 0)) {
-        await alertes.postBraquageAlert(client, guildId, action);
+    const counts = await db.getBraquageCounts(guildId, braquageActions);
+    const previous = lastBraquageCounts.get(guildId);
+    lastBraquageCounts.set(guildId, counts);
+    if (previous) {
+      for (const action of braquageActions) {
+        if ((counts[action] ?? 0) < (previous[action] ?? 0)) {
+          await alertes.postBraquageAlert(client, guildId, action);
+        }
       }
     }
+    await db.cleanOldBraquages(guildId);
     await quotas.initPermanentMessage(client, guildId);
   }));
+
+  // ── CRON : Reprise des guildes dont l'initialisation a échoué ─────────────
+  cron.schedule('*/5 * * * *', async () => {
+    for (const guild of client.guilds.cache.values()) {
+      if (!configStore.has(guild.id) && !initializing.has(guild.id)) await setupGuild(guild);
+    }
+  });
 
   console.log('✅ Tâches cron démarrées');
 }
@@ -250,6 +325,9 @@ async function forEachActiveGuild(fn: (guildId: string) => Promise<void>): Promi
     return;
   }
   for (const guildId of guildIds) {
+    // Config pas (encore) chargée : la guilde est en cours d'initialisation
+    // ou en attente du cron de reprise — rien à faire pour elle d'ici là.
+    if (!configStore.has(guildId)) continue;
     try {
       await fn(guildId);
     } catch (err) {
@@ -262,16 +340,27 @@ async function forEachActiveGuild(fn: (guildId: string) => Promise<void>): Promi
 client.on('guildCreate', async (guild) => {
   console.log(`[index] Nouvelle guilde : ${guild.name} (${guild.id})`);
   try {
-    await prepareGuild(guild);
+    await setupGuild(guild);
   } catch (err) {
-    console.error(`[index] prepareGuild(${guild.id}) après guildCreate :`, (err as Error).message);
+    console.error(`[index] setupGuild(${guild.id}) après guildCreate :`, (err as Error).message);
   }
-  if (!configStore.has(guild.id)) return;
-  try {
-    await initGuild(guild);
-  } catch (err) {
-    console.error(`[index] initGuild(${guild.id}) après guildCreate :`, (err as Error).message);
-  }
+});
+
+/**
+ * Nouvelle session gateway après le démarrage (coupure plus longue que la
+ * fenêtre de reprise, session invalidée) : discord.js ne rejoue pas les
+ * événements manqués. Sans rattrapage, le message suivant ferait avancer le
+ * curseur au-delà de tout ce qui a été posté pendant la coupure. Une simple
+ * reprise de session (`shardResume`) rejoue, elle, les événements : rien à faire.
+ */
+client.on('shardReady', () => {
+  if (!startupDone) return;
+  console.log('[index] Nouvelle session Discord — rattrapage des logs manqués.');
+  void (async () => {
+    for (const guildId of client.guilds.cache.keys()) {
+      if (configStore.has(guildId)) await catchUpLogs(guildId);
+    }
+  })();
 });
 
 client.on('guildDelete', async (guild) => {
@@ -308,8 +397,11 @@ client.on('messageReactionAdd', async (reaction, user) => {
     const message = reaction.message.partial ? null : reaction.message;
     if (!message) return; // fetch() ci-dessus a échoué silencieusement (message supprimé entre-temps)
 
+    // Archives et journaux : un membre ne doit pas pouvoir les effacer d'une réaction.
     const c = configStore.get(guildId);
     const noDeleteChannels = [
+      c.CHANNELS.stock_general,
+      c.CHANNELS.bilan,
       c.CHANNELS.alertes_braquages,
       c.CHANNELS.alertes_actions,
       c.CHANNELS.paie,
@@ -321,6 +413,7 @@ client.on('messageReactionAdd', async (reaction, user) => {
     if (noDeleteChannels.includes(message.channelId)) return;
 
     if (quotas.isQuotaReminderMessage(message)) return;
+    if (garages.isFourriereNotification(message)) return;
 
     if (message.components?.length) return;
 
@@ -359,20 +452,25 @@ client.on('messageCreate', async (message) => {
     }
 
     const channelsBotAutorises = [...c.CHANNELS.logs_coffres, ...c.CHANNELS.logs_coffres_admin, c.CHANNELS.logs_garages].filter((id): id is string => !!id);
-    if (message.author.bot && !channelsBotAutorises.includes(message.channelId)) return;
+    if (!channelsBotAutorises.includes(message.channelId)) return;
     // Un message humain, même posté DANS logs_coffres/logs_garages, ne doit
     // JAMAIS déclencher de mouvement de stock/état véhicule — seul le bot de
     // jeu FiveM (ou son webhook) le peut : un membre avec la permission
     // d'écrire dans ces salons pourrait sinon forger un message texte
     // (`"Joueur a déposé 9999 x Argent Sale"`) et faire créditer une fausse
-    // vente/gonfler le stock.
-    if (!message.author.bot) return;
+    // vente/gonfler le stock. Voir `stocks.isGameLogMessage`. Un message
+    // écarté fait quand même avancer le curseur de son salon (traité par
+    // `stocks.handleMessage`, sans mouvement) : il est donc passé dans la file.
 
     await logsCaughtUp.get(guildId)?.promise;
-    if (!configStore.has(guildId)) return;
+    if (!configStore.has(guildId) || shuttingDown) return;
 
-    await stocks.handleMessage(message).catch(err => console.error('[stocks] messageCreate :', (err as Error).message));
-    await garages.handleMessage(message).catch(err => console.error('[garages] messageCreate :', (err as Error).message));
+    await runExclusive(guildId, async () => {
+      await stocks.handleMessage(message).catch(err => console.error('[stocks] messageCreate :', (err as Error).message));
+      if (stocks.isGameLogMessage(message)) {
+        await garages.handleMessage(message).catch(err => console.error('[garages] messageCreate :', (err as Error).message));
+      }
+    });
   } catch (err) {
     console.error('[messageCreate] :', (err as Error).message);
   }
@@ -455,6 +553,33 @@ client.on('interactionCreate', async (interaction) => {
   }
 });
 
+// ─── ARRÊT PROPRE ─────────────────────────────────────────────────────────────
+/** Vrai dès qu'un signal d'arrêt est reçu : plus aucun nouveau message de log n'est mis en file. */
+let shuttingDown = false;
+
+/** Délai laissé aux traitements en cours avant de couper quand même — sous les 10 s de `docker stop`/systemd avant SIGKILL. */
+const SHUTDOWN_GRACE_MS = 8_000;
+
+/**
+ * SIGTERM (`docker compose up --build`, `systemctl restart`) ou SIGINT :
+ * arrête les crons, laisse finir les messages de log déjà en file (dont
+ * chacun est appliqué en une transaction), puis ferme Discord et la base.
+ * Sans ce handler, le process (PID 1 dans le conteneur) ignorerait SIGTERM
+ * et serait tué net par SIGKILL au milieu de ce qu'il faisait.
+ */
+async function shutdown(signal: string): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[process] ${signal} reçu — arrêt propre.`);
+  for (const task of cron.getTasks().values()) task.stop();
+  await Promise.race([drain(), new Promise(resolve => setTimeout(resolve, SHUTDOWN_GRACE_MS))]);
+  await client.destroy().catch(() => null);
+  await db.prisma.$disconnect().catch(() => null);
+  process.exit(0);
+}
+process.on('SIGTERM', () => { void shutdown('SIGTERM'); });
+process.on('SIGINT', () => { void shutdown('SIGINT'); });
+
 // ─── FILETS GLOBAUX ───────────────────────────────────────────────────────────
 // Un rejet de promesse non attrapé tue le process par défaut sous Node ≥ 15 :
 // une erreur isolée dans un handler ne doit pas couper le bot pour toutes les
@@ -485,6 +610,9 @@ if (!process.env.CLIENT_ID) {
 if (!process.env.DATABASE_URL) {
   console.error('❌ DATABASE_URL manquant dans le fichier .env');
   process.exit(1);
+}
+if (process.env.DATABASE_URL.includes(':change_me@')) {
+  console.warn('⚠️ Mot de passe PostgreSQL d\'exemple (change_me) — à remplacer avant la mise en production (POSTGRES_PASSWORD en Docker).');
 }
 // Vérifié ICI plutôt que seulement au moment de startApiServer() (appelée
 // depuis clientReady, sans try/catch) : un throw synchrone à ce stade-là
