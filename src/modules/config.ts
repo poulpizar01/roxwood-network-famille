@@ -957,6 +957,19 @@ async function handleSiteExterne(interaction: ChatInputCommandInteraction, guild
       await interaction.reply({ content: '❌ URL invalide — seuls les schémas http:// et https:// sont acceptés.', flags: MessageFlags.Ephemeral });
       return;
     }
+    // Le token (7 jours) est livré à cette page dans l'URL : en clair, un
+    // tiers sur le réseau pourrait injecter un script et le lire. `http://`
+    // n'est admis que pour un site de développement local.
+    const local = parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1';
+    if (parsed.protocol === 'http:' && !local) {
+      await interaction.reply({ content: '❌ URL refusée — https:// obligatoire (http:// seulement pour localhost en développement).', flags: MessageFlags.Ephemeral });
+      return;
+    }
+    // Le token est ajouté en `#token=...` : une URL qui a déjà un fragment donnerait `...#x#token=`.
+    if (parsed.hash) {
+      await interaction.reply({ content: "❌ URL refusée — elle ne doit pas contenir de `#` (le bot y ajoute lui-même le token).", flags: MessageFlags.Ephemeral });
+      return;
+    }
     const origin = parsed.origin;
     await guildRegistry.setGuildSite(guildId, url, origin);
     await interaction.reply({ content: `✅ Site externe autorisé : **${url}**\nOrigine CORS acceptée : \`${origin}\``, flags: MessageFlags.Ephemeral });

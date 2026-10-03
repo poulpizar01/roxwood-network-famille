@@ -45,6 +45,9 @@ const API_TOKEN_TTL = '7d';
 const JWT_SECRET_PLACEHOLDER = 'change_me_to_a_long_random_string';
 const JWT_SECRET_MIN_LENGTH = 32;
 
+/** Format d'un identifiant Discord (snowflake). */
+const SNOWFLAKE = /^\d{17,20}$/;
+
 /** Nom du cookie court-terme (anti-CSRF) posé par `/auth/login`, vérifié puis effacé par `/auth/callback`. */
 const STATE_COOKIE = 'oauth_state';
 
@@ -101,7 +104,8 @@ export function assertAuthEnv(): void {
  * dans `handleCallback`), puis redirige vers Discord.
  */
 export async function handleLogin(req: Request, res: Response): Promise<void> {
-  const guildId = req.query.guild as string | undefined;
+  // `?guild=a&guild=b` donne un tableau : traité comme absent plutôt que passé tel quel à la base (erreur 500)
+  const guildId = typeof req.query.guild === 'string' && SNOWFLAKE.test(req.query.guild) ? req.query.guild : undefined;
   if (!guildId) {
     res.status(400).send('Paramètre ?guild= manquant ou invalide — cette guilde n\'a jamais invité le bot.');
     return;
@@ -138,7 +142,8 @@ export async function handleLogin(req: Request, res: Response): Promise<void> {
  */
 export function handleCallback(client: Client): (req: Request, res: Response) => Promise<void> {
   return async (req, res) => {
-    const stateParam = req.query.state as string | undefined;
+    // Paramètre répété (`?state=a&state=b`) : un tableau, traité comme absent.
+    const stateParam = typeof req.query.state === 'string' ? req.query.state : undefined;
     const stateCookie = readCookie(req, STATE_COOKIE);
     res.clearCookie(STATE_COOKIE);
 
@@ -154,7 +159,7 @@ export function handleCallback(client: Client): (req: Request, res: Response) =>
       return;
     }
 
-    const authCode = req.query.code as string | undefined;
+    const authCode = typeof req.query.code === 'string' ? req.query.code : undefined;
     if (!authCode) {
       res.status(400).send('Code OAuth manquant.');
       return;

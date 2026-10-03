@@ -58,6 +58,8 @@ export function startApiServer(client: Client): void {
   const API_PORT = Number(process.env.API_PORT) || 3001;
 
   const app = express();
+  // Ne pas annoncer la pile technique dans chaque réponse.
+  app.disable('x-powered-by');
   // `1` = un seul saut de confiance (le reverse proxy HTTPS en frontal sur la
   // même machine, voir README section API REST) : Express lit `req.ip` depuis
   // `X-Forwarded-For` posé par CE proxy plutôt que l'adresse de connexion TCP
@@ -82,7 +84,10 @@ export function startApiServer(client: Client): void {
   // Ping DB léger en plus de la vivacité du process — un supervisor externe
   // (uptime monitor) doit voir un `/health` en échec si Postgres est
   // injoignable, pas un `{ok:true}` qui ne reflète que "Express répond".
-  app.get('/health', async (_req, res) => {
+  // Public (un moniteur externe n'a pas de token) mais limité : chaque appel
+  // interroge la base, partagée avec le bot.
+  const healthLimiter = rateLimit({ windowMs: 60 * 1000, limit: 30, standardHeaders: true, legacyHeaders: false });
+  app.get('/health', healthLimiter, async (_req, res) => {
     try {
       await prisma.$queryRaw`SELECT 1`;
       res.json({ ok: true });
@@ -116,6 +121,13 @@ export function startApiServer(client: Client): void {
   app.get('/auth/callback', authLimiter, handleCallback(client));
 
   const api = express.Router();
+  // Réponses propres à un membre (paie, taxes avec mot de passe…) : jamais
+  // gardées par un cache intermédiaire ou le navigateur.
+  api.use((_req, res, next) => {
+    res.set('Cache-Control', 'no-store');
+    res.set('X-Content-Type-Options', 'nosniff');
+    next();
+  });
   api.use(apiLimiter);
   api.use(requireAuth(client));
   api.use(guildLimiter);
