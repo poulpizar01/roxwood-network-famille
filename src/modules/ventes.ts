@@ -35,6 +35,7 @@ import { buildChunkedEmbeds } from '../embed-chunks';
 import { parseEntier } from '../parse';
 import * as quotas from './quotas';
 import type { StockEntry } from './stocks';
+import { ARGENT_ITEMS, demandeMontantVente, montantRow, lireMontant, refusMontant } from './argent';
 
 /** Fenêtre max (ms) entre retrait et dépôt d'argent pour confirmation auto (3h). */
 const WINDOW_MS = 3 * 60 * 60 * 1000;
@@ -49,7 +50,7 @@ const ACCUMULATION_WINDOW_MS = 5 * 60 * 1000;
  * dans `armurerie.ts`. Exportée pour que `/config item list` (config.ts)
  * puisse signaler visuellement quel item joue ce rôle.
  */
-export const CONFIRME_VENTE_ITEM = 'Argent Sale';
+export const CONFIRME_VENTE_ITEM = ARGENT_ITEMS.sale;
 
 type PendingSale = Awaited<ReturnType<typeof db.getPendingSale>>;
 
@@ -397,12 +398,20 @@ export async function handleButton(interaction: ButtonInteraction): Promise<void
       return;
     }
     if (!(await authorizeSaleInteraction(interaction, guildId, sale))) return;
+    if (demandeMontantVente(guildId)) {
+      await interaction.showModal(
+        new ModalBuilder()
+          .setCustomId(`modal_vente_declarer_${saleId}`)
+          .setTitle('Déclarer la vente')
+          .addComponents(montantRow('Argent sale reçu pour cette vente ($)')),
+      );
+      return;
+    }
     if (!(await db.transitionPendingSale(guildId, saleId, ['en_attente'], 'declare'))) {
       await interaction.reply({ content: "❌ Cette vente n'est plus en attente.", flags: MessageFlags.Ephemeral });
       return;
     }
-    const embed = EmbedBuilder.from(interaction.message.embeds[0]).setTitle("💰 Vente déclarée — en attente du dépôt d'argent").setColor(0xFEE75C);
-    await interaction.update({ embeds: [embed], components: [] });
+    await interaction.update({ embeds: [declaredEmbed(interaction.message.embeds[0])], components: [] });
     return;
   }
 
@@ -443,10 +452,18 @@ export async function handleButton(interaction: ButtonInteraction): Promise<void
   }
 }
 
+/** Embed d'alerte passé à l'état "déclarée", avec le montant saisi s'il y en a un. */
+function declaredEmbed(source: Parameters<typeof EmbedBuilder.from>[0], montant?: number): EmbedBuilder {
+  const embed = EmbedBuilder.from(source).setTitle("💰 Vente déclarée — en attente du dépôt d'argent").setColor(0xFEE75C);
+  if (montant != null) embed.addFields({ name: 'Argent sale déclaré', value: `${montant.toLocaleString('fr-FR')} $`, inline: true });
+  return embed;
+}
+
 // ─── HANDLER MODALS ───────────────────────────────────────────────────────────
 
 /**
- * Traite la soumission du modal de correction de quantité
+ * Traite la soumission des modals d'une vente : montant à la déclaration
+ * (`modal_vente_declarer_<id>`) et correction de quantité
  * (`modal_vente_modifier_<id>`). Statut et auteur sont revérifiés ici, pas
  * seulement au clic : un modal peut rester ouvert pendant que la vente est
  * déclarée/confirmée/expirée, et l'ID de vente dans `customId` n'est pas une
@@ -455,6 +472,28 @@ export async function handleButton(interaction: ButtonInteraction): Promise<void
 export async function handleModal(interaction: ModalSubmitInteraction): Promise<void> {
   const id = interaction.customId;
   const guildId = interaction.guildId!;
+
+  if (id.startsWith('modal_vente_declarer_')) {
+    const saleId = parseInt(id.replace('modal_vente_declarer_', ''), 10);
+    const sale = await db.getPendingSale(guildId, saleId);
+    if (!sale || sale.statut !== 'en_attente') {
+      await interaction.reply({ content: "❌ Cette vente n'est plus en attente.", flags: MessageFlags.Ephemeral });
+      return;
+    }
+    if (!(await authorizeSaleInteraction(interaction, guildId, sale))) return;
+    const montant = lireMontant(interaction);
+    if (typeof montant !== 'number') { await interaction.reply({ content: refusMontant(montant), flags: MessageFlags.Ephemeral }); return; }
+    if (!(await db.transitionPendingSale(guildId, saleId, ['en_attente'], 'declare', montant))) {
+      await interaction.reply({ content: "❌ Cette vente n'est plus en attente.", flags: MessageFlags.Ephemeral });
+      return;
+    }
+    if (interaction.isFromMessage()) {
+      await interaction.update({ embeds: [declaredEmbed(interaction.message.embeds[0], montant)], components: [] });
+    } else {
+      await interaction.reply({ content: '✅ Vente déclarée.', flags: MessageFlags.Ephemeral });
+    }
+    return;
+  }
 
   if (id.startsWith('modal_vente_modifier_')) {
     const saleId = parseInt(id.replace('modal_vente_modifier_', ''), 10);

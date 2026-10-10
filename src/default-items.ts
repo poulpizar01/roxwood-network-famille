@@ -83,14 +83,8 @@ const DEFAULT_ITEMS: db.ItemInput[] = [
   { name: 'Meth bleue', vente: true },
   { name: 'Lean', vente: true },
   { name: 'H-47', vente: true },
-  // Labo Salvia (Indépendant uniquement) — Salvia, contrairement aux autres
-  // drogues de labo, n'est volontairement PAS liée à son labo (pas de
-  // labo_lie) : elle reste vendable au PNJ même quand ce labo est actif.
-  { name: 'Salvia', vente: true },
-  { name: 'Feuilles de salvia', labo_lie: 'labo_salvia', labo_lie_role: 'materiau' },
-  // Labo Branche De Cannabis (Indépendant uniquement) — ici la drogue produite
-  // (Branche de cannabis) EST liée à son labo, donc exclue de la vente PNJ
-  // tant que ce labo est actif, contrairement à Salvia ci-dessus.
+  // Labo Branche De Cannabis (Indépendant uniquement) — la drogue produite
+  // est liée à son labo, donc exclue de la vente PNJ tant que ce labo est actif.
   { name: 'Branche de cannabis', labo_lie: 'labo_branche_cannabis', labo_lie_role: 'produit' },
   { name: 'Graine de strawberry', labo_lie: 'labo_branche_cannabis', labo_lie_role: 'materiau' },
   { name: 'Pot de plantation', labo_lie: 'labo_branche_cannabis', labo_lie_role: 'materiau' },
@@ -106,6 +100,11 @@ const DEFAULT_ITEMS: db.ItemInput[] = [
   { name: 'Héroïne', labo_lie: 'labo_heroine', labo_lie_role: 'produit' },
   { name: 'Datura', labo_lie: 'labo_heroine', labo_lie_role: 'materiau' },
   { name: 'Morphine', labo_lie: 'labo_heroine', labo_lie_role: 'materiau' },
+  // Labo Vénia (Petite Frappe) — produit + matériaux. vente:true : reste
+  // vendable au PNJ pour un tier qui n'a pas ce labo actif.
+  { name: 'Vénia', vente: true, labo_lie: 'labo_venia', labo_lie_role: 'produit' },
+  { name: 'Fleur Séchée', labo_lie: 'labo_venia', labo_lie_role: 'materiau' },
+  { name: 'Cendre Noir', labo_lie: 'labo_venia', labo_lie_role: 'materiau' },
   // Labo Cannabis (Gang) — produit seul, aucun matériau vérifié pour
   // l'instant. vente:true : reste vendable au PNJ pour un tier qui n'a pas
   // ce labo actif (voir config-store.ts, laboLieRole).

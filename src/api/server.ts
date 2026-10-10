@@ -47,6 +47,7 @@ import ventesRouter from './routes/ventes';
 import usersRouter from './routes/users';
 import garagesRouter from './routes/garages';
 import rolesRouter from './routes/roles';
+import argentRouter from './routes/argent';
 
 /** Démarre l'API REST. N'a d'effet que si `API_PORT` est défini dans `.env` — absent = API désactivée, déploiement existant inchangé. */
 export function startApiServer(client: Client): void {
@@ -137,6 +138,7 @@ export function startApiServer(client: Client): void {
   api.use('/taxes', taxesRouter);
   api.use('/armurerie', armurerieRouter);
   api.use('/ventes', ventesRouter);
+  api.use('/argent', argentRouter);
   api.use('/garages', garagesRouter);
   api.use('/roles', rolesRouter(client));
   app.use('/api', api);

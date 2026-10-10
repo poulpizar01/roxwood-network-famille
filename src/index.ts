@@ -527,7 +527,7 @@ client.on('interactionCreate', async (interaction) => {
     if (interaction.isModalSubmit()) {
       const cid = interaction.customId;
 
-      if (cid.startsWith('modal_act_') || cid.startsWith('modal_actlabo_')) return await quotas.handleModal(interaction);
+      if (cid.startsWith('modal_act_') || cid.startsWith('modal_actlabo_') || cid.startsWith('modal_actbraq_')) return await quotas.handleModal(interaction);
       if (cid.startsWith('modal_tax_')) return await taxes.handleModal(interaction);
       if (cid.startsWith('modal_arm_')) return await armurerie.handleModal(interaction);
       if (cid.startsWith('modal_vente_')) return await ventes.handleModal(interaction);

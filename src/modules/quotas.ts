@@ -62,12 +62,14 @@ import { replyAutoDelete, updateAutoDelete } from '../interaction-helpers';
 import { buildChunkedEmbeds } from '../embed-chunks';
 import { upsertPanel, fetchMessageOrNull, sendOnce } from '../permanent-message';
 import { parseEntier } from '../parse';
+import { demandeMontantAction, montantRow, lireMontant, refusMontant, getArgentSummaryForRange, type ArgentSummary } from './argent';
 import { SerialRunner } from '../serial';
 import { parisWallClock, weeklyBoundariesBetween } from '../paris-time';
 
 /**
- * Un labo passe par un select de participants PUIS un modal (temps restant) —
- * contrairement au braquage, direct. Un `customId` Discord est plafonné à 100
+ * Un labo passe par un select de participants PUIS un modal (temps restant),
+ * un braquage aussi quand il demande le montant (voir `argent.ts`) — sinon il
+ * s'enregistre dès la sélection. Un `customId` Discord est plafonné à 100
  * caractères, trop court pour y encoder jusqu'à 25 IDs Discord (18 chiffres
  * chacun) : on ne transmet donc au modal qu'un token de quelques caractères
  * référençant la liste réelle ici, en mémoire (expire après 5 min si le modal
@@ -75,13 +77,13 @@ import { parisWallClock, weeklyBoundariesBetween } from '../paris-time';
  * entrée porte la guilde et le membre pour qui elle a été émise, vérifiés à
  * la soumission — un token n'est pas une preuve à lui seul.
  */
-const pendingLaboParticipants = new Map<string, { guildId: string; userId: string; partnerIds: string[] }>();
+const pendingParticipants = new Map<string, { guildId: string; userId: string; partnerIds: string[] }>();
 
-/** Enregistre une liste de participants labo sous un token éphémère (voir docstring de `pendingLaboParticipants`) et retourne ce token. */
-function createLaboParticipantToken(guildId: string, userId: string, partnerIds: string[]): string {
+/** Enregistre une liste de participants sous un token éphémère (voir docstring de `pendingParticipants`) et retourne ce token. */
+function createParticipantToken(guildId: string, userId: string, partnerIds: string[]): string {
   const token = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-  pendingLaboParticipants.set(token, { guildId, userId, partnerIds });
-  setTimeout(() => pendingLaboParticipants.delete(token), 5 * 60 * 1000);
+  pendingParticipants.set(token, { guildId, userId, partnerIds });
+  setTimeout(() => pendingParticipants.delete(token), 5 * 60 * 1000);
   return token;
 }
 
@@ -655,7 +657,8 @@ async function buildClassementEmbed(client: Client, guildId: string): Promise<Em
  * depuis `sinceTs`. N'affiche que les activités `enabled` pour le tier
  * courant (voir `buildMainEmbed`) — une activité désactivée n'apparaît pas,
  * même si elle a un total historique (elle a pu être active plus tôt dans la
- * semaine, avant un changement de tier).
+ * semaine, avant un changement de tier). Suivi de l'argent de la période
+ * (voir {@link argentFields}).
  */
 async function buildBilanEmbed(guildId: string, sinceTs?: number, untilTs: number = Date.now()): Promise<EmbedBuilder> {
   const since = sinceTs ?? Number((await db.getSetting(guildId, LAST_RESET_KEY)) || 0);
@@ -674,11 +677,39 @@ async function buildBilanEmbed(guildId: string, sinceTs?: number, untilTs: numbe
       return `${cfg.label} : **${value}**`;
     });
 
+  const argent = await getArgentSummaryForRange(guildId, { since, until: untilTs });
   return new EmbedBuilder()
     .setTitle('📊 Bilan du Groupe — Semaine')
     .setColor(0x57F287)
     .setDescription(lines.join('\n') || '*Aucune activité*')
+    .addFields(argentFields(guildId, argent))
     .setTimestamp();
+}
+
+const dollars = (n: number) => `${n.toLocaleString('fr-FR')} $`;
+
+/**
+ * Champs "argent" du bilan : dépôts/retraits en coffre (toujours affichés),
+ * puis argent sale saisi sur les actions et les ventes — affichés si l'option
+ * de saisie correspondante est active ou si la période a des montants (une
+ * option désactivée en cours de semaine ne fait pas disparaître ce qui a été saisi).
+ */
+function argentFields(guildId: string, argent: ArgentSummary): Array<{ name: string; value: string; inline?: boolean }> {
+  const options = configStore.get(guildId).OPTIONS;
+  const coffre = (c: ArgentSummary['coffres']['sale']) =>
+    `Déposé : **${dollars(c.depose)}**\nRetiré : **${dollars(c.retire)}**\nSolde : **${dollars(c.solde)}**`;
+  const fields: Array<{ name: string; value: string; inline?: boolean }> = [
+    { name: '💵 Argent sale (coffres)', value: coffre(argent.coffres.sale), inline: true },
+    { name: '💶 Argent propre (coffres)', value: coffre(argent.coffres.propre), inline: true },
+  ];
+  if (options.saisie_argent_actions || argent.actions.parAction.length) {
+    const detail = argent.actions.parAction.map(a => `${a.label} : ${dollars(a.total)} (${a.nombre})`);
+    fields.push({ name: '🎯 Argent sale — actions', value: [`Total : **${dollars(argent.actions.total)}**`, ...detail].join('\n').slice(0, 1024) });
+  }
+  if (options.saisie_argent_ventes || argent.ventes.nombre) {
+    fields.push({ name: '💊 Argent sale — ventes', value: `Total : **${dollars(argent.ventes.total)}** (${argent.ventes.nombre} vente${argent.ventes.nombre > 1 ? 's' : ''})` });
+  }
+  return fields;
 }
 
 /** Embed de log posté dans `logs_activites` pour une déclaration d'activité — `details` ajoute des champs additionnels (type, quantité, partenaires...). */
@@ -948,6 +979,7 @@ async function triggerActivity(interaction: ButtonInteraction | StringSelectMenu
           .setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(3),
       ),
     );
+  if (demandeMontantAction(guildId, cfg)) modal.addComponents(montantRow());
   return interaction.showModal(modal);
 }
 
@@ -1095,6 +1127,11 @@ async function confirmDeclaration(
 
 const REFUS_FLUX = "❌ Cette activité ne se déclare pas de cette façon.";
 
+/** Champ "Argent sale" du log d'une déclaration — aucun champ sans montant. */
+function champMontant(montant: number | null): Record<string, string> {
+  return montant != null ? { 'Argent sale': `${montant.toLocaleString('fr-FR')} $` } : {};
+}
+
 /**
  * Route les soumissions de modal (`modal_act_*`, `modal_actlabo_*`). Tout ce
  * qui a été vérifié à l'ouverture (activité disponible pour le tier,
@@ -1133,14 +1170,33 @@ export async function handleModal(interaction: ModalSubmitInteraction): Promise<
 
     const confirm = interaction.fields.getTextInputValue('confirm').trim().toLowerCase();
     if (confirm !== 'oui') return replyAutoDelete(interaction, '❌ Action annulée.');
+    const montant = demandeMontantAction(guildId, cfg) ? lireMontant(interaction) : null;
+    if (typeof montant === 'string') return replyAutoDelete(interaction, refusMontant(montant));
 
-    const result = await db.recordActivity(guildId, { userId: user.id, username: user.tag, action: key, statDelta: 1, cooldownMs: cfg.cooldownMs });
+    const result = await db.recordActivity(guildId, { userId: user.id, username: user.tag, action: key, statDelta: 1, cooldownMs: cfg.cooldownMs, montant });
     if (!result.ok) return replyAutoDelete(interaction, refusDeclaration(cfg, result));
 
     return confirmDeclaration(
       () => replyAutoDelete(interaction, `✅ **${cfg.label}** enregistré (ID #${result.txId}).`),
-      interaction.client, guildId, buildTransactionEmbed(guildId, result.txId, user.id, user.tag, key, {}),
+      interaction.client, guildId, buildTransactionEmbed(guildId, result.txId, user.id, user.tag, key, champMontant(montant)),
     );
+  }
+
+  if (id.startsWith('modal_actbraq_')) {
+    const [key, token = ''] = id.slice('modal_actbraq_'.length).split('|');
+    const cfg = configStore.get(guildId).ACTIVITY_TYPES[key];
+    if (!cfg) return;
+    if (!cfg.enabled) return replyAutoDelete(interaction, `❌ **${cfg.label}** n'est pas disponible pour le type d'organisation actuel.`);
+    if (!fluxAutorise(cfg, 'braquage')) return replyAutoDelete(interaction, REFUS_FLUX);
+    const montant = lireMontant(interaction);
+    if (typeof montant === 'string') return replyAutoDelete(interaction, refusMontant(montant));
+
+    const pending = token ? pendingParticipants.get(token) : undefined;
+    if (token && (!pending || pending.guildId !== guildId || pending.userId !== user.id)) {
+      return replyAutoDelete(interaction, '❌ La sélection de participants a expiré. Recommence.');
+    }
+    if (token) pendingParticipants.delete(token);
+    return enregistrerBraquage(interaction, guildId, key, cfg, pending?.partnerIds ?? [], montant, payload => replyAutoDelete(interaction, payload));
   }
 
   if (id.startsWith('modal_actlabo_')) {
@@ -1159,11 +1215,11 @@ export async function handleModal(interaction: ModalSubmitInteraction): Promise<
       return replyAutoDelete(interaction, `❌ Temps restant trop long : **${MAX_TEMPS_LABO_MINUTES.toLocaleString('fr-FR')}** minutes au plus.`);
     }
 
-    const pending = token ? pendingLaboParticipants.get(token) : undefined;
+    const pending = token ? pendingParticipants.get(token) : undefined;
     if (token && (!pending || pending.guildId !== guildId || pending.userId !== user.id)) {
       return replyAutoDelete(interaction, '❌ La sélection de participants a expiré. Recommence.');
     }
-    if (token) pendingLaboParticipants.delete(token);
+    if (token) pendingParticipants.delete(token);
     const partnerIds = (pending?.partnerIds ?? []).filter(pid => pid !== user.id);
 
     const result = await db.recordActivity(guildId, {
@@ -1202,7 +1258,7 @@ export async function handleSelect(interaction: UserSelectMenuInteraction): Prom
 
   if (cfg.labo) {
     const selectedIds = interaction.values.filter(uid => uid !== interaction.user.id);
-    const token = selectedIds.length ? createLaboParticipantToken(guildId, interaction.user.id, selectedIds) : '';
+    const token = selectedIds.length ? createParticipantToken(guildId, interaction.user.id, selectedIds) : '';
     const modal = new ModalBuilder()
       .setCustomId(`modal_actlabo_${key}${token ? `|${token}` : ''}`)
       .setTitle(`${cfg.label} — Temps restant`.slice(0, 45))
@@ -1216,27 +1272,43 @@ export async function handleSelect(interaction: UserSelectMenuInteraction): Prom
     return interaction.showModal(modal);
   }
 
-  // Braquage : partenaires sélectionnés → enregistrement direct. La limite
-  // hebdomadaire, vérifiée au clic sur le bouton, est revérifiée dans la
-  // transaction d'écriture : plusieurs menus peuvent être ouverts en même
-  // temps pour un seul slot restant.
+  // Braquage : partenaires sélectionnés → enregistrement direct, ou modal du
+  // montant d'abord si l'action le demande.
   const selectedIds = interaction.values.filter(uid => uid !== interaction.user.id);
-  const allIds = [interaction.user.id, ...selectedIds];
+  if (demandeMontantAction(guildId, cfg)) {
+    const token = selectedIds.length ? createParticipantToken(guildId, interaction.user.id, selectedIds) : '';
+    return interaction.showModal(new ModalBuilder()
+      .setCustomId(`modal_actbraq_${key}${token ? `|${token}` : ''}`)
+      .setTitle(`${cfg.label} — Butin`.slice(0, 45))
+      .addComponents(montantRow('Argent sale gagné, total du braquage ($)')));
+  }
+  return enregistrerBraquage(interaction, guildId, key, cfg, selectedIds, null, payload => updateAutoDelete(interaction, { ...payload, components: [] }));
+}
 
+/**
+ * Enregistre un braquage et publie ses suites. La limite hebdomadaire,
+ * vérifiée au clic sur le bouton, est revérifiée dans la transaction
+ * d'écriture : plusieurs menus peuvent être ouverts en même temps pour un
+ * seul slot restant. `repondre` : mise à jour du menu de sélection, ou
+ * réponse au modal du montant.
+ */
+async function enregistrerBraquage(
+  interaction: UserSelectMenuInteraction | ModalSubmitInteraction, guildId: string, key: string, cfg: ActivityTypeConfig,
+  partnerIds: string[], montant: number | null, repondre: (payload: { content: string }) => Promise<void>,
+): Promise<void> {
+  const allIds = [interaction.user.id, ...partnerIds];
   const result = await db.recordActivity(guildId, {
     userId: interaction.user.id, username: interaction.user.tag, action: key,
-    partenaires: selectedIds, statDelta: 1, braquageLimit: cfg.braquageWeeklyLimit,
+    partenaires: partnerIds, statDelta: 1, braquageLimit: cfg.braquageWeeklyLimit, montant,
   });
-  if (!result.ok) return updateAutoDelete(interaction, { content: refusDeclaration(cfg, result), components: [] });
+  if (!result.ok) return repondre({ content: refusDeclaration(cfg, result) });
 
   const embed = buildTransactionEmbed(guildId, result.txId, interaction.user.id, interaction.user.tag, key, {
-    Partenaires: selectedIds.length ? selectedIds.map(p => `<@${p}>`).join(', ') : '*Aucun*',
+    Partenaires: partnerIds.length ? partnerIds.map(p => `<@${p}>`).join(', ') : '*Aucun*',
+    ...champMontant(montant),
   });
   return confirmDeclaration(
-    () => updateAutoDelete(interaction, {
-      content: `✅ **${cfg.label}** enregistré (ID #${result.txId}). Participants : ${allIds.map(p => `<@${p}>`).join(', ')}.`,
-      components: [],
-    }),
+    () => repondre({ content: `✅ **${cfg.label}** enregistré (ID #${result.txId}). Participants : ${allIds.map(p => `<@${p}>`).join(', ')}.` }),
     interaction.client, guildId, embed, () => alertes.postBraquageAlert(interaction.client, guildId, key),
   );
 }

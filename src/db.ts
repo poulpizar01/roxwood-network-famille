@@ -24,6 +24,7 @@
  * une défense en profondeur, pas un correctif d'une collision réelle).
  */
 import { PrismaClient, type Prisma } from '@prisma/client';
+import { weekStartOf } from './paris-time';
 
 export const prisma = new PrismaClient();
 
@@ -348,7 +349,8 @@ export async function getAllStocks(guildId: string, channelIds: string[]): Promi
 
 /**
  * Début d'une resync complète (`stocks.fullResync`), en UNE transaction :
- * stock par coffre et historique vidés, curseurs des salons repartis de `0`.
+ * stock par coffre, historique et argent par semaine vidés (tous reconstruits
+ * en rejouant les logs), curseurs des salons repartis de `0`.
  * Un arrêt au milieu ne peut pas laisser un stock vidé avec des curseurs
  * intacts, que le rattrapage ne reconstruirait jamais.
  */
@@ -356,6 +358,7 @@ export async function resetStocksForResync(guildId: string, cursorKeys: string[]
   await prisma.$transaction([
     prisma.coffreStock.deleteMany({ where: { guildId } }),
     prisma.stockHistory.deleteMany({ where: { guildId } }),
+    prisma.argentSemaine.deleteMany({ where: { guildId } }),
     ...cursorKeys.map(key => prisma.setting.upsert({
       where: { guildId_key: { guildId, key } },
       create: { guildId, key, value: '0' },
@@ -438,6 +441,8 @@ export interface StockMovementInput {
   action: 'retire' | 'depose';
   item: string;
   quantite: number;
+  /** Type d'argent si l'item est de l'argent (voir `argent.typeArgent`) : le mouvement alimente alors `ArgentSemaine`. */
+  argent?: 'sale' | 'propre' | null;
 }
 
 /** Mouvement appliqué, avec le stock global (tous coffres) avant et après. */
@@ -445,7 +450,8 @@ export type AppliedStockMovement = StockMovementInput & { stock_avant: number; s
 
 /**
  * Applique en UNE transaction tous les mouvements d'un message de log de
- * coffre, leur historique, et l'avancée du curseur `last_stock_msg_<salon>` —
+ * coffre, leur historique, l'argent déposé/retiré de la semaine (à l'heure
+ * du log), et l'avancée du curseur `last_stock_msg_<salon>` —
  * un arrêt du process au milieu ne laisse donc ni message marqué traité sans
  * mouvement, ni message à moitié appliqué qui serait rejoué en double. Le
  * curseur ne peut qu'avancer : un message dont l'ID ne lui est pas postérieur
@@ -469,6 +475,15 @@ export async function applyStockMessage(
           quantite: m.quantite, stockAvant: avant, stockApres: apres, channelId,
         },
       });
+      if (m.argent) {
+        const where = { guildId_semaine_type: { guildId, semaine: new Date(weekStartOf(timestamp)), type: m.argent } };
+        const champ = m.action === 'retire' ? 'retire' : 'depose';
+        await tx.argentSemaine.upsert({
+          where,
+          create: { guildId, semaine: where.guildId_semaine_type.semaine, type: m.argent, [champ]: m.quantite },
+          update: { [champ]: { increment: m.quantite } },
+        });
+      }
       done.push({ ...m, stock_avant: avant, stock_apres: apres });
     }
     await tx.setting.upsert({
@@ -595,6 +610,8 @@ interface ActivityInput {
   braquageLimit?: number | null;
   /** Cooldown à vérifier puis poser pour le déclarant — omis pour une activité sans cooldown. */
   cooldownMs?: number | null;
+  /** Argent sale déclaré (indicatif) — omis quand la saisie n'est pas demandée. */
+  montant?: number | null;
 }
 
 export type ActivityResult =
@@ -631,7 +648,7 @@ export async function recordActivity(guildId: string, data: ActivityInput): Prom
       data: {
         guildId, userId: data.userId, username: data.username, action: data.action,
         quantite: data.quantite ?? 0, type: data.type ?? null,
-        partenaires: JSON.stringify(partenaires), tempsRestant: data.tempsRestant ?? null, timestamp: now,
+        partenaires: JSON.stringify(partenaires), tempsRestant: data.tempsRestant ?? null, montant: data.montant ?? null, timestamp: now,
       },
     });
     for (const uid of [data.userId, ...partenaires]) {
@@ -746,6 +763,41 @@ export async function getGroupActionTotals(guildId: string, sinceTs = 0, quantit
     totals.set(r.action, (totals.get(r.action) ?? 0) + add);
   }
   return [...totals.entries()].map(([action, total]) => ({ action, total }));
+}
+
+/**
+ * Argent sale déclaré (`Transaction.montant`) par action entre `sinceTs` et
+ * `untilTs` (exclu) — ventes comprises (`action: 'vente'`). Seules les
+ * déclarations avec un montant comptent : `nombre` n'est pas le nombre total
+ * de déclarations de l'action.
+ */
+export async function getMontantsParAction(guildId: string, sinceTs: number, untilTs: number): Promise<Array<{ action: string; total: number; nombre: number }>> {
+  const rows = await prisma.transaction.groupBy({
+    by: ['action'],
+    where: { guildId, deleted: false, montant: { not: null }, timestamp: { gte: new Date(sinceTs), lt: new Date(untilTs) } },
+    _sum: { montant: true },
+    _count: { _all: true },
+  });
+  return rows.map(r => ({ action: r.action, total: r._sum.montant ?? 0, nombre: r._count._all }));
+}
+
+/**
+ * Argent déposé/retiré dans les coffres, par type, sur les semaines de paie
+ * qui commencent dans `[sinceTs, untilTs)` — `sinceTs` est ramené au début
+ * de sa semaine (un `last_weekly_reset` initialisé hors frontière ne doit
+ * pas exclure la semaine en cours).
+ */
+export async function getArgentCoffres(guildId: string, sinceTs: number, untilTs: number): Promise<Record<'sale' | 'propre', { depose: number; retire: number }>> {
+  const rows = await prisma.argentSemaine.groupBy({
+    by: ['type'],
+    where: { guildId, semaine: { gte: new Date(weekStartOf(sinceTs)), lt: new Date(untilTs) } },
+    _sum: { depose: true, retire: true },
+  });
+  const result = { sale: { depose: 0, retire: 0 }, propre: { depose: 0, retire: 0 } };
+  for (const r of rows) {
+    if (r.type === 'sale' || r.type === 'propre') result[r.type] = { depose: r._sum.depose ?? 0, retire: r._sum.retire ?? 0 };
+  }
+  return result;
 }
 
 /**
@@ -1339,13 +1391,14 @@ export async function updatePendingSaleMessage(guildId: string, id: number, mess
  * Fait passer une vente en attente à `statut`, SEULEMENT si elle est encore
  * dans l'un des statuts `from` — une transition concurrente (bouton, dépôt,
  * expiration) ne peut donc pas écraser celle qui a gagné, ni faire revenir en
- * `declare` une vente déjà reposée ou confirmée.
+ * `declare` une vente déjà reposée ou confirmée. `montant` : argent sale
+ * saisi au clic sur "Déclarer la Vente", écrit avec la transition.
  * @returns `false` si la vente n'était plus dans un statut attendu (rien n'est écrit).
  */
-export async function transitionPendingSale(guildId: string, id: number, from: string[], statut: string): Promise<boolean> {
+export async function transitionPendingSale(guildId: string, id: number, from: string[], statut: string, montant?: number): Promise<boolean> {
   const { count } = await prisma.pendingSale.updateMany({
     where: { id, guildId, statut: { in: from }, confirmed: false },
-    data: { statut, ...(statut === 'confirme' ? { confirmed: true } : {}) },
+    data: { statut, ...(statut === 'confirme' ? { confirmed: true } : {}), ...(montant != null ? { montant } : {}) },
   });
   return count === 1;
 }
@@ -1402,7 +1455,7 @@ export async function confirmDeclaredSale(guildId: string, saleId: number, times
     if (!sale.discordId) return sale.quantite;
 
     await tx.transaction.create({
-      data: { guildId, userId: sale.discordId, username: sale.joueur, action: 'vente', quantite: sale.quantite, type: sale.item, partenaires: '[]', timestamp: new Date(timestamp) },
+      data: { guildId, userId: sale.discordId, username: sale.joueur, action: 'vente', quantite: sale.quantite, type: sale.item, partenaires: '[]', montant: sale.montant, timestamp: new Date(timestamp) },
     });
     await tx.stat.upsert({
       where: { guildId_userId_action: { guildId, userId: sale.discordId, action: 'vente' } },

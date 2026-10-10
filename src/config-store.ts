@@ -42,7 +42,7 @@ export const CHANNEL_ROLES = [
   'alertes_actions', 'bilan', 'paie', 'armurerie', 'quotas', 'taxes',
   'alertes_taxes', 'historique_stock', 'ventes_drogue', 'log_ventes',
   'admin', 'logs_garages', 'labo_heroine', 'labo_sporex',
-  'labo_mexicana', 'labo_cannabis', 'labo_cocaine', 'labo_salvia',
+  'labo_mexicana', 'labo_cannabis', 'labo_cocaine', 'labo_venia',
   'labo_branche_cannabis',
 ] as const;
 
@@ -63,6 +63,8 @@ export interface ActivityTypeConfig {
   enabled: boolean;
   /** Icône d'affichage (optionnelle) — n'apparaît QUE dans les slots braquages de l'embed "Gestion des Activités" (`buildMainEmbed`, quotas.ts). Décision explicite de l'utilisateur : jamais ailleurs (boutons, titres de modal, messages, API…). */
   icon?: string;
+  /** Demande l'argent sale gagné (montant total, indicatif) à la déclaration, quand l'option `saisie_argent_actions` est active. */
+  montant?: boolean;
 }
 
 /** Types d'organisation — voir docstring de {@link BRAQUAGE_LIMITS_BY_TIER} et {@link LABO_TIERS}. */
@@ -74,6 +76,17 @@ export const GROUP_TIERS: Array<{ key: GroupTier; label: string }> = [
   { key: 'gang', label: 'Gang' },
   { key: 'organisation', label: 'Organisation' },
 ];
+
+/**
+ * Options activables via `/config option`, toutes désactivées par défaut —
+ * persistées chacune comme un `Setting` (clé `option_<nom>`, valeur `'1'`).
+ */
+export const OPTIONS = {
+  saisie_argent_actions: "Saisie de l'argent sale gagné sur les actions",
+  saisie_argent_ventes: "Saisie de l'argent sale gagné sur les ventes de drogue",
+} as const;
+export type OptionKey = keyof typeof OPTIONS;
+export const optionSettingKey = (option: OptionKey) => `option_${option}`;
 
 /** Clé de `Setting` (voir db.ts) où est persisté le tier actuel — modifié via `/config type-groupe set`. */
 export const TYPE_GROUPE_SETTING_KEY = 'type_groupe';
@@ -102,24 +115,25 @@ const H = 3_600_000;
  * n'est jamais utilisée telle quelle.
  */
 const ACTIVITY_TYPES_FIXED: Record<string, Omit<ActivityTypeConfig, 'laboChannelId' | 'enabled'>> = {
-  atm:            { label: 'ATM',           quotaType: 'actions', cooldownMs: 3 * H,  partners: false, braquageWeeklyLimit: null, labo: false, quantity: false, panelButton: true,  displayOrder: 1 },
+  atm:            { label: 'ATM',           quotaType: 'actions', cooldownMs: 3 * H,  partners: false, braquageWeeklyLimit: null, labo: false, quantity: false, panelButton: true,  displayOrder: 1, montant: true },
   cambu:          { label: 'Cambu',         quotaType: 'actions', cooldownMs: 3 * H,  partners: false, braquageWeeklyLimit: null, labo: false, quantity: false, panelButton: true,  displayOrder: 2 },
-  superette:      { label: 'Supérette',     quotaType: 'actions', cooldownMs: 2 * H,  partners: false, braquageWeeklyLimit: null, labo: false, quantity: false, panelButton: true,  displayOrder: 3 },
-  gofast:         { label: 'Go Fast',       quotaType: 'actions', cooldownMs: 24 * H, partners: false, braquageWeeklyLimit: null, labo: false, quantity: false, panelButton: true,  displayOrder: 4 },
-  braq_armurerie: { label: 'Armurerie',     quotaType: 'actions', cooldownMs: null,   partners: true,  braquageWeeklyLimit: null, labo: false, quantity: false, panelButton: true,  displayOrder: 5, icon: '🔫' },
-  fleeca:         { label: 'Fleeca',        quotaType: 'actions', cooldownMs: null,   partners: true,  braquageWeeklyLimit: null, labo: false, quantity: false, panelButton: true,  displayOrder: 6, icon: '🏦' },
-  bijouterie:     { label: 'Bijouterie',    quotaType: 'actions', cooldownMs: null,   partners: true,  braquageWeeklyLimit: null, labo: false, quantity: false, panelButton: true,  displayOrder: 7, icon: '💎' },
-  pinebank:       { label: 'Pinebank',      quotaType: 'actions', cooldownMs: null,   partners: true,  braquageWeeklyLimit: null, labo: false, quantity: false, panelButton: true,  displayOrder: 8, icon: '🏦' },
-  human_labs:     { label: 'Human Labs',    quotaType: 'actions', cooldownMs: null,   partners: true,  braquageWeeklyLimit: null, labo: false, quantity: false, panelButton: true,  displayOrder: 9, icon: '🫀' },
-  vente:          { label: 'Vente drogue',  quotaType: 'vente',   cooldownMs: null,   partners: false, braquageWeeklyLimit: null, labo: false, quantity: true,  panelButton: false, displayOrder: 10 },
-  recolte:        { label: 'Récolte',       quotaType: 'recolte', cooldownMs: null,   partners: false, braquageWeeklyLimit: null, labo: false, quantity: true,  panelButton: true,  displayOrder: 11 },
-  labo_heroine:   { label: 'Labo Héroïne',  quotaType: 'labos',   cooldownMs: null,   partners: true,  braquageWeeklyLimit: null, labo: true,  quantity: false, panelButton: true,  displayOrder: 12 },
-  labo_sporex:    { label: 'Labo Spore X',  quotaType: 'labos',   cooldownMs: null,   partners: true,  braquageWeeklyLimit: null, labo: true,  quantity: false, panelButton: true,  displayOrder: 13 },
-  labo_mexicana:  { label: 'Labo Mexicana', quotaType: 'labos',   cooldownMs: null,   partners: true,  braquageWeeklyLimit: null, labo: true,  quantity: false, panelButton: true,  displayOrder: 14 },
-  labo_cannabis:  { label: 'Labo Cannabis', quotaType: 'labos',   cooldownMs: null,   partners: true,  braquageWeeklyLimit: null, labo: true,  quantity: false, panelButton: true,  displayOrder: 15 },
-  labo_cocaine:   { label: 'Labo Cocaïne',  quotaType: 'labos',   cooldownMs: null,   partners: true,  braquageWeeklyLimit: null, labo: true,  quantity: false, panelButton: true,  displayOrder: 16 },
-  labo_salvia:    { label: 'Labo Salvia',   quotaType: 'labos',   cooldownMs: null,   partners: true,  braquageWeeklyLimit: null, labo: true,  quantity: false, panelButton: true,  displayOrder: 17 },
-  labo_branche_cannabis: { label: 'Labo Branche De Cannabis', quotaType: 'labos', cooldownMs: null, partners: true, braquageWeeklyLimit: null, labo: true, quantity: false, panelButton: true, displayOrder: 18 },
+  superette:      { label: 'Supérette',     quotaType: 'actions', cooldownMs: 2 * H,  partners: false, braquageWeeklyLimit: null, labo: false, quantity: false, panelButton: true,  displayOrder: 3, montant: true },
+  gofast:         { label: 'Go Fast',       quotaType: 'actions', cooldownMs: 24 * H, partners: false, braquageWeeklyLimit: null, labo: false, quantity: false, panelButton: true,  displayOrder: 4, montant: true },
+  conteneur:      { label: 'Conteneur',     quotaType: 'actions', cooldownMs: 1 * H,  partners: false, braquageWeeklyLimit: null, labo: false, quantity: false, panelButton: true,  displayOrder: 5, montant: true },
+  braq_armurerie: { label: 'Armurerie',     quotaType: 'actions', cooldownMs: null,   partners: true,  braquageWeeklyLimit: null, labo: false, quantity: false, panelButton: true,  displayOrder: 6, icon: '🔫', montant: true },
+  fleeca:         { label: 'Fleeca',        quotaType: 'actions', cooldownMs: null,   partners: true,  braquageWeeklyLimit: null, labo: false, quantity: false, panelButton: true,  displayOrder: 7, icon: '🏦', montant: true },
+  bijouterie:     { label: 'Bijouterie',    quotaType: 'actions', cooldownMs: null,   partners: true,  braquageWeeklyLimit: null, labo: false, quantity: false, panelButton: true,  displayOrder: 8, icon: '💎', montant: true },
+  pinebank:       { label: 'Pinebank',      quotaType: 'actions', cooldownMs: null,   partners: true,  braquageWeeklyLimit: null, labo: false, quantity: false, panelButton: true,  displayOrder: 9, icon: '🏦', montant: true },
+  human_labs:     { label: 'Human Labs',    quotaType: 'actions', cooldownMs: null,   partners: true,  braquageWeeklyLimit: null, labo: false, quantity: false, panelButton: true,  displayOrder: 10, icon: '🫀' },
+  vente:          { label: 'Vente drogue',  quotaType: 'vente',   cooldownMs: null,   partners: false, braquageWeeklyLimit: null, labo: false, quantity: true,  panelButton: false, displayOrder: 11 },
+  recolte:        { label: 'Récolte',       quotaType: 'recolte', cooldownMs: null,   partners: false, braquageWeeklyLimit: null, labo: false, quantity: true,  panelButton: true,  displayOrder: 12 },
+  labo_heroine:   { label: 'Labo Héroïne',  quotaType: 'labos',   cooldownMs: null,   partners: true,  braquageWeeklyLimit: null, labo: true,  quantity: false, panelButton: true,  displayOrder: 13 },
+  labo_sporex:    { label: 'Labo Spore X',  quotaType: 'labos',   cooldownMs: null,   partners: true,  braquageWeeklyLimit: null, labo: true,  quantity: false, panelButton: true,  displayOrder: 14 },
+  labo_mexicana:  { label: 'Labo Mexicana', quotaType: 'labos',   cooldownMs: null,   partners: true,  braquageWeeklyLimit: null, labo: true,  quantity: false, panelButton: true,  displayOrder: 15 },
+  labo_cannabis:  { label: 'Labo Cannabis', quotaType: 'labos',   cooldownMs: null,   partners: true,  braquageWeeklyLimit: null, labo: true,  quantity: false, panelButton: true,  displayOrder: 16 },
+  labo_cocaine:   { label: 'Labo Cocaïne',  quotaType: 'labos',   cooldownMs: null,   partners: true,  braquageWeeklyLimit: null, labo: true,  quantity: false, panelButton: true,  displayOrder: 17 },
+  labo_venia:     { label: 'Labo Vénia',    quotaType: 'labos',   cooldownMs: null,   partners: true,  braquageWeeklyLimit: null, labo: true,  quantity: false, panelButton: true,  displayOrder: 18 },
+  labo_branche_cannabis: { label: 'Labo Branche De Cannabis', quotaType: 'labos', cooldownMs: null, partners: true, braquageWeeklyLimit: null, labo: true, quantity: false, panelButton: true, displayOrder: 19 },
 };
 
 /**
@@ -148,7 +162,7 @@ export const LABO_TIERS: Record<string, GroupTier[]> = {
   labo_mexicana: ['gang', 'organisation'],
   labo_cannabis: ['gang'],
   labo_cocaine: ['organisation'],
-  labo_salvia: ['independant'],
+  labo_venia: ['petite_frappe'],
   labo_branche_cannabis: ['independant'],
 };
 
@@ -201,6 +215,8 @@ export interface BotConfig {
   ACTIVITY_CLASSEMENT_RATES: Record<string, number>;
   /** Tier courant — voir `/config type-groupe` et {@link DEFAULT_GROUP_TIER}. */
   TYPE_GROUPE: GroupTier;
+  /** Options de `/config option` — voir {@link OPTIONS}. */
+  OPTIONS: Record<OptionKey, boolean>;
 }
 
 /** Un cache `BotConfig` par guilde — jamais de config globale unique (voir docstring de fichier). */
@@ -225,6 +241,10 @@ export async function reload(guildId: string): Promise<BotConfig> {
   }
 
   const tierSetting = await db.getSetting(guildId, TYPE_GROUPE_SETTING_KEY);
+  const OPTIONS_ACTIVES = {} as Record<OptionKey, boolean>;
+  for (const option of Object.keys(OPTIONS) as OptionKey[]) {
+    OPTIONS_ACTIVES[option] = (await db.getSetting(guildId, optionSettingKey(option))) === '1';
+  }
   const TYPE_GROUPE: GroupTier = (tierSetting && GROUP_TIERS.some(t => t.key === tierSetting))
     ? (tierSetting as GroupTier)
     : DEFAULT_GROUP_TIER;
@@ -322,6 +342,7 @@ export async function reload(guildId: string): Promise<BotConfig> {
     CLASSEMENT_RATES,
     ACTIVITY_CLASSEMENT_RATES,
     TYPE_GROUPE,
+    OPTIONS: OPTIONS_ACTIVES,
   };
   cache.set(guildId, config);
   return config;

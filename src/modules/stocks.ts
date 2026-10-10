@@ -27,6 +27,7 @@ import { upsertPanel } from '../permanent-message';
 import { fetchPagesAfter } from '../discord-fetch';
 import * as ventes from './ventes';
 import * as armurerie from './armurerie';
+import { typeArgent } from './argent';
 
 const RE_RETIRE = /^(.+) a retiré (\d+)\s*[xX] (.+)$/im;
 const RE_DEPOSE = /^(.+) a déposé (\d+)\s*[xX] (.+)$/im;
@@ -322,7 +323,7 @@ function parseMessage(guildId: string, content: string): db.StockMovementInput[]
   const movements: db.StockMovementInput[] = [];
   for (const line of content.split('\n')) {
     const movement = parseLine(guildId, line);
-    if (movement) movements.push(movement);
+    if (movement) movements.push({ ...movement, argent: typeArgent(movement.item) });
   }
   return movements;
 }
@@ -341,7 +342,7 @@ export function isResyncRunning(guildId: string): boolean {
  * de chaque salon suivi, dans la file de la guilde — le temps réel attend
  * donc la fin, et retrouve ensuite un curseur à jour.
  *
- * - La remise à zéro (stock, historique, curseurs à `0`) est une seule
+ * - La remise à zéro (stock, historique, argent par semaine, curseurs à `0`) est une seule
  *   transaction : un arrêt juste après ne laisse pas un stock vidé avec des
  *   curseurs intacts, que le rattrapage ne reconstruirait jamais.
  * - Un message publié pendant la resync a déjà été lu par elle quand le temps
