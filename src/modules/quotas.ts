@@ -970,16 +970,16 @@ async function triggerActivity(interaction: ButtonInteraction | StringSelectMenu
     }
   }
 
+  // Le montant saisi vaut confirmation : pas de "oui" à taper en plus.
   const modal = new ModalBuilder()
     .setCustomId(`modal_act_${key}`)
     .setTitle(`${cfg.label} — Confirmer`.slice(0, 45))
-    .addComponents(
-      new ActionRowBuilder<TextInputBuilder>().addComponents(
+    .addComponents(demandeMontantAction(guildId, cfg)
+      ? montantRow()
+      : new ActionRowBuilder<TextInputBuilder>().addComponents(
         new TextInputBuilder().setCustomId('confirm').setLabel('Taper "oui" pour confirmer')
           .setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(3),
-      ),
-    );
-  if (demandeMontantAction(guildId, cfg)) modal.addComponents(montantRow());
+      ));
   return interaction.showModal(modal);
 }
 
@@ -1168,10 +1168,16 @@ export async function handleModal(interaction: ModalSubmitInteraction): Promise<
       );
     }
 
-    const confirm = interaction.fields.getTextInputValue('confirm').trim().toLowerCase();
-    if (confirm !== 'oui') return replyAutoDelete(interaction, '❌ Action annulée.');
-    const montant = demandeMontantAction(guildId, cfg) ? lireMontant(interaction) : null;
-    if (typeof montant === 'string') return replyAutoDelete(interaction, refusMontant(montant));
+    // Le modal porte soit le montant, soit le "oui" (voir triggerActivity) ;
+    // l'option a pu changer entre l'ouverture et la soumission.
+    const saisi = lireMontant(interaction);
+    if (saisi === 'invalide') return replyAutoDelete(interaction, refusMontant(saisi));
+    if (saisi === 'absent') {
+      if (demandeMontantAction(guildId, cfg)) return replyAutoDelete(interaction, refusMontant(saisi));
+      const confirm = interaction.fields.getTextInputValue('confirm').trim().toLowerCase();
+      if (confirm !== 'oui') return replyAutoDelete(interaction, '❌ Action annulée.');
+    }
+    const montant = typeof saisi === 'number' && cfg.montant ? saisi : null;
 
     const result = await db.recordActivity(guildId, { userId: user.id, username: user.tag, action: key, statDelta: 1, cooldownMs: cfg.cooldownMs, montant });
     if (!result.ok) return replyAutoDelete(interaction, refusDeclaration(cfg, result));
