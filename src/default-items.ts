@@ -37,16 +37,19 @@ import { CONFIRME_VENTE_ITEM } from './modules/ventes';
 // dépasser par le premier item admin qui recevrait un jour un display_order
 // positif bas).
 const DEFAULT_ITEMS: db.ItemInput[] = [
-  { name: 'Munition de pistolet', stock_group: MUNITIONS_STOCK_GROUP, display_order: -5 },
-  // Vaut 24x "Munition de pistolet" (stock_multiplier) — même groupe, comptée
-  // en conséquence dans le total munitions pondéré (voir armurerie.weightedStockSum).
-  { name: 'Boîte mun. pistolet', stock_group: MUNITIONS_STOCK_GROUP, stock_multiplier: 24, display_order: -4 },
-  // CONFIRME_VENTE_ITEM (voir ventes.ts) — simple item de stock ici, son rôle
-  // de confirmation de vente est fixe dans le code, pas un flag à poser.
-  { name: CONFIRME_VENTE_ITEM, display_order: -3 },
+  // L'argent d'abord, avant les munitions (décision de l'utilisateur). Un
+  // serveur existant garde ses valeurs (jamais d'écrasement ici) : la
+  // migration `ordre_argent_stock` les a alignées sur celles-ci.
   // Distinct de CONFIRME_VENTE_ITEM ("Argent Sale") : simple item de stock,
   // ne joue aucun rôle dans le cycle de vente.
-  { name: 'Argent', display_order: -2 },
+  { name: 'Argent', display_order: -5 },
+  // CONFIRME_VENTE_ITEM (voir ventes.ts) — simple item de stock ici, son rôle
+  // de confirmation de vente est fixe dans le code, pas un flag à poser.
+  { name: CONFIRME_VENTE_ITEM, display_order: -4 },
+  { name: 'Munition de pistolet', stock_group: MUNITIONS_STOCK_GROUP, display_order: -3 },
+  // Vaut 24x "Munition de pistolet" (stock_multiplier) — même groupe, comptée
+  // en conséquence dans le total munitions pondéré (voir armurerie.weightedStockSum).
+  { name: 'Boîte mun. pistolet', stock_group: MUNITIONS_STOCK_GROUP, stock_multiplier: 24, display_order: -2 },
   // Simple item de stock, sans groupe : affiché dans l'armurerie via
   // MUNITIONS_SMG_ITEM (stock brut uniquement, pas de quota fabrication/vente).
   { name: MUNITIONS_SMG_ITEM, display_order: -1 },
