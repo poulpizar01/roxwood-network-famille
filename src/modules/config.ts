@@ -850,7 +850,7 @@ export async function initDocumentationMessage(client: Client, guildId: string):
 const CHANNEL_DISPLAY_ORDER: readonly configStore.ChannelRole[] = [
   'documentation',
   'quotas', 'ventes_drogue', 'taxes', 'armurerie',
-  'labo_sporex', 'labo_heroine', 'labo_mexicana', 'labo_cannabis', 'labo_cocaine', 'labo_venia', 'labo_branche_cannabis',
+  'labo_venia', 'labo_sporex', 'labo_heroine', 'labo_mexicana', 'labo_cannabis', 'labo_cocaine', 'labo_branche_cannabis',
   'stock_general', 'paie', 'bilan',
   'alertes_taxes', 'alertes_braquages', 'alertes_actions',
   'historique_stock', 'log_ventes', 'logs_activites', 'admin',
