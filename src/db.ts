@@ -766,19 +766,21 @@ export async function getGroupActionTotals(guildId: string, sinceTs = 0, quantit
 }
 
 /**
- * Argent sale déclaré (`Transaction.montant`) par action entre `sinceTs` et
- * `untilTs` (exclu) — ventes comprises (`action: 'vente'`). Seules les
- * déclarations avec un montant comptent : `nombre` n'est pas le nombre total
- * de déclarations de l'action.
+ * Argent sale déclaré (`Transaction.montant`) par joueur et par action entre
+ * `sinceTs` et `untilTs` (exclu) — ventes comprises (`action: 'vente'`),
+ * `userId` optionnel pour un seul joueur. Le montant revient au déclarant
+ * seul (un braquage n'en a qu'un, total, pas une part par partenaire). Seules
+ * les déclarations avec un montant comptent : `nombre` n'est pas le nombre
+ * total de déclarations de l'action.
  */
-export async function getMontantsParAction(guildId: string, sinceTs: number, untilTs: number): Promise<Array<{ action: string; total: number; nombre: number }>> {
+export async function getMontants(guildId: string, sinceTs: number, untilTs: number, userId?: string): Promise<Array<{ userId: string; action: string; total: number; nombre: number }>> {
   const rows = await prisma.transaction.groupBy({
-    by: ['action'],
-    where: { guildId, deleted: false, montant: { not: null }, timestamp: { gte: new Date(sinceTs), lt: new Date(untilTs) } },
+    by: ['userId', 'action'],
+    where: { guildId, deleted: false, montant: { not: null }, timestamp: { gte: new Date(sinceTs), lt: new Date(untilTs) }, ...(userId ? { userId } : {}) },
     _sum: { montant: true },
     _count: { _all: true },
   });
-  return rows.map(r => ({ action: r.action, total: r._sum.montant ?? 0, nombre: r._count._all }));
+  return rows.map(r => ({ userId: r.userId, action: r.action, total: r._sum.montant ?? 0, nombre: r._count._all }));
 }
 
 /**

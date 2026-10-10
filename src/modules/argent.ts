@@ -76,31 +76,66 @@ export function refusMontant(resultat: 'absent' | 'invalide'): string {
     : `❌ Montant invalide (nombre entier de dollars, ${MAX_MONTANT.toLocaleString('fr-FR')} au plus).`;
 }
 
-export interface ArgentSummary {
+/** Argent sale saisi, sur les actions (détail par action) et sur les ventes. */
+export interface ArgentSaisi {
+  /** Seules les actions ayant un montant sur la période figurent dans `parAction`. */
+  actions: { total: number; parAction: Array<{ action: string; label: string; total: number; nombre: number }> };
+  ventes: { total: number; nombre: number };
+}
+
+export interface ArgentSummary extends ArgentSaisi {
   /** Argent déposé/retiré dans les coffres (tous coffres, admin compris), par type. */
   coffres: Record<TypeArgent, { depose: number; retire: number; solde: number }>;
-  /** Argent sale saisi sur les actions, total et détail par action (seules les actions ayant un montant sur la période). */
-  actions: { total: number; parAction: Array<{ action: string; label: string; total: number; nombre: number }> };
-  /** Argent sale saisi sur les ventes de drogue confirmées. */
-  ventes: { total: number; nombre: number };
+}
+
+/** Regroupe des montants (une ligne par action, éventuellement de plusieurs joueurs) en {@link ArgentSaisi}. */
+function regrouperMontants(guildId: string, montants: Array<{ action: string; total: number; nombre: number }>): ArgentSaisi {
+  const activityTypes = configStore.get(guildId).ACTIVITY_TYPES;
+  const parCle = new Map<string, { total: number; nombre: number }>();
+  for (const m of montants) {
+    const cumul = parCle.get(m.action) ?? { total: 0, nombre: 0 };
+    parCle.set(m.action, { total: cumul.total + m.total, nombre: cumul.nombre + m.nombre });
+  }
+  const vente = parCle.get('vente');
+  parCle.delete('vente');
+  const parAction = [...parCle.entries()]
+    .map(([action, m]) => ({ action, label: activityTypes[action]?.label ?? action, ...m }))
+    .sort((a, b) => (activityTypes[a.action]?.displayOrder ?? Infinity) - (activityTypes[b.action]?.displayOrder ?? Infinity));
+  return {
+    actions: { total: parAction.reduce((sum, a) => sum + a.total, 0), parAction },
+    ventes: { total: vente?.total ?? 0, nombre: vente?.nombre ?? 0 },
+  };
 }
 
 /** Résumé de l'argent sur `[since, until)` — source unique du bilan hebdomadaire et de `/api/argent`. */
 export async function getArgentSummaryForRange(guildId: string, range: { since: number; until: number }): Promise<ArgentSummary> {
   const [coffres, montants] = await Promise.all([
     db.getArgentCoffres(guildId, range.since, range.until),
-    db.getMontantsParAction(guildId, range.since, range.until),
+    db.getMontants(guildId, range.since, range.until),
   ]);
-  const activityTypes = configStore.get(guildId).ACTIVITY_TYPES;
-  const vente = montants.find(m => m.action === 'vente');
-  const parAction = montants
-    .filter(m => m.action !== 'vente')
-    .map(m => ({ ...m, label: activityTypes[m.action]?.label ?? m.action }))
-    .sort((a, b) => (activityTypes[a.action]?.displayOrder ?? Infinity) - (activityTypes[b.action]?.displayOrder ?? Infinity));
   const avecSolde = (c: { depose: number; retire: number }) => ({ ...c, solde: c.depose - c.retire });
   return {
     coffres: { sale: avecSolde(coffres.sale), propre: avecSolde(coffres.propre) },
-    actions: { total: parAction.reduce((sum, a) => sum + a.total, 0), parAction },
-    ventes: { total: vente?.total ?? 0, nombre: vente?.nombre ?? 0 },
+    ...regrouperMontants(guildId, montants),
   };
+}
+
+/**
+ * Argent sale saisi par joueur sur `[since, until)`, trié par total
+ * décroissant — `userId` pour un seul joueur. Les dépôts/retraits de coffre
+ * ne sont pas suivis par joueur (voir `ArgentSemaine`).
+ */
+export async function getArgentParJoueurForRange(
+  guildId: string, range: { since: number; until: number }, userId?: string,
+): Promise<Array<{ userId: string; total: number } & ArgentSaisi>> {
+  const parJoueur = new Map<string, Array<{ action: string; total: number; nombre: number }>>();
+  for (const m of await db.getMontants(guildId, range.since, range.until, userId)) {
+    (parJoueur.get(m.userId) ?? parJoueur.set(m.userId, []).get(m.userId)!).push(m);
+  }
+  return [...parJoueur.entries()]
+    .map(([id, montants]) => {
+      const saisi = regrouperMontants(guildId, montants);
+      return { userId: id, total: saisi.actions.total + saisi.ventes.total, ...saisi };
+    })
+    .sort((a, b) => b.total - a.total);
 }
