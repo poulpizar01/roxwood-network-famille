@@ -10,7 +10,8 @@
  * src/api/auth.ts) — jamais les données d'une autre guilde.
  *
  * Détail par joueur : argent sale saisi uniquement (les dépôts/retraits de
- * coffre ne sont pas suivis par joueur), attribué au déclarant seul.
+ * coffre ne sont pas suivis par joueur), le montant d'un braquage à plusieurs
+ * partagé à parts égales entre ses participants (`argent.repartirMontant`).
  * `/users` (classement) reste ouvert à tout membre, comme `/api/ventes` ;
  * `/:userId` exige `requireSelfOrAdmin` et reste en dernier.
  */

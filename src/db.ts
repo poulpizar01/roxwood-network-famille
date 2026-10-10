@@ -766,21 +766,21 @@ export async function getGroupActionTotals(guildId: string, sinceTs = 0, quantit
 }
 
 /**
- * Argent sale déclaré (`Transaction.montant`) par joueur et par action entre
- * `sinceTs` et `untilTs` (exclu) — ventes comprises (`action: 'vente'`),
- * `userId` optionnel pour un seul joueur. Le montant revient au déclarant
- * seul (un braquage n'en a qu'un, total, pas une part par partenaire). Seules
- * les déclarations avec un montant comptent : `nombre` n'est pas le nombre
- * total de déclarations de l'action.
+ * Déclarations avec un argent sale saisi (`Transaction.montant`) entre
+ * `sinceTs` et `untilTs` (exclu), ventes comprises (`action: 'vente'`) — une
+ * ligne par déclaration, avec ses partenaires : la répartition entre
+ * participants se fait dans `argent.getArgentParJoueurForRange`.
  */
-export async function getMontants(guildId: string, sinceTs: number, untilTs: number, userId?: string): Promise<Array<{ userId: string; action: string; total: number; nombre: number }>> {
-  const rows = await prisma.transaction.groupBy({
-    by: ['userId', 'action'],
-    where: { guildId, deleted: false, montant: { not: null }, timestamp: { gte: new Date(sinceTs), lt: new Date(untilTs) }, ...(userId ? { userId } : {}) },
-    _sum: { montant: true },
-    _count: { _all: true },
+export async function getMontants(guildId: string, sinceTs: number, untilTs: number): Promise<Array<{ userId: string; action: string; montant: number; partenaires: string[] }>> {
+  const rows = await prisma.transaction.findMany({
+    where: { guildId, deleted: false, montant: { not: null }, timestamp: { gte: new Date(sinceTs), lt: new Date(untilTs) } },
+    select: { userId: true, action: true, montant: true, partenaires: true },
   });
-  return rows.map(r => ({ userId: r.userId, action: r.action, total: r._sum.montant ?? 0, nombre: r._count._all }));
+  return rows.map(r => {
+    let partenaires: string[] = [];
+    try { partenaires = JSON.parse(r.partenaires); } catch { /* ignore */ }
+    return { userId: r.userId, action: r.action, montant: r.montant ?? 0, partenaires };
+  });
 }
 
 /**

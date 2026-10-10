@@ -88,7 +88,7 @@ export interface ArgentSummary extends ArgentSaisi {
   coffres: Record<TypeArgent, { depose: number; retire: number; solde: number }>;
 }
 
-/** Regroupe des montants (une ligne par action, éventuellement de plusieurs joueurs) en {@link ArgentSaisi}. */
+/** Regroupe des montants (une ligne par déclaration ou par part de déclaration) en {@link ArgentSaisi}. */
 function regrouperMontants(guildId: string, montants: Array<{ action: string; total: number; nombre: number }>): ArgentSaisi {
   const activityTypes = configStore.get(guildId).ACTIVITY_TYPES;
   const parCle = new Map<string, { total: number; nombre: number }>();
@@ -116,21 +116,41 @@ export async function getArgentSummaryForRange(guildId: string, range: { since: 
   const avecSolde = (c: { depose: number; retire: number }) => ({ ...c, solde: c.depose - c.retire });
   return {
     coffres: { sale: avecSolde(coffres.sale), propre: avecSolde(coffres.propre) },
-    ...regrouperMontants(guildId, montants),
+    ...regrouperMontants(guildId, montants.map(m => ({ action: m.action, total: m.montant, nombre: 1 }))),
   };
 }
 
 /**
+ * Parts d'un montant entre participants (déclarant en premier), à parts
+ * égales en dollars entiers : le reste de la division revient au déclarant,
+ * pour que la somme des parts soit EXACTEMENT le montant déclaré — jamais
+ * le montant compté une fois par participant.
+ */
+export function repartirMontant(montant: number, participants: string[]): Array<{ userId: string; part: number }> {
+  const base = Math.floor(montant / participants.length);
+  const reste = montant - base * participants.length;
+  return participants.map((userId, i) => ({ userId, part: base + (i === 0 ? reste : 0) }));
+}
+
+/**
  * Argent sale saisi par joueur sur `[since, until)`, trié par total
- * décroissant — `userId` pour un seul joueur. Les dépôts/retraits de coffre
- * ne sont pas suivis par joueur (voir `ArgentSemaine`).
+ * décroissant — `userId` pour un seul joueur. Le montant d'un braquage à
+ * plusieurs est partagé entre tous ses participants ({@link repartirMontant}) :
+ * la somme des joueurs est toujours égale au total du groupe, mais `nombre`
+ * compte les participations de chaque joueur (un braquage à 3 compte pour
+ * chacun des 3). Les dépôts/retraits de coffre ne sont pas suivis par joueur
+ * (voir `ArgentSemaine`).
  */
 export async function getArgentParJoueurForRange(
   guildId: string, range: { since: number; until: number }, userId?: string,
 ): Promise<Array<{ userId: string; total: number } & ArgentSaisi>> {
   const parJoueur = new Map<string, Array<{ action: string; total: number; nombre: number }>>();
-  for (const m of await db.getMontants(guildId, range.since, range.until, userId)) {
-    (parJoueur.get(m.userId) ?? parJoueur.set(m.userId, []).get(m.userId)!).push(m);
+  for (const m of await db.getMontants(guildId, range.since, range.until)) {
+    const participants = [m.userId, ...m.partenaires.filter(p => p !== m.userId)];
+    for (const { userId: id, part } of repartirMontant(m.montant, participants)) {
+      if (userId && id !== userId) continue;
+      (parJoueur.get(id) ?? parJoueur.set(id, []).get(id)!).push({ action: m.action, total: part, nombre: 1 });
+    }
   }
   return [...parJoueur.entries()]
     .map(([id, montants]) => {
