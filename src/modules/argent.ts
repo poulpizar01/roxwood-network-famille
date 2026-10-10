@@ -79,8 +79,8 @@ export function refusMontant(resultat: 'absent' | 'invalide'): string {
 /** Argent sale saisi, sur les actions (détail par action) et sur les ventes. */
 export interface ArgentSaisi {
   /** Seules les actions ayant un montant sur la période figurent dans `parAction`. */
-  actions: { total: number; parAction: Array<{ action: string; label: string; total: number; nombre: number }> };
-  ventes: { total: number; nombre: number };
+  actions: { total: number; parAction: Array<{ action: string; label: string; total: number }> };
+  ventes: { total: number };
 }
 
 export interface ArgentSummary extends ArgentSaisi {
@@ -89,21 +89,18 @@ export interface ArgentSummary extends ArgentSaisi {
 }
 
 /** Regroupe des montants (une ligne par déclaration ou par part de déclaration) en {@link ArgentSaisi}. */
-function regrouperMontants(guildId: string, montants: Array<{ action: string; total: number; nombre: number }>): ArgentSaisi {
+function regrouperMontants(guildId: string, montants: Array<{ action: string; total: number }>): ArgentSaisi {
   const activityTypes = configStore.get(guildId).ACTIVITY_TYPES;
-  const parCle = new Map<string, { total: number; nombre: number }>();
-  for (const m of montants) {
-    const cumul = parCle.get(m.action) ?? { total: 0, nombre: 0 };
-    parCle.set(m.action, { total: cumul.total + m.total, nombre: cumul.nombre + m.nombre });
-  }
+  const parCle = new Map<string, number>();
+  for (const m of montants) parCle.set(m.action, (parCle.get(m.action) ?? 0) + m.total);
   const vente = parCle.get('vente');
   parCle.delete('vente');
   const parAction = [...parCle.entries()]
-    .map(([action, m]) => ({ action, label: activityTypes[action]?.label ?? action, ...m }))
+    .map(([action, total]) => ({ action, label: activityTypes[action]?.label ?? action, total }))
     .sort((a, b) => (activityTypes[a.action]?.displayOrder ?? Infinity) - (activityTypes[b.action]?.displayOrder ?? Infinity));
   return {
     actions: { total: parAction.reduce((sum, a) => sum + a.total, 0), parAction },
-    ventes: { total: vente?.total ?? 0, nombre: vente?.nombre ?? 0 },
+    ventes: { total: vente ?? 0 },
   };
 }
 
@@ -116,7 +113,7 @@ export async function getArgentSummaryForRange(guildId: string, range: { since: 
   const avecSolde = (c: { depose: number; retire: number }) => ({ ...c, solde: c.depose - c.retire });
   return {
     coffres: { sale: avecSolde(coffres.sale), propre: avecSolde(coffres.propre) },
-    ...regrouperMontants(guildId, montants.map(m => ({ action: m.action, total: m.montant, nombre: 1 }))),
+    ...regrouperMontants(guildId, montants.map(m => ({ action: m.action, total: m.montant }))),
   };
 }
 
@@ -136,20 +133,19 @@ export function repartirMontant(montant: number, participants: string[]): Array<
  * Argent sale saisi par joueur sur `[since, until)`, trié par total
  * décroissant — `userId` pour un seul joueur. Le montant d'un braquage à
  * plusieurs est partagé entre tous ses participants ({@link repartirMontant}) :
- * la somme des joueurs est toujours égale au total du groupe, mais `nombre`
- * compte les participations de chaque joueur (un braquage à 3 compte pour
- * chacun des 3). Les dépôts/retraits de coffre ne sont pas suivis par joueur
+ * la somme des joueurs est toujours égale au total du groupe. Les
+ * dépôts/retraits de coffre ne sont pas suivis par joueur
  * (voir `ArgentSemaine`).
  */
 export async function getArgentParJoueurForRange(
   guildId: string, range: { since: number; until: number }, userId?: string,
 ): Promise<Array<{ userId: string; total: number } & ArgentSaisi>> {
-  const parJoueur = new Map<string, Array<{ action: string; total: number; nombre: number }>>();
+  const parJoueur = new Map<string, Array<{ action: string; total: number }>>();
   for (const m of await db.getMontants(guildId, range.since, range.until)) {
     const participants = [m.userId, ...m.partenaires.filter(p => p !== m.userId)];
     for (const { userId: id, part } of repartirMontant(m.montant, participants)) {
       if (userId && id !== userId) continue;
-      (parJoueur.get(id) ?? parJoueur.set(id, []).get(id)!).push({ action: m.action, total: part, nombre: 1 });
+      (parJoueur.get(id) ?? parJoueur.set(id, []).get(id)!).push({ action: m.action, total: part });
     }
   }
   return [...parJoueur.entries()]

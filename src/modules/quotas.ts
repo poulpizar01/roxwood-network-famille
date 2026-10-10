@@ -703,11 +703,11 @@ function argentFields(guildId: string, argent: ArgentSummary): Array<{ name: str
     { name: '💶 Argent propre (coffres)', value: coffre(argent.coffres.propre), inline: true },
   ];
   if (options.saisie_argent_actions || argent.actions.parAction.length) {
-    const detail = argent.actions.parAction.map(a => `${a.label} : ${dollars(a.total)} (${a.nombre})`);
+    const detail = argent.actions.parAction.map(a => `${a.label} : ${dollars(a.total)}`);
     fields.push({ name: '🎯 Argent sale — actions', value: [`Total : **${dollars(argent.actions.total)}**`, ...detail].join('\n').slice(0, 1024) });
   }
-  if (options.saisie_argent_ventes || argent.ventes.nombre) {
-    fields.push({ name: '💊 Argent sale — ventes', value: `Total : **${dollars(argent.ventes.total)}** (${argent.ventes.nombre} vente${argent.ventes.nombre > 1 ? 's' : ''})` });
+  if (options.saisie_argent_ventes || argent.ventes.total) {
+    fields.push({ name: '💊 Argent sale — ventes', value: `Total : **${dollars(argent.ventes.total)}**` });
   }
   return fields;
 }

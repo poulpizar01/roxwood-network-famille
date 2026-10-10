@@ -57,7 +57,7 @@ router.get('/:userId', requireSelfOrAdmin, async (req, res) => {
   res.json({
     since: range.since,
     until: range.until,
-    ...(joueur ?? { userId, total: 0, actions: { total: 0, parAction: [] }, ventes: { total: 0, nombre: 0 } }),
+    ...(joueur ?? { userId, total: 0, actions: { total: 0, parAction: [] }, ventes: { total: 0 } }),
   });
 });
 

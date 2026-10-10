@@ -239,7 +239,7 @@ Un seul niveau d'accès de base : **membre du serveur Discord porteur du rôle m
 | `GET /api/ventes?week=` | Membre | Total vendu par joueur sur la plage (trié décroissant) + total du groupe |
 | `GET /api/ventes/:userId?week=` | Soi-même/Admin | Ventes d'un joueur précis : total + détail par drogue vendue |
 | `GET /api/argent?week=` | Membre | Argent de la plage : dépôts/retraits/solde d'argent sale et propre dans les coffres, argent sale saisi sur les actions (total + détail par action) et sur les ventes, état des options de saisie (`/config option`) |
-| `GET /api/argent/users?week=` | Membre | Argent sale saisi par joueur (actions + ventes, détail par action), trié par total décroissant — le montant d'un braquage à plusieurs est partagé à parts égales entre ses participants (reste de la division au déclarant) : la somme des joueurs est égale au total du groupe, `nombre` compte les participations |
+| `GET /api/argent/users?week=` | Membre | Argent sale saisi par joueur (actions + ventes, détail par action), trié par total décroissant — le montant d'un braquage à plusieurs est partagé à parts égales entre ses participants (reste de la division au déclarant) : la somme des joueurs est égale au total du groupe |
 | `GET /api/argent/:userId?week=` | Soi-même/Admin | Argent sale saisi par un joueur précis, détail par action |
 | `GET /api/taxes?type=&status=` | Membre | Taxes filtrables par type (fixe, `zone` = toutes les zones groupées, ou la clé d'une zone précise) et statut (`active`/`expired`, défaut `active`) — infos générales seulement, jamais téléphone/mot de passe |
 | `GET /api/taxes/search?type=&q=` | Membre | Recherche par nom dans un type donné (`type` requis) — infos générales seulement, jamais téléphone/mot de passe |
