@@ -62,8 +62,9 @@ const DEFAULT_ITEMS: db.ItemInput[] = [
   { name: 'Carte Piratage Fleeca' },
   // Drogues vendables aux PNJ sans lien avec un labo particulier (variantes
   // de pureté/formes commerciales) — noms vérifiés avec l'utilisateur avant
-  // ajout (piège n°1). "Cocaine Pure" s'écrit bien sans tréma dans les logs,
-  // contrairement à l'item "Cocaïne" du labo plus bas.
+  // ajout (piège n°1). "Cocaine Pure" et "Héroine Pure" s'écrivent bien sans
+  // tréma dans les logs, contrairement aux items "Cocaïne"/"Héroïne" des labos
+  // plus bas.
   { name: 'Mexicana Pure À 99', vente: true },
   { name: 'Mexicana Pure À 90', vente: true },
   { name: 'Mexicana Pure À 70', vente: true },
@@ -76,6 +77,10 @@ const DEFAULT_ITEMS: db.ItemInput[] = [
   { name: 'Weed Pure À 90', vente: true },
   { name: 'Weed Pure À 70', vente: true },
   { name: 'Weed Pure À 50', vente: true },
+  { name: 'Héroine Pure À 99', vente: true },
+  { name: 'Héroine Pure À 90', vente: true },
+  { name: 'Héroine Pure À 70', vente: true },
+  { name: 'Héroine Pure À 50', vente: true },
   { name: 'Carte Prépayée', vente: true },
   { name: 'B-magic', vente: true },
   { name: 'Ecstasy', vente: true },
