@@ -1733,10 +1733,28 @@ export async function clearFourrieres(guildId: string, untilTs: number): Promise
 
 // ─── ARMURERIE ────────────────────────────────────────────────────────────────
 
-/** Ajoute une arme à l'armurerie (statut par défaut 'en_stock') et retourne son ID. */
-export async function addArme(guildId: string, nom: string, reference: string, type: string): Promise<number> {
-  const row = await prisma.arme.create({ data: { guildId, nom, reference, type } });
-  return row.id;
+/**
+ * Ajout depuis le bouton "Ajouter" : une référence déjà connue mais perdue
+ * est remise en stock (avec le nom et le type saisis) au lieu d'être
+ * refusée — l'arme a été retrouvée. Une référence en stock ou prêtée reste
+ * refusée (`existante` porte son état actuel).
+ */
+export async function addOrRecoverArme(guildId: string, nom: string, reference: string, type: string): Promise<
+  { resultat: 'ajoutee' } | { resultat: 'retrouvee' } | { resultat: 'existante'; statut: string; preteeA: string | null }
+> {
+  const { count } = await prisma.arme.updateMany({
+    where: { guildId, reference, statut: 'perdue' },
+    data: { statut: 'en_stock', preteeA: null, nom, type },
+  });
+  if (count) return { resultat: 'retrouvee' };
+  try {
+    await prisma.arme.create({ data: { guildId, nom, reference, type } });
+    return { resultat: 'ajoutee' };
+  } catch (err) {
+    const existante = await prisma.arme.findFirst({ where: { guildId, reference } });
+    if (!existante) throw err;
+    return { resultat: 'existante', statut: existante.statut, preteeA: existante.preteeA };
+  }
 }
 
 /** Toutes les armes d'une guilde, triées par nom. */
