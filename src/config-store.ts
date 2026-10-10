@@ -115,11 +115,11 @@ const H = 3_600_000;
  * n'est jamais utilisée telle quelle.
  */
 const ACTIVITY_TYPES_FIXED: Record<string, Omit<ActivityTypeConfig, 'laboChannelId' | 'enabled'>> = {
-  atm:            { label: 'ATM',           quotaType: 'actions', cooldownMs: 3 * H,  partners: false, braquageWeeklyLimit: null, labo: false, quantity: false, panelButton: true,  displayOrder: 1, montant: true },
-  cambu:          { label: 'Cambu',         quotaType: 'actions', cooldownMs: 3 * H,  partners: false, braquageWeeklyLimit: null, labo: false, quantity: false, panelButton: true,  displayOrder: 2 },
-  superette:      { label: 'Supérette',     quotaType: 'actions', cooldownMs: 2 * H,  partners: false, braquageWeeklyLimit: null, labo: false, quantity: false, panelButton: true,  displayOrder: 3, montant: true },
-  gofast:         { label: 'Go Fast',       quotaType: 'actions', cooldownMs: 24 * H, partners: false, braquageWeeklyLimit: null, labo: false, quantity: false, panelButton: true,  displayOrder: 4, montant: true },
-  conteneur:      { label: 'Conteneur',     quotaType: 'actions', cooldownMs: 1 * H,  partners: false, braquageWeeklyLimit: null, labo: false, quantity: false, panelButton: true,  displayOrder: 5, montant: true },
+  conteneur:      { label: 'Conteneur',     quotaType: 'actions', cooldownMs: 1 * H,  partners: false, braquageWeeklyLimit: null, labo: false, quantity: false, panelButton: true,  displayOrder: 1, montant: true },
+  superette:      { label: 'Supérette',     quotaType: 'actions', cooldownMs: 2 * H,  partners: false, braquageWeeklyLimit: null, labo: false, quantity: false, panelButton: true,  displayOrder: 2, montant: true },
+  atm:            { label: 'ATM',           quotaType: 'actions', cooldownMs: 3 * H,  partners: false, braquageWeeklyLimit: null, labo: false, quantity: false, panelButton: true,  displayOrder: 3, montant: true },
+  cambu:          { label: 'Cambu',         quotaType: 'actions', cooldownMs: 3 * H,  partners: false, braquageWeeklyLimit: null, labo: false, quantity: false, panelButton: true,  displayOrder: 4 },
+  gofast:         { label: 'Go Fast',       quotaType: 'actions', cooldownMs: 24 * H, partners: false, braquageWeeklyLimit: null, labo: false, quantity: false, panelButton: true,  displayOrder: 5, montant: true },
   braq_armurerie: { label: 'Armurerie',     quotaType: 'actions', cooldownMs: null,   partners: true,  braquageWeeklyLimit: null, labo: false, quantity: false, panelButton: true,  displayOrder: 6, icon: '🔫', montant: true },
   fleeca:         { label: 'Fleeca',        quotaType: 'actions', cooldownMs: null,   partners: true,  braquageWeeklyLimit: null, labo: false, quantity: false, panelButton: true,  displayOrder: 7, icon: '🏦', montant: true },
   bijouterie:     { label: 'Bijouterie',    quotaType: 'actions', cooldownMs: null,   partners: true,  braquageWeeklyLimit: null, labo: false, quantity: false, panelButton: true,  displayOrder: 8, icon: '💎', montant: true },
