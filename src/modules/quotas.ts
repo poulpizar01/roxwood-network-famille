@@ -677,30 +677,32 @@ async function buildBilanEmbed(guildId: string, sinceTs?: number, untilTs: numbe
       return `${cfg.label} : **${value}**`;
     });
 
-  const argent = await getArgentSummaryForRange(guildId, { since, until: untilTs });
+  const currentEnd = sinceTs === undefined;
+  const argent = await getArgentSummaryForRange(guildId, { since, until: untilTs }, currentEnd);
   return new EmbedBuilder()
     .setTitle('📊 Bilan du Groupe — Semaine')
     .setColor(0x57F287)
     .setDescription(lines.join('\n') || '*Aucune activité*')
-    .addFields(argentFields(guildId, argent))
+    .addFields(argentFields(guildId, argent, currentEnd))
     .setTimestamp();
 }
 
 const dollars = (n: number) => `${n.toLocaleString('fr-FR')} $`;
 
 /**
- * Champs "argent" du bilan : dépôts/retraits en coffre (toujours affichés),
+ * Champs "argent" du bilan : évolution du stock en coffre (toujours affichée),
  * puis argent sale saisi sur les actions et les ventes — affichés si l'option
  * de saisie correspondante est active ou si la période a des montants (une
  * option désactivée en cours de semaine ne fait pas disparaître ce qui a été saisi).
  */
-function argentFields(guildId: string, argent: ArgentSummary): Array<{ name: string; value: string; inline?: boolean }> {
+function argentFields(guildId: string, argent: ArgentSummary, currentEnd: boolean): Array<{ name: string; value: string; inline?: boolean }> {
   const options = configStore.get(guildId).OPTIONS;
-  const coffre = (c: ArgentSummary['coffres']['sale']) =>
-    `Déposé : **${dollars(c.depose)}**\nRetiré : **${dollars(c.retire)}**\nSolde : **${dollars(c.solde)}**`;
+  const stock = (c: ArgentSummary['stocks']['sale']) => c
+    ? `Début de semaine : **${dollars(c.debut)}**\n${currentEnd ? 'Actuellement' : 'Fin de semaine'} : **${dollars(c.fin)}**\nÉvolution : **${c.difference > 0 ? '+' : ''}${dollars(c.difference)}**`
+    : '*Données disponibles à partir de la prochaine semaine.*';
   const fields: Array<{ name: string; value: string; inline?: boolean }> = [
-    { name: '💵 Argent sale (coffres)', value: coffre(argent.coffres.sale), inline: true },
-    { name: '💶 Argent propre (coffres)', value: coffre(argent.coffres.propre), inline: true },
+    { name: '💵 Stock d’argent sale', value: stock(argent.stocks.sale), inline: true },
+    { name: '💶 Stock d’argent propre', value: stock(argent.stocks.propre), inline: true },
   ];
   if (options.saisie_argent_actions || argent.actions.parAction.length) {
     const detail = argent.actions.parAction.map(a => `${a.label} : ${dollars(a.total)}`);

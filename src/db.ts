@@ -28,6 +28,8 @@ import { weekStartOf } from './paris-time';
 
 export const prisma = new PrismaClient();
 
+export const ARGENT_STOCK_SNAPSHOT_FROM_KEY = 'argent_stock_snapshot_from';
+
 /** Convertit une colonne `TIMESTAMPTZ` (ou `null`) en millisecondes epoch. */
 const toMs = (d: Date | null | undefined): number => (d ? d.getTime() : 0);
 
@@ -347,10 +349,22 @@ export async function getAllStocks(guildId: string, channelIds: string[]): Promi
   return rows.map(r => ({ guildId, item: r.item, quantite: r._sum.quantite ?? 0 }));
 }
 
+/** Active les instantanés à la prochaine frontière, sans inventer une valeur pour la semaine du déploiement. */
+export async function initArgentStockSnapshots(guildId: string, firstBoundary: number): Promise<number> {
+  const row = await prisma.setting.upsert({
+    where: { guildId_key: { guildId, key: ARGENT_STOCK_SNAPSHOT_FROM_KEY } },
+    create: { guildId, key: ARGENT_STOCK_SNAPSHOT_FROM_KEY, value: String(firstBoundary) },
+    update: {},
+  });
+  return Number(row.value);
+}
+
 /**
  * Début d'une resync complète (`stocks.fullResync`), en UNE transaction :
- * stock par coffre, historique et argent par semaine vidés (tous reconstruits
- * en rejouant les logs), curseurs des salons repartis de `0`.
+ * stock par coffre et historique vidés (tous reconstruits en rejouant les
+ * logs), curseurs des salons repartis de `0`. Les instantanés hebdomadaires
+ * restent intacts : la resync salon par salon ne peut pas reconstruire un
+ * ancien total multi-coffres à une heure donnée.
  * Un arrêt au milieu ne peut pas laisser un stock vidé avec des curseurs
  * intacts, que le rattrapage ne reconstruirait jamais.
  */
@@ -358,7 +372,6 @@ export async function resetStocksForResync(guildId: string, cursorKeys: string[]
   await prisma.$transaction([
     prisma.coffreStock.deleteMany({ where: { guildId } }),
     prisma.stockHistory.deleteMany({ where: { guildId } }),
-    prisma.argentSemaine.deleteMany({ where: { guildId } }),
     ...cursorKeys.map(key => prisma.setting.upsert({
       where: { guildId_key: { guildId, key } },
       create: { guildId, key, value: '0' },
@@ -405,6 +418,44 @@ async function stockMovementQuery(client: Pick<Prisma.TransactionClient, '$query
   return { avant: rows[0]?.avant ?? 0, apres: rows[0]?.apres ?? 0 };
 }
 
+type ArgentType = 'sale' | 'propre';
+const ARGENT_ITEM_BY_TYPE: Record<ArgentType, string> = { sale: 'argent sale', propre: 'argent' };
+
+async function lockArgentStock(tx: Prisma.TransactionClient, guildId: string, type: ArgentType): Promise<void> {
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`argent-stock:${guildId}:${type}`}))`;
+}
+
+async function snapshotTrackingStart(tx: Prisma.TransactionClient, guildId: string): Promise<number | null> {
+  const row = await tx.setting.findUnique({
+    where: { guildId_key: { guildId, key: ARGENT_STOCK_SNAPSHOT_FROM_KEY } },
+    select: { value: true },
+  });
+  if (!row) return null;
+  const value = Number(row.value);
+  return Number.isFinite(value) ? value : null;
+}
+
+/** Appelé sous le verrou du type, avant toute mutation de son stock. */
+async function ensureArgentStockSnapshot(
+  tx: Prisma.TransactionClient, guildId: string, semaine: number, type: ArgentType, channelIds: string[], trackingStart: number | null,
+): Promise<void> {
+  if (trackingStart == null || semaine < trackingStart) return;
+  const at = new Date(semaine);
+  const existing = await tx.$queryRaw<Array<{ present: number }>>`
+    SELECT 1::int AS present FROM argent_stock_snapshots
+    WHERE guild_id = ${guildId} AND semaine = ${at} AND type = ${type}
+  `;
+  if (existing.length) return;
+  const total = await tx.coffreStock.aggregate({
+    where: { guildId, item: ARGENT_ITEM_BY_TYPE[type], channelId: { in: channelIds } },
+    _sum: { quantite: true },
+  });
+  await tx.$executeRaw`
+    INSERT INTO argent_stock_snapshots (guild_id, semaine, type, quantite)
+    VALUES (${guildId}, ${at}, ${type}, ${total._sum.quantite ?? 0})
+  `;
+}
+
 /**
  * Force la valeur du stock d'un item POUR UN COFFRE DONNÉ (correction
  * manuelle, `/set-stock ... coffre:`) — SET absolu, pas un delta (contraste
@@ -413,20 +464,29 @@ async function stockMovementQuery(client: Pick<Prisma.TransactionClient, '$query
  * réel concurrent sur ce même coffre/item. Le total global suit tout seul à
  * la lecture, aucun appel complémentaire nécessaire.
  */
-export async function setCoffreStock(guildId: string, channelId: string, item: string, quantite: number): Promise<{ avant: number; apres: number }> {
+export async function setCoffreStock(
+  guildId: string, channelId: string, item: string, quantite: number,
+  argent: ArgentType | null = null, trackedChannelIds: string[] = [], timestamp = Date.now(),
+): Promise<{ avant: number; apres: number }> {
   const key = item.toLowerCase();
   const qty = Math.max(0, quantite);
-  const rows = await prisma.$queryRaw<Array<{ avant: number; apres: number }>>`
-    WITH prev AS (
-      SELECT quantite FROM coffre_stocks WHERE guild_id = ${guildId} AND channel_id = ${channelId} AND item = ${key}
-    ), upserted AS (
-      INSERT INTO coffre_stocks (guild_id, channel_id, item, quantite) VALUES (${guildId}, ${channelId}, ${key}, ${qty})
-      ON CONFLICT (guild_id, channel_id, item) DO UPDATE SET quantite = ${qty}
-      RETURNING quantite
-    )
-    SELECT COALESCE((SELECT quantite FROM prev), 0)::int AS avant, (SELECT quantite FROM upserted)::int AS apres
-  `;
-  return { avant: rows[0]?.avant ?? 0, apres: rows[0]?.apres ?? 0 };
+  return prisma.$transaction(async tx => {
+    if (argent) {
+      await lockArgentStock(tx, guildId, argent);
+      await ensureArgentStockSnapshot(tx, guildId, weekStartOf(timestamp), argent, trackedChannelIds, await snapshotTrackingStart(tx, guildId));
+    }
+    const rows = await tx.$queryRaw<Array<{ avant: number; apres: number }>>`
+      WITH prev AS (
+        SELECT quantite FROM coffre_stocks WHERE guild_id = ${guildId} AND channel_id = ${channelId} AND item = ${key}
+      ), upserted AS (
+        INSERT INTO coffre_stocks (guild_id, channel_id, item, quantite) VALUES (${guildId}, ${channelId}, ${key}, ${qty})
+        ON CONFLICT (guild_id, channel_id, item) DO UPDATE SET quantite = ${qty}
+        RETURNING quantite
+      )
+      SELECT COALESCE((SELECT quantite FROM prev), 0)::int AS avant, (SELECT quantite FROM upserted)::int AS apres
+    `;
+    return { avant: rows[0]?.avant ?? 0, apres: rows[0]?.apres ?? 0 };
+  });
 }
 
 /** Le stock de tous les items d'UN coffre précis, trié par nom (liste vide si ce salon n'a encore aucun mouvement enregistré — pas d'erreur). */
@@ -441,7 +501,7 @@ export interface StockMovementInput {
   action: 'retire' | 'depose';
   item: string;
   quantite: number;
-  /** Type d'argent si l'item est de l'argent (voir `argent.typeArgent`) : le mouvement alimente alors `ArgentSemaine`. */
+  /** Type d'argent si l'item est de l'argent : permet de figer le stock au début de la semaine. */
   argent?: 'sale' | 'propre' | null;
 }
 
@@ -450,8 +510,8 @@ export type AppliedStockMovement = StockMovementInput & { stock_avant: number; s
 
 /**
  * Applique en UNE transaction tous les mouvements d'un message de log de
- * coffre, leur historique, l'argent déposé/retiré de la semaine (à l'heure
- * du log), et l'avancée du curseur `last_stock_msg_<salon>` —
+ * coffre, leur historique, l'instantané d'argent éventuel à l'heure du log,
+ * et l'avancée du curseur `last_stock_msg_<salon>` —
  * un arrêt du process au milieu ne laisse donc ni message marqué traité sans
  * mouvement, ni message à moitié appliqué qui serait rejoué en double. Le
  * curseur ne peut qu'avancer : un message dont l'ID ne lui est pas postérieur
@@ -459,12 +519,19 @@ export type AppliedStockMovement = StockMovementInput & { stock_avant: number; s
  * la fonction retourne alors `null` sans rien écrire.
  */
 export async function applyStockMessage(
-  guildId: string, channelId: string, messageId: string, movements: StockMovementInput[], timestamp: number,
+  guildId: string, channelId: string, messageId: string, movements: StockMovementInput[], timestamp: number, trackedChannelIds: string[],
 ): Promise<AppliedStockMovement[] | null> {
   const key = `last_stock_msg_${channelId}`;
   const applied = await prisma.$transaction(async tx => {
     const cursor = await tx.setting.findUnique({ where: { guildId_key: { guildId, key } } });
     if (cursor && BigInt(messageId) <= BigInt(cursor.value)) return null;
+
+    const argentTypes = [...new Set(movements.map(m => m.argent).filter((type): type is ArgentType => type === 'sale' || type === 'propre'))].sort();
+    const trackingStart = argentTypes.length ? await snapshotTrackingStart(tx, guildId) : null;
+    for (const type of argentTypes) {
+      await lockArgentStock(tx, guildId, type);
+      await ensureArgentStockSnapshot(tx, guildId, weekStartOf(timestamp), type, trackedChannelIds, trackingStart);
+    }
 
     const done: AppliedStockMovement[] = [];
     for (const m of movements) {
@@ -475,15 +542,6 @@ export async function applyStockMessage(
           quantite: m.quantite, stockAvant: avant, stockApres: apres, channelId,
         },
       });
-      if (m.argent) {
-        const where = { guildId_semaine_type: { guildId, semaine: new Date(weekStartOf(timestamp)), type: m.argent } };
-        const champ = m.action === 'retire' ? 'retire' : 'depose';
-        await tx.argentSemaine.upsert({
-          where,
-          create: { guildId, semaine: where.guildId_semaine_type.semaine, type: m.argent, [champ]: m.quantite },
-          update: { [champ]: { increment: m.quantite } },
-        });
-      }
       done.push({ ...m, stock_avant: avant, stock_apres: apres });
     }
     await tx.setting.upsert({
@@ -783,23 +841,45 @@ export async function getMontants(guildId: string, sinceTs: number, untilTs: num
   });
 }
 
-/**
- * Argent déposé/retiré dans les coffres, par type, sur les semaines de paie
- * qui commencent dans `[sinceTs, untilTs)` — `sinceTs` est ramené au début
- * de sa semaine (un `last_weekly_reset` initialisé hors frontière ne doit
- * pas exclure la semaine en cours).
- */
-export async function getArgentCoffres(guildId: string, sinceTs: number, untilTs: number): Promise<Record<'sale' | 'propre', { depose: number; retire: number }>> {
-  const rows = await prisma.argentSemaine.groupBy({
-    by: ['type'],
-    where: { guildId, semaine: { gte: new Date(weekStartOf(sinceTs)), lt: new Date(untilTs) } },
-    _sum: { depose: true, retire: true },
+/** Comparaison du stock d'argent entre les bornes de la semaine. */
+export interface ArgentStockComparison { debut: number; fin: number; difference: number }
+
+/** Compare les stocks aux bornes ; `null` indique que le suivi exact n'était pas encore actif. */
+export async function getArgentStockComparisons(
+  guildId: string, sinceTs: number, untilTs: number, currentEnd: boolean, channelIds: string[],
+): Promise<Record<ArgentType, ArgentStockComparison | null>> {
+  return prisma.$transaction(async tx => {
+    const trackingStart = await snapshotTrackingStart(tx, guildId);
+    const result: Record<ArgentType, ArgentStockComparison | null> = { sale: null, propre: null };
+    if (trackingStart == null || sinceTs < trackingStart) return result;
+
+    const valueAt = async (type: ArgentType, boundary: number): Promise<number> => {
+      const rows = await tx.$queryRaw<Array<{ quantite: number }>>`
+        SELECT quantite FROM argent_stock_snapshots
+        WHERE guild_id = ${guildId} AND type = ${type} AND semaine >= ${new Date(boundary)}
+        ORDER BY semaine ASC LIMIT 1
+      `;
+      if (rows[0]) return rows[0].quantite;
+      const total = await tx.coffreStock.aggregate({
+        where: { guildId, item: ARGENT_ITEM_BY_TYPE[type], channelId: { in: channelIds } },
+        _sum: { quantite: true },
+      });
+      return total._sum.quantite ?? 0;
+    };
+
+    for (const type of ['propre', 'sale'] as ArgentType[]) await lockArgentStock(tx, guildId, type);
+    for (const type of ['sale', 'propre'] as ArgentType[]) {
+      const debut = await valueAt(type, sinceTs);
+      const fin = currentEnd
+        ? (await tx.coffreStock.aggregate({
+          where: { guildId, item: ARGENT_ITEM_BY_TYPE[type], channelId: { in: channelIds } },
+          _sum: { quantite: true },
+        }))._sum.quantite ?? 0
+        : await valueAt(type, untilTs);
+      result[type] = { debut, fin, difference: fin - debut };
+    }
+    return result;
   });
-  const result = { sale: { depose: 0, retire: 0 }, propre: { depose: 0, retire: 0 } };
-  for (const r of rows) {
-    if (r.type === 'sale' || r.type === 'propre') result[r.type] = { depose: r._sum.depose ?? 0, retire: r._sum.retire ?? 0 };
-  }
-  return result;
 }
 
 /**
