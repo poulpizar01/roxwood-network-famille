@@ -19,6 +19,8 @@ import { Router } from 'express';
 import * as db from '../../db';
 import { getMunitionsSummary, getArmeTypes } from '../../modules/armurerie';
 
+import { avecNoms } from '../noms';
+
 const router = Router();
 
 /** Statut arme (anglais, valeur de `?status=`) → valeur stockée en base (française). */
@@ -68,14 +70,14 @@ router.get('/ammo', async (req, res) => {
 router.get('/ammo/history', async (req, res) => {
   const guildId = req.apiUser!.guildId;
   const sinceReset = Number((await db.getSetting(guildId, 'last_weekly_reset')) || 0);
-  res.json(await db.getMunitionsVentesDepuis(guildId, sinceReset));
+  res.json(await avecNoms(guildId, await db.getMunitionsVentesDepuis(guildId, sinceReset)));
 });
 
 /** GET /api/armurerie/ammo/production — déclarations de fabrication depuis le dernier reset hebdomadaire, la plus récente en premier — même fenêtre que `fabriqueesCetteSemaine` de `/ammo`, en détail (pendant de `/ammo/history` côté fabrication). */
 router.get('/ammo/production', async (req, res) => {
   const guildId = req.apiUser!.guildId;
   const sinceReset = Number((await db.getSetting(guildId, 'last_weekly_reset')) || 0);
-  res.json(await db.getFabricationMunitionsDepuis(guildId, sinceReset));
+  res.json(await avecNoms(guildId, await db.getFabricationMunitionsDepuis(guildId, sinceReset)));
 });
 
 /** GET /api/armurerie/types — modèles d'armes, dans l'ordre de `ARME_TYPES` (voir `armurerie.getArmeTypes`), avec leur catégorie. Déclarée avant aucune route dynamique : ce groupe n'en a pas (`/:id` n'existe pas ici, contrairement à `/api/stocks`/`/api/quotas`). */

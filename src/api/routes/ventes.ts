@@ -24,6 +24,8 @@ import * as db from '../../db';
 import { resolveWeekRange } from '../week';
 import { requireSelfOrAdmin } from '../auth';
 
+import { avecNoms } from '../noms';
+
 const router = Router();
 
 /**
@@ -37,7 +39,7 @@ router.get('/', async (req, res) => {
 
   const players = (await db.getVenteTotalsForRange(guildId, range.since, range.until)).sort((a, b) => b.total - a.total);
   const groupTotal = players.reduce((sum, p) => sum + p.total, 0);
-  res.json({ players, groupTotal });
+  res.json({ players: await avecNoms(guildId, players), groupTotal });
 });
 
 /** GET /api/ventes/:userId?week= — ventes d'un joueur précis : total + détail par drogue vendue. Réservé à ce joueur lui-même (ou un admin). */

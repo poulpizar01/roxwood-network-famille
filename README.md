@@ -211,6 +211,8 @@ Un seul niveau d'accès de base : **membre du serveur Discord porteur du rôle m
 
 ### Endpoints disponibles
 
+Les listes de joueurs des routes `/api/quotas`, `/api/quotas/pay`, `/api/quotas/ranking`, `/api/ventes`, `/api/argent/users`, `/api/armurerie/ammo/history` et `/api/armurerie/ammo/production` contiennent un champ `name` : nom en jeu associé via `/adduser`, sinon dernier pseudo Discord connu, ou `null` si inconnu. Les identifiants et les permissions restent inchangés. `/api/users` expose aussi `gameName` pour les administrateurs.
+
 | Endpoint | Accès | Retourne |
 |----------|-------|----------|
 | `GET /api/me` | Membre | Identité résolue (id, username, isAdmin) |

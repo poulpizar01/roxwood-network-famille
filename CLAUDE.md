@@ -194,3 +194,7 @@ Questions à se poser sur tout nouveau handler, cron, commande, route ou table �
 10. **Change-t-il quelque chose de visible ?** Manuel, README et ce fichier à jour dans le même commit (voir Conventions de code).
 
 Pour un audit périodique du code existant (par angle, pas en revue généraliste) : commande `/audit [angle]` (`.claude/skills/audit/`), qui lance les prompts de `docs/audits.md` — ce fichier reste la seule source des prompts, la commande n'en contient aucune copie.
+
+## Noms affichables dans l’API
+
+`src/api/noms.ts` enrichit les listes quotas/paie/classement, ventes, argent par joueur et historique/fabrication de munitions avec `name`. Priorité au nom en jeu (`getKnownUsers.gameName`), sinon pseudo Discord, sinon `null`. La résolution est filtrée par guilde et conserve les restrictions de `/api/users` et des routes individuelles. Aucun changement de schéma.

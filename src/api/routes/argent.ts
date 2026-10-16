@@ -21,6 +21,8 @@ import { resolveWeekRange } from '../week';
 import { requireSelfOrAdmin } from '../auth';
 import { getArgentSummaryForRange, getArgentParJoueurForRange } from '../../modules/argent';
 
+import { avecNoms } from '../noms';
+
 const router = Router();
 
 /** GET /api/argent?week= — résumé de l'argent sur la plage, avec l'état des options de saisie. */
@@ -44,7 +46,7 @@ router.get('/users', async (req, res) => {
   const guildId = req.apiUser!.guildId;
   const range = await resolveWeekRange(req, res, guildId);
   if (!range) return;
-  res.json({ since: range.since, until: range.until, players: await getArgentParJoueurForRange(guildId, range) });
+  res.json({ since: range.since, until: range.until, players: await avecNoms(guildId, await getArgentParJoueurForRange(guildId, range)) });
 });
 
 /** GET /api/argent/:userId?week= — argent sale saisi par un joueur, détail par action. Réservé à ce joueur lui-même (ou un admin). */
