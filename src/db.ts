@@ -1320,7 +1320,7 @@ export async function deleteUserMapping(guildId: string, gameName: string, disco
  * autres routes API (`/api/quotas/:userId`, `/api/ventes/:userId`) le
  * traitent déjà comme n'ayant jamais rien déclaré.
  */
-export async function getKnownUsers(guildId: string): Promise<Array<{ userId: string; username: string }>> {
+export async function getKnownUsers(guildId: string): Promise<Array<{ userId: string; username: string; gameName: string | null }>> {
   // Une ligne par joueur (son pseudo le plus récent), calculée par la base :
   // `Transaction` n'est jamais purgée, la charger entière grossirait sans fin.
   const [transactions, mappings] = await Promise.all([
@@ -1343,7 +1343,7 @@ export async function getKnownUsers(guildId: string): Promise<Array<{ userId: st
 
   const allIds = new Set<string>([...latestUsername.keys(), ...gameNamesByUser.keys()]);
   return [...allIds]
-    .map(userId => ({ userId, username: latestUsername.get(userId) ?? gameNamesByUser.get(userId)!.join(', ') }))
+    .map(userId => ({ userId, username: latestUsername.get(userId) ?? gameNamesByUser.get(userId)!.join(', '), gameName: gameNamesByUser.get(userId)?.[0] ?? null }))
     .sort((a, b) => a.username.localeCompare(b.username));
 }
 
