@@ -737,15 +737,16 @@ export async function recordActivity(guildId: string, data: ActivityInput): Prom
  * décrémentent qu'une fois), `Stat` n'est décrémenté que si la transaction
  * appartient à la période en cours (`sinceTs` = dernier reset hebdomadaire —
  * `Stat` ne contient rien d'antérieur), et le slot de braquage libéré est
- * celui de CETTE transaction (même horodatage, voir {@link recordActivity}).
- * Un braquage enregistré sans horodatage commun avec sa transaction n'a pas
- * de correspondance exacte : c'est alors le plus récent du déclarant encore
- * dans la fenêtre de 7 jours qui est libéré.
+ * celui de CETTE transaction, trouvé par correspondance exacte d'horodatage
+ * (voir {@link recordActivity} : même `now` que la transaction). Pas de
+ * fallback par ancienneté si aucune correspondance exacte n'existe — la
+ * config courante (tier) a pu changer depuis la déclaration, un fallback
+ * libérerait alors le slot d'une tout autre transaction encore valide.
  * @returns `false` si la transaction n'existe pas ou était déjà supprimée.
  */
 export async function suppTransaction(
   guildId: string, id: number, deletedBy: string,
-  opts: { statUserIds: string[]; statDelta: number; sinceTs: number; freeBraquage: boolean },
+  opts: { statUserIds: string[]; statDelta: number; sinceTs: number },
 ): Promise<boolean> {
   return prisma.$transaction(async tx => {
     await lockStatsShared(tx, guildId);
@@ -762,14 +763,8 @@ export async function suppTransaction(
         `;
       }
     }
-    if (opts.freeBraquage) {
-      const braquage = await tx.braquage.findFirst({ where: { guildId, userId: row.userId, action: row.action, timestamp: row.timestamp } })
-        ?? await tx.braquage.findFirst({
-          where: { guildId, userId: row.userId, action: row.action, timestamp: { gte: new Date(Date.now() - SEVEN_DAYS_MS) } },
-          orderBy: { timestamp: 'desc' },
-        });
-      if (braquage) await tx.braquage.deleteMany({ where: { id: braquage.id, guildId } });
-    }
+    const braquage = await tx.braquage.findFirst({ where: { guildId, userId: row.userId, action: row.action, timestamp: row.timestamp } });
+    if (braquage) await tx.braquage.deleteMany({ where: { id: braquage.id, guildId } });
     return true;
   });
 }
@@ -1676,7 +1671,7 @@ export async function getExpiredPendingSales(guildId: string, before: number) {
  * d'une guilde antérieures à `beforeTs`, retourne le nombre supprimé. Ne
  * touche jamais 'en_attente'/'declare' (en cours) quelle que soit leur
  * ancienneté — garde-fou défensif, même si ces statuts ne devraient de toute
- * façon jamais durer au-delà de la fenêtre de confirmation de 3h (voir
+ * façon jamais durer au-delà de la fenêtre de confirmation de 4h (voir
  * `getExpiredPendingSales`, qui les fait justement basculer vers un statut
  * terminal). Pure debris opérationnel une fois terminée : le vrai
  * historique de vente vit dans `transactions`, jamais dans cette table (voir

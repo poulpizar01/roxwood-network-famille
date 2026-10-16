@@ -37,8 +37,8 @@ import * as quotas from './quotas';
 import type { StockEntry } from './stocks';
 import { ARGENT_ITEMS, demandeMontantVente, montantRow, lireMontant, refusMontant } from './argent';
 
-/** Fenêtre max (ms) entre retrait et dépôt d'argent pour confirmation auto (3h). */
-const WINDOW_MS = 3 * 60 * 60 * 1000;
+/** Fenêtre max (ms) entre retrait et dépôt d'argent pour confirmation auto (4h). */
+const WINDOW_MS = 4 * 60 * 60 * 1000;
 /** Fenêtre max (ms) entre deux retraits successifs cumulés dans la même alerte (5 min). */
 const ACCUMULATION_WINDOW_MS = 5 * 60 * 1000;
 

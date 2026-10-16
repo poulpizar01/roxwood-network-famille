@@ -1345,13 +1345,14 @@ export async function handleSuppCommand(interaction: ChatInputCommandInteraction
   const collectif = !!cfg && !cfg.quantity && (cfg.labo || estBraquage);
 
   // Le braquage consommait un slot hebdomadaire partagé : `suppTransaction`
-  // le libère aussi, sinon le groupe reste à un slot de moins jusqu'à ce que
+  // le libère aussi (par correspondance exacte d'horodatage, pas via
+  // `estBraquage` qui reflète le tier ACTUEL et peut avoir changé depuis la
+  // déclaration), sinon le groupe reste à un slot de moins jusqu'à ce que
   // l'entrée sorte de la fenêtre glissante de 7 jours.
   const supprimee = await db.suppTransaction(guildId, txId, interaction.user.tag, {
     statUserIds: !cfg ? [] : collectif ? [tx.userId, ...tx.partenaires] : [tx.userId],
     statDelta: cfg?.quantity ? tx.quantite : 1,
     sinceTs: Number((await db.getSetting(guildId, LAST_RESET_KEY)) || 0),
-    freeBraquage: estBraquage,
   });
   if (!supprimee) {
     await interaction.reply({ content: `❌ Transaction #${txId} introuvable ou déjà supprimée.`, flags: MessageFlags.Ephemeral });
