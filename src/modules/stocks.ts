@@ -112,7 +112,9 @@ export function isGameLogMessage(message: Message): boolean {
 async function applyMessage(guildId: string, message: Message, channelId: string): Promise<StockEntry[] | null> {
   const movements = isGameLogMessage(message) ? parseMessage(guildId, extractText(message)) : [];
   try {
-    const applied = await db.applyStockMessage(guildId, channelId, message.id, movements, message.createdTimestamp);
+    const applied = await db.applyStockMessage(
+      guildId, channelId, message.id, movements, message.createdTimestamp, configStore.coffreChannelIds(guildId),
+    );
     return applied && applied.map(entry => ({ ...entry, timestamp: message.createdTimestamp }));
   } catch (err) {
     needsCatchUp.add(`${guildId}:${channelId}`);
@@ -618,7 +620,9 @@ export async function handleSetStockCommand(interaction: ChatInputCommandInterac
   // Corrige CE coffre précis (SET absolu) — `coffre` obligatoire : le total
   // global n'est jamais stocké séparément (voir db.ts), il se recalcule tout
   // seul comme la somme des coffres dès la prochaine lecture.
-  const { avant, apres } = await db.setCoffreStock(guildId, coffre.id, item, quantite);
+  const { avant, apres } = await db.setCoffreStock(
+    guildId, coffre.id, item, quantite, typeArgent(item), configStore.coffreChannelIds(guildId),
+  );
   await updateStockMessage(interaction.client, guildId);
   await interaction.reply({
     content: `✅ Stock de **${itemLabel}** corrigé pour <#${coffre.id}> : \`${avant.toLocaleString('fr-FR')}\` → \`${apres.toLocaleString('fr-FR')}\` (total global recalculé automatiquement).`,

@@ -4,8 +4,8 @@
  * stock réel ni la paie) :
  *  - montant saisi à la déclaration d'une action ou d'une vente de drogue,
  *    quand l'option correspondante est active (`/config option`) ;
- *  - argent déposé/retiré dans les coffres, cumulé par semaine de paie
- *    (`ArgentSemaine`, voir `db.applyStockMessage`).
+ *  - évolution du stock d'argent entre deux frontières hebdomadaires, à
+ *    partir d'instantanés exacts pris au dimanche 19h.
  * Le bilan hebdomadaire (`quotas.ts`) et l'API (`/api/argent`) lisent le même
  * résumé, {@link getArgentSummaryForRange}.
  */
@@ -84,8 +84,8 @@ export interface ArgentSaisi {
 }
 
 export interface ArgentSummary extends ArgentSaisi {
-  /** Argent déposé/retiré dans les coffres (tous coffres, admin compris), par type. */
-  coffres: Record<TypeArgent, { depose: number; retire: number; solde: number }>;
+  /** Stock de tous les coffres suivis, coffres admin compris. */
+  stocks: Record<TypeArgent, db.ArgentStockComparison | null>;
 }
 
 /** Regroupe des montants (une ligne par déclaration ou par part de déclaration) en {@link ArgentSaisi}. */
@@ -105,14 +105,15 @@ function regrouperMontants(guildId: string, montants: Array<{ action: string; to
 }
 
 /** Résumé de l'argent sur `[since, until)` — source unique du bilan hebdomadaire et de `/api/argent`. */
-export async function getArgentSummaryForRange(guildId: string, range: { since: number; until: number }): Promise<ArgentSummary> {
-  const [coffres, montants] = await Promise.all([
-    db.getArgentCoffres(guildId, range.since, range.until),
+export async function getArgentSummaryForRange(
+  guildId: string, range: { since: number; until: number }, currentEnd = false,
+): Promise<ArgentSummary> {
+  const [stocks, montants] = await Promise.all([
+    db.getArgentStockComparisons(guildId, range.since, range.until, currentEnd, configStore.coffreChannelIds(guildId)),
     db.getMontants(guildId, range.since, range.until),
   ]);
-  const avecSolde = (c: { depose: number; retire: number }) => ({ ...c, solde: c.depose - c.retire });
   return {
-    coffres: { sale: avecSolde(coffres.sale), propre: avecSolde(coffres.propre) },
+    stocks,
     ...regrouperMontants(guildId, montants.map(m => ({ action: m.action, total: m.montant }))),
   };
 }
@@ -134,8 +135,7 @@ export function repartirMontant(montant: number, participants: string[]): Array<
  * décroissant — `userId` pour un seul joueur. Le montant d'un braquage à
  * plusieurs est partagé entre tous ses participants ({@link repartirMontant}) :
  * la somme des joueurs est toujours égale au total du groupe. Les
- * dépôts/retraits de coffre ne sont pas suivis par joueur
- * (voir `ArgentSemaine`).
+ * évolutions de stock ne sont pas suivies par joueur.
  */
 export async function getArgentParJoueurForRange(
   guildId: string, range: { since: number; until: number }, userId?: string,

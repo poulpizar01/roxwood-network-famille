@@ -433,12 +433,9 @@ model MunitionVente {
   @@map("munitions_ventes")
 }
 
-/// Argent déposé et retiré dans les coffres, par semaine de paie (début :
-/// dimanche 19h, heure de Paris — voir `paris-time.weekStartOf`) et par type
-/// d'argent ('sale' / 'propre'). Incrémenté dans la transaction qui applique
-/// un message de coffre (`db.applyStockMessage`), à l'heure du log : une
-/// semaine passée reste consultable (`?week=`). Vidé avec le stock par une
-/// resync complète, qui le reconstruit en rejouant les logs.
+/// Ancien cumul hebdomadaire des dépôts/retraits. Conservé pour ne pas perdre
+/// l'historique antérieur au suivi par instantanés ; plus aucun code ne le lit
+/// ni ne l'alimente.
 model ArgentSemaine {
   guildId String   @map("guild_id")
   semaine DateTime
@@ -448,4 +445,19 @@ model ArgentSemaine {
 
   @@id([guildId, semaine, type])
   @@map("argent_semaines")
+}
+
+/// Stock d'argent constaté à une frontière hebdomadaire (dimanche 19h,
+/// heure de Paris). Une ligne est créée juste avant le premier mouvement du
+/// type concerné dans la semaine ; sans mouvement, la première valeur d'une
+/// semaine ultérieure (ou le stock courant) vaut aussi pour cette frontière.
+model ArgentStockSnapshot {
+  guildId  String   @map("guild_id")
+  semaine DateTime
+  type     String
+  quantite Int
+
+  @@id([guildId, semaine, type])
+  @@index([guildId, type, semaine])
+  @@map("argent_stock_snapshots")
 }

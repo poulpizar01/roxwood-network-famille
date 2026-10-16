@@ -1,16 +1,15 @@
 /**
  * @file src/api/routes/argent.ts
  * @description Lecture seule de l'argent de la semaine en cours par défaut,
- * ou d'une semaine ISO passée via `?week=` (voir `../week.ts`) : dépôts et
- * retraits d'argent sale/propre dans les coffres, argent sale saisi sur les
- * actions (détail par action) et sur les ventes. Même calcul que le bilan
- * hebdomadaire (`argent.getArgentSummaryForRange`).
+ * ou d'une semaine ISO passée via `?week=` (voir `../week.ts`) : évolution du
+ * stock d'argent sale/propre entre le début et la fin de la période, argent
+ * sale saisi sur les actions et sur les ventes. Même calcul que le bilan.
  *
  * Filtre par `req.apiUser.guildId` (posé par `requireAuth`, voir
  * src/api/auth.ts) — jamais les données d'une autre guilde.
  *
- * Détail par joueur : argent sale saisi uniquement (les dépôts/retraits de
- * coffre ne sont pas suivis par joueur), le montant d'un braquage à plusieurs
+ * Détail par joueur : argent sale saisi uniquement (les niveaux de stock ne
+ * sont pas suivis par joueur), le montant d'un braquage à plusieurs
  * partagé à parts égales entre ses participants (`argent.repartirMontant`).
  * `/users` (classement) reste ouvert à tout membre, comme `/api/ventes` ;
  * `/:userId` exige `requireSelfOrAdmin` et reste en dernier.
@@ -29,7 +28,7 @@ router.get('/', async (req, res) => {
   const range = await resolveWeekRange(req, res, guildId);
   if (!range) return;
 
-  const summary = await getArgentSummaryForRange(guildId, range);
+  const summary = await getArgentSummaryForRange(guildId, range, req.query.week === undefined);
   const options = configStore.get(guildId).OPTIONS;
   res.json({
     since: range.since,
