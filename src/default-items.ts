@@ -97,15 +97,17 @@ const DEFAULT_ITEMS: db.ItemInput[] = [
   { name: 'Graine de strawberry', labo_lie: 'labo_branche_cannabis', labo_lie_role: 'materiau' },
   { name: 'Pot de plantation', labo_lie: 'labo_branche_cannabis', labo_lie_role: 'materiau' },
   { name: 'Fertilisant', labo_lie: 'labo_branche_cannabis', labo_lie_role: 'materiau' },
-  // Labo Spore X (Petite Frappe) — produit + matériaux.
-  { name: 'Pochon De SporeX', labo_lie: 'labo_sporex', labo_lie_role: 'produit' },
+  // Labo Spore X (Petite Frappe) — produit + matériaux. vente:true : reste
+  // vendable au PNJ pour un tier qui n'a pas ce labo actif.
+  { name: 'Pochon De SporeX', vente: true, labo_lie: 'labo_sporex', labo_lie_role: 'produit' },
   { name: 'Psilocybe Rouge', labo_lie: 'labo_sporex', labo_lie_role: 'materiau' },
   { name: 'Psilocybe Vert', labo_lie: 'labo_sporex', labo_lie_role: 'materiau' },
   { name: 'Psilocybe Violet', labo_lie: 'labo_sporex', labo_lie_role: 'materiau' },
   { name: 'Poudre à canon', labo_lie: 'labo_sporex', labo_lie_role: 'materiau' },
   { name: 'Fragment de métal', labo_lie: 'labo_sporex', labo_lie_role: 'materiau' },
-  // Labo Héroïne (Petite Frappe) — produit + matériaux.
-  { name: 'Héroïne', labo_lie: 'labo_heroine', labo_lie_role: 'produit' },
+  // Labo Héroïne (Petite Frappe) — produit + matériaux. vente:true : reste
+  // vendable au PNJ pour un tier qui n'a pas ce labo actif.
+  { name: 'Héroïne', vente: true, labo_lie: 'labo_heroine', labo_lie_role: 'produit' },
   { name: 'Datura', labo_lie: 'labo_heroine', labo_lie_role: 'materiau' },
   { name: 'Morphine', labo_lie: 'labo_heroine', labo_lie_role: 'materiau' },
   // Labo Vénia (Petite Frappe) — produit + matériaux. vente:true : reste
