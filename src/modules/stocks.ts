@@ -282,7 +282,7 @@ async function logStockToChannel(client: Client, guildId: string, entry: StockEn
     const item = capitalize(entry.item);
     const badge = sourceChannelId && c.CHANNELS.logs_coffres_admin.includes(sourceChannelId) ? '🛡️ ' : '';
 
-    await channel.send(`${badge}${icon} **${entry.joueur}** ${sign}${qte} ${item} | \`${avant}\` ➜ \`${apres}\``).catch(() => null);
+    await channel.send({ content: `${badge}${icon} **${entry.joueur}** ${sign}${qte} ${item} | \`${avant}\` ➜ \`${apres}\``, allowedMentions: { parse: [] } }).catch(() => null);
   } catch { /* silence */ }
 }
 

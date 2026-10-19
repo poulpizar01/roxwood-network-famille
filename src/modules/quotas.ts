@@ -640,7 +640,7 @@ async function buildClassementEmbed(client: Client, guildId: string): Promise<Em
   for (let i = 0; i < ranking.length; i++) {
     const r = ranking[i];
     const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i + 1}.`;
-    const member = await guild?.members.fetch(r.userId).catch(() => null);
+    const member = guild?.members.cache.get(r.userId) ?? await guild?.members.fetch(r.userId).catch(() => null);
     const name = member?.displayName || `<@${r.userId}>`;
     lines.push(`${medal} ${name} — **${r.points.toLocaleString('fr-FR')}** pt`);
   }
@@ -1001,7 +1001,13 @@ export async function handleButton(interaction: ButtonInteraction): Promise<void
     return replyAutoDelete(interaction, { embeds: [await buildPayEmbed(guildId, interaction.user.id, member)] });
   }
   if (id === 'view_classement') {
-    return replyAutoDelete(interaction, { embeds: [await buildClassementEmbed(interaction.client, guildId)] });
+    // Le classement fait un fetch membre par ligne : avec beaucoup de membres
+    // suivis ça peut dépasser la fenêtre de 3 s de Discord avant la réponse.
+    await interaction.deferReply();
+    const embed = await buildClassementEmbed(interaction.client, guildId);
+    const message = await interaction.editReply({ embeds: [embed] });
+    message.react('🗑️').catch(() => null);
+    return;
   }
   if (id === 'view_bilan') {
     return replyAutoDelete(interaction, { embeds: [await buildBilanEmbed(guildId)] });
@@ -1649,13 +1655,17 @@ export async function handleListQuotaCommand(interaction: ChatInputCommandIntera
     return;
   }
 
+  // Un fetch membre par ligne suit : avec beaucoup de membres suivis ça peut
+  // dépasser la fenêtre de 3 s de Discord avant la réponse.
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
   const targets = configStore.get(guildId).QUOTA_TARGETS;
   const guild = interaction.guild;
 
   const rows: Array<{ userId: string; byQuotaType: Record<string, number>; complete: boolean; name: string; venteCount: number }> = [];
   for (const [userId, { byQuotaType, map }] of summaries) {
     const complete = Object.entries(targets).every(([qt, target]) => (byQuotaType[qt] ?? 0) >= target);
-    const member = guild ? await guild.members.fetch(userId).catch(() => null) : null;
+    const member = guild ? (guild.members.cache.get(userId) ?? await guild.members.fetch(userId).catch(() => null)) : null;
     rows.push({ userId, byQuotaType, complete, name: member?.displayName || `<@${userId}>`, venteCount: map['vente']?.count || 0 });
   }
 
@@ -1673,7 +1683,7 @@ export async function handleListQuotaCommand(interaction: ChatInputCommandIntera
     color: 0x5865F2,
   });
 
-  await interaction.reply({ embeds, flags: MessageFlags.Ephemeral });
+  await interaction.editReply({ embeds });
 }
 
 // ─── SLASH COMMANDS ───────────────────────────────────────────────────────────

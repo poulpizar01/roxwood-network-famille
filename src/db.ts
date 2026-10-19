@@ -23,7 +23,7 @@
  * par table, donc en pratique déjà unique globalement — cette précaution est
  * une défense en profondeur, pas un correctif d'une collision réelle).
  */
-import { PrismaClient, type Prisma } from '@prisma/client';
+import { PrismaClient, Prisma } from '@prisma/client';
 import { weekStartOf } from './paris-time';
 
 export const prisma = new PrismaClient();
@@ -64,8 +64,10 @@ export async function getAllChannels(guildId: string) {
 
 /** Remplace le(s) salon(s) d'un rôle à valeur unique (stock_general, quotas, ...) par un seul. */
 export async function setChannelRole(guildId: string, role: string, channelId: string): Promise<void> {
-  await prisma.channel.deleteMany({ where: { guildId, role } });
-  await prisma.channel.create({ data: { guildId, role, channelId } });
+  await prisma.$transaction([
+    prisma.channel.deleteMany({ where: { guildId, role } }),
+    prisma.channel.create({ data: { guildId, role, channelId } }),
+  ]);
 }
 
 /**
@@ -242,6 +244,28 @@ export async function getAllItemSalaryRates(guildId: string) {
 /** Ajoute une tranche au barème de paie de la vente (général si `item` est `null`, propre à cet item sinon) — validation de l'ordre/unicité de la tranche finale faite par l'appelant (`modules/config.ts`), pas ici. */
 export async function addSalaryTier(guildId: string, item: string | null, upTo: number | null, amount: number): Promise<void> {
   await prisma.salaryTier.create({ data: { guildId, item, upTo, amount } });
+}
+
+/**
+ * Même chose que {@link addSalaryTier}, mais lecture de l'existant et
+ * insertion sous le même verrou dans une transaction : deux `/config palier
+ * add` simultanés sur la même cible ne peuvent plus créer deux tranches
+ * finales (`upTo: null`) ni deux tranches à bornes incohérentes.
+ */
+export async function addSalaryTierIfFree(
+  guildId: string, item: string | null, upTo: number | null, amount: number,
+): Promise<{ ok: true } | { ok: false; reason: 'final-exists' } | { ok: false; reason: 'borne-too-low'; maxFinite: number }> {
+  return prisma.$transaction(async tx => {
+    await lockKey(tx, `palier:${guildId}:${item ?? '*'}`);
+    const existing = await tx.salaryTier.findMany({ where: { guildId, item }, orderBy: { upTo: 'asc' } });
+    if (existing.some(t => t.upTo === null)) return { ok: false, reason: 'final-exists' };
+    if (upTo != null) {
+      const maxFinite = existing.reduce((max, t) => Math.max(max, t.upTo ?? 0), 0);
+      if (upTo <= maxFinite) return { ok: false, reason: 'borne-too-low', maxFinite };
+    }
+    await tx.salaryTier.create({ data: { guildId, item, upTo, amount } });
+    return { ok: true };
+  });
 }
 
 /** Retire UNE tranche précise (par sa borne haute — `null` cible la tranche finale sans limite) du barème général ou d'un item. */
@@ -1826,6 +1850,7 @@ export async function addOrRecoverArme(guildId: string, nom: string, reference: 
     await prisma.arme.create({ data: { guildId, nom, reference, type } });
     return { resultat: 'ajoutee' };
   } catch (err) {
+    if (!(err instanceof Prisma.PrismaClientKnownRequestError) || err.code !== 'P2002') throw err;
     const existante = await prisma.arme.findFirst({ where: { guildId, reference } });
     if (!existante) throw err;
     return { resultat: 'existante', statut: existante.statut, preteeA: existante.preteeA };

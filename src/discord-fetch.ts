@@ -22,7 +22,10 @@ export async function fetchPage(channel: HistoryChannel, options: { limit: numbe
     try {
       return await channel.messages.fetch({ ...options, cache: false });
     } catch (err) {
-      if (attempt >= RETRY_DELAYS_MS.length) throw err;
+      // Permission manquante : ne se résoudra pas en retentant, et chaque
+      // refus compte dans la limite Discord de requêtes invalides, commune à
+      // toutes les guildes — abandonner tout de suite plutôt qu'après ~22 s.
+      if (attempt >= RETRY_DELAYS_MS.length || isMissingAccess(err)) throw err;
       await new Promise(resolve => setTimeout(resolve, RETRY_DELAYS_MS[attempt]));
     }
   }

@@ -571,22 +571,16 @@ async function handlePalier(interaction: ChatInputCommandInteraction, guildId: s
     }
     const jusqua = interaction.options.getInteger('jusqua');
     const valeur = interaction.options.getNumber('valeur', true);
-    const existing = await db.getSalaryTiersFor(guildId, item);
     const cible = item ? `**${item}**` : 'général "vente"';
 
-    if (existing.some(t => t.upTo === null)) {
-      await interaction.reply({ content: `❌ Le barème ${cible} a déjà une tranche finale (sans limite) — retire-la d'abord (\`/config palier remove\`, \`jusqua\` omis) avant d'en ajouter une autre.`, flags: MessageFlags.Ephemeral });
+    const result = await configStore.mutate(guildId, () => db.addSalaryTierIfFree(guildId, item, jusqua, valeur));
+    if (!result.ok) {
+      const content = result.reason === 'final-exists'
+        ? `❌ Le barème ${cible} a déjà une tranche finale (sans limite) — retire-la d'abord (\`/config palier remove\`, \`jusqua\` omis) avant d'en ajouter une autre.`
+        : `❌ La borne doit être strictement supérieure à la dernière tranche existante du barème ${cible} (\`${result.maxFinite}\`).`;
+      await interaction.reply({ content, flags: MessageFlags.Ephemeral });
       return;
     }
-    if (jusqua != null) {
-      const maxFinite = existing.reduce((max, t) => Math.max(max, t.upTo ?? 0), 0);
-      if (jusqua <= maxFinite) {
-        await interaction.reply({ content: `❌ La borne doit être strictement supérieure à la dernière tranche existante du barème ${cible} (\`${maxFinite}\`).`, flags: MessageFlags.Ephemeral });
-        return;
-      }
-    }
-
-    await configStore.mutate(guildId, () => db.addSalaryTier(guildId, item, jusqua, valeur));
     const tranche = jusqua != null ? `jusqu'à ${jusqua} unités` : 'au-delà (tranche finale, sans limite)';
     const sansFinale = jusqua != null ? `\nℹ️ Pas encore de tranche finale (sans limite) : au-delà de ${jusqua} unités, le taux de cette tranche s'applique.` : '';
     await interaction.reply({ content: `✅ Tranche ajoutée au barème ${cible} : ${tranche} → ${valeur}$/unité.${sansFinale}`, flags: MessageFlags.Ephemeral });
