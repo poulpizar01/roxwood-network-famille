@@ -684,13 +684,15 @@ export async function handleModal(interaction: ModalSubmitInteraction): Promise<
 
     if (!type) return replyAutoDelete(interaction, '❌ Type invalide.');
 
-    try {
-      await db.addArme(guildId, nom, reference, type.key);
-    } catch {
-      return replyAutoDelete(interaction, '❌ Cette référence existe déjà.');
+    const ajout = await db.addOrRecoverArme(guildId, nom, reference, type.key);
+    if (ajout.resultat === 'existante') {
+      return replyAutoDelete(interaction, { content: `❌ La référence \`${reference}\` existe déjà — ${statutLabel(ajout)}.`, allowedMentions: { parse: [] } });
     }
 
-    await replyAutoDelete(interaction, { content: `✅ **${nom}** (\`${reference}\`) — ${type.label} — ajoutée à l'armurerie.`, allowedMentions: { parse: [] } });
+    const message = ajout.resultat === 'retrouvee'
+      ? `♻️ **${nom}** (\`${reference}\`) — ${type.label} — était perdue : remise en stock.`
+      : `✅ **${nom}** (\`${reference}\`) — ${type.label} — ajoutée à l'armurerie.`;
+    await replyAutoDelete(interaction, { content: message, allowedMentions: { parse: [] } });
     await updatePermanentMessage(interaction.client, guildId);
     return;
   }

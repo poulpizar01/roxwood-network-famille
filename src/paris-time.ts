@@ -66,3 +66,21 @@ export function weeklyBoundariesBetween(afterMs: number, nowMs: number): number[
   }
   return boundaries;
 }
+
+/** Début (dimanche 19h, heure de Paris) de la semaine de paie qui contient `ms`. */
+export function weekStartOf(ms: number): number {
+  const sunday = parisWallClock(new Date(ms));
+  const wall = sunday.getTime();
+  sunday.setHours(19, 0, 0, 0);
+  sunday.setDate(sunday.getDate() - sunday.getDay());
+  if (sunday.getTime() > wall) sunday.setDate(sunday.getDate() - 7);
+  return parisWallToUtc(sunday.getFullYear(), sunday.getMonth(), sunday.getDate(), 19);
+}
+
+/** Première frontière hebdomadaire strictement postérieure à `ms`. */
+export function nextWeekStartAfter(ms: number): number {
+  const start = weekStartOf(ms);
+  const wall = parisWallClock(new Date(start));
+  wall.setDate(wall.getDate() + 7);
+  return parisWallToUtc(wall.getFullYear(), wall.getMonth(), wall.getDate(), 19);
+}

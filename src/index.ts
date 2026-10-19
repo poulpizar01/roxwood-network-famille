@@ -31,6 +31,7 @@ import * as guildRegistry from './guild-registry';
 import * as db from './db';
 import { runExclusive, drain } from './guild-queue';
 import { seedDefaultItems } from './default-items';
+import { nextWeekStartAfter } from './paris-time';
 import * as configModule from './modules/config';
 import * as stocks from './modules/stocks';
 import * as quotas from './modules/quotas';
@@ -119,6 +120,7 @@ async function prepareGuild(guild: Guild): Promise<void> {
   await guildRegistry.registerGuild(guildId, guild.name);
   await configStore.reload(guildId);
   try {
+    await db.initArgentStockSnapshots(guildId, nextWeekStartAfter(Date.now()));
     // N'écrase jamais un item déjà configuré (voir src/default-items.ts).
     await seedDefaultItems(guildId);
   } catch (err) {
@@ -527,7 +529,7 @@ client.on('interactionCreate', async (interaction) => {
     if (interaction.isModalSubmit()) {
       const cid = interaction.customId;
 
-      if (cid.startsWith('modal_act_') || cid.startsWith('modal_actlabo_')) return await quotas.handleModal(interaction);
+      if (cid.startsWith('modal_act_') || cid.startsWith('modal_actlabo_') || cid.startsWith('modal_actbraq_')) return await quotas.handleModal(interaction);
       if (cid.startsWith('modal_tax_')) return await taxes.handleModal(interaction);
       if (cid.startsWith('modal_arm_')) return await armurerie.handleModal(interaction);
       if (cid.startsWith('modal_vente_')) return await ventes.handleModal(interaction);

@@ -37,16 +37,19 @@ import { CONFIRME_VENTE_ITEM } from './modules/ventes';
 // dépasser par le premier item admin qui recevrait un jour un display_order
 // positif bas).
 const DEFAULT_ITEMS: db.ItemInput[] = [
-  { name: 'Munition de pistolet', stock_group: MUNITIONS_STOCK_GROUP, display_order: -5 },
-  // Vaut 24x "Munition de pistolet" (stock_multiplier) — même groupe, comptée
-  // en conséquence dans le total munitions pondéré (voir armurerie.weightedStockSum).
-  { name: 'Boîte mun. pistolet', stock_group: MUNITIONS_STOCK_GROUP, stock_multiplier: 24, display_order: -4 },
-  // CONFIRME_VENTE_ITEM (voir ventes.ts) — simple item de stock ici, son rôle
-  // de confirmation de vente est fixe dans le code, pas un flag à poser.
-  { name: CONFIRME_VENTE_ITEM, display_order: -3 },
+  // L'argent d'abord, avant les munitions (décision de l'utilisateur). Un
+  // serveur existant garde ses valeurs (jamais d'écrasement ici) : la
+  // migration `ordre_argent_stock` les a alignées sur celles-ci.
   // Distinct de CONFIRME_VENTE_ITEM ("Argent Sale") : simple item de stock,
   // ne joue aucun rôle dans le cycle de vente.
-  { name: 'Argent', display_order: -2 },
+  { name: 'Argent', display_order: -5 },
+  // CONFIRME_VENTE_ITEM (voir ventes.ts) — simple item de stock ici, son rôle
+  // de confirmation de vente est fixe dans le code, pas un flag à poser.
+  { name: CONFIRME_VENTE_ITEM, display_order: -4 },
+  { name: 'Munition de pistolet', stock_group: MUNITIONS_STOCK_GROUP, display_order: -3 },
+  // Vaut 24x "Munition de pistolet" (stock_multiplier) — même groupe, comptée
+  // en conséquence dans le total munitions pondéré (voir armurerie.weightedStockSum).
+  { name: 'Boîte mun. pistolet', stock_group: MUNITIONS_STOCK_GROUP, stock_multiplier: 24, display_order: -2 },
   // Simple item de stock, sans groupe : affiché dans l'armurerie via
   // MUNITIONS_SMG_ITEM (stock brut uniquement, pas de quota fabrication/vente).
   { name: MUNITIONS_SMG_ITEM, display_order: -1 },
@@ -56,14 +59,15 @@ const DEFAULT_ITEMS: db.ItemInput[] = [
   { name: 'Or Rouge' },
   { name: 'Or Bleu' },
   { name: 'Jetons ETI' },
-  { name: 'Outil de crochetage' },
+  { name: 'Outil de crochettage' },
   { name: 'Boîtier de piratage' },
   { name: 'Perceuse' },
   { name: 'Carte Piratage Fleeca' },
   // Drogues vendables aux PNJ sans lien avec un labo particulier (variantes
   // de pureté/formes commerciales) — noms vérifiés avec l'utilisateur avant
-  // ajout (piège n°1). "Cocaine Pure" s'écrit bien sans tréma dans les logs,
-  // contrairement à l'item "Cocaïne" du labo plus bas.
+  // ajout (piège n°1). "Cocaine Pure" et "Héroine Pure" s'écrivent bien sans
+  // tréma dans les logs, contrairement aux items "Cocaïne"/"Héroïne" des labos
+  // plus bas.
   { name: 'Mexicana Pure À 99', vente: true },
   { name: 'Mexicana Pure À 90', vente: true },
   { name: 'Mexicana Pure À 70', vente: true },
@@ -76,6 +80,18 @@ const DEFAULT_ITEMS: db.ItemInput[] = [
   { name: 'Weed Pure À 90', vente: true },
   { name: 'Weed Pure À 70', vente: true },
   { name: 'Weed Pure À 50', vente: true },
+  { name: 'Héroine Pure À 99', vente: true },
+  { name: 'Héroine Pure À 90', vente: true },
+  { name: 'Héroine Pure À 70', vente: true },
+  { name: 'Héroine Pure À 50', vente: true },
+  { name: 'Vénia Purifier À 99', vente: true },
+  { name: 'Vénia Purifier À 90', vente: true },
+  { name: 'Vénia Purifier À 70', vente: true },
+  { name: 'Vénia Purifier À 50', vente: true },
+  { name: 'Sporex Pure À 99', vente: true },
+  { name: 'Sporex Pure À 90', vente: true },
+  { name: 'Sporex Pure À 70', vente: true },
+  { name: 'Sporex Pure À 50', vente: true },
   { name: 'Carte Prépayée', vente: true },
   { name: 'B-magic', vente: true },
   { name: 'Ecstasy', vente: true },
@@ -83,29 +99,30 @@ const DEFAULT_ITEMS: db.ItemInput[] = [
   { name: 'Meth bleue', vente: true },
   { name: 'Lean', vente: true },
   { name: 'H-47', vente: true },
-  // Labo Salvia (Indépendant uniquement) — Salvia, contrairement aux autres
-  // drogues de labo, n'est volontairement PAS liée à son labo (pas de
-  // labo_lie) : elle reste vendable au PNJ même quand ce labo est actif.
-  { name: 'Salvia', vente: true },
-  { name: 'Feuilles de salvia', labo_lie: 'labo_salvia', labo_lie_role: 'materiau' },
-  // Labo Branche De Cannabis (Indépendant uniquement) — ici la drogue produite
-  // (Branche de cannabis) EST liée à son labo, donc exclue de la vente PNJ
-  // tant que ce labo est actif, contrairement à Salvia ci-dessus.
+  // Labo Branche De Cannabis (Indépendant uniquement) — la drogue produite
+  // est liée à son labo, donc exclue de la vente PNJ tant que ce labo est actif.
   { name: 'Branche de cannabis', labo_lie: 'labo_branche_cannabis', labo_lie_role: 'produit' },
   { name: 'Graine de strawberry', labo_lie: 'labo_branche_cannabis', labo_lie_role: 'materiau' },
   { name: 'Pot de plantation', labo_lie: 'labo_branche_cannabis', labo_lie_role: 'materiau' },
   { name: 'Fertilisant', labo_lie: 'labo_branche_cannabis', labo_lie_role: 'materiau' },
-  // Labo Spore X (Petite Frappe) — produit + matériaux.
-  { name: 'Pochon De SporeX', labo_lie: 'labo_sporex', labo_lie_role: 'produit' },
+  // Labo Spore X (Petite Frappe) — produit + matériaux. vente:true : reste
+  // vendable au PNJ pour un tier qui n'a pas ce labo actif.
+  { name: 'Pochon De SporeX', vente: true, labo_lie: 'labo_sporex', labo_lie_role: 'produit' },
   { name: 'Psilocybe Rouge', labo_lie: 'labo_sporex', labo_lie_role: 'materiau' },
   { name: 'Psilocybe Vert', labo_lie: 'labo_sporex', labo_lie_role: 'materiau' },
   { name: 'Psilocybe Violet', labo_lie: 'labo_sporex', labo_lie_role: 'materiau' },
   { name: 'Poudre à canon', labo_lie: 'labo_sporex', labo_lie_role: 'materiau' },
   { name: 'Fragment de métal', labo_lie: 'labo_sporex', labo_lie_role: 'materiau' },
-  // Labo Héroïne (Petite Frappe) — produit + matériaux.
-  { name: 'Héroïne', labo_lie: 'labo_heroine', labo_lie_role: 'produit' },
+  // Labo Héroïne (Petite Frappe) — produit + matériaux. vente:true : reste
+  // vendable au PNJ pour un tier qui n'a pas ce labo actif.
+  { name: 'Héroïne', vente: true, labo_lie: 'labo_heroine', labo_lie_role: 'produit' },
   { name: 'Datura', labo_lie: 'labo_heroine', labo_lie_role: 'materiau' },
   { name: 'Morphine', labo_lie: 'labo_heroine', labo_lie_role: 'materiau' },
+  // Labo Vénia (Petite Frappe) — produit + matériaux. vente:true : reste
+  // vendable au PNJ pour un tier qui n'a pas ce labo actif.
+  { name: 'Vénia', vente: true, labo_lie: 'labo_venia', labo_lie_role: 'produit' },
+  { name: 'Fleur Séchée', labo_lie: 'labo_venia', labo_lie_role: 'materiau' },
+  { name: 'Cendre Noir', labo_lie: 'labo_venia', labo_lie_role: 'materiau' },
   // Labo Cannabis (Gang) — produit seul, aucun matériau vérifié pour
   // l'instant. vente:true : reste vendable au PNJ pour un tier qui n'a pas
   // ce labo actif (voir config-store.ts, laboLieRole).

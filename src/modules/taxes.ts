@@ -5,9 +5,9 @@
  * Deux familles de types de taxe, toutes deux fixes dans le code (pas
  * configurables via `/config` — voir plus bas pourquoi) :
  *  - Types fixes avec leur propre bouton : 'sporex' (labo Spore X), 'heroine'
- *    (labo Héroïne), 'vente' (vente de drogue), 'fertilisant' (récolte),
+ *    (labo Héroïne), 'venia' (labo Vénia), 'vente' (vente de drogue),
  *    'cannabis' (labo Cannabis, Gang), 'mexicana' (labo Mexicana, Organisation),
- *    'cocaine' (labo Cocaïne, Organisation), 'salvia' (Salvia, Petite Frappe).
+ *    'cocaine' (labo Cocaïne, Organisation).
  *  - Taxes de zone : un seul bouton "Taxe Zone" qui demande d'abord de
  *    choisir une zone, puis affiche le même formulaire que les autres types
  *    (+ téléphone). Le nom de la zone choisie EST directement stocké comme
@@ -107,18 +107,17 @@ type Taxe = NonNullable<Awaited<ReturnType<typeof db.getTaxe>>>;
  * `type=zone` y regroupe TOUTES les zones sous un type fictif unique, plutôt
  * que de devoir filtrer une zone précise à la fois.
  */
-export const FIXED_TYPES = ['sporex', 'heroine', 'vente', 'fertilisant', 'cannabis', 'mexicana', 'cocaine', 'salvia'] as const;
+export const FIXED_TYPES = ['sporex', 'heroine', 'venia', 'vente', 'cannabis', 'mexicana', 'cocaine'] as const;
 export type FixedType = (typeof FIXED_TYPES)[number];
 
 /** Titre de bouton, emoji et style par type fixe — source unique pour le panneau et les modals. */
 const FIXED_TYPE_META: Record<FixedType, { title: string; emoji: string; style: ButtonStyle }> = {
   sporex: { title: 'Taxe Spore X', emoji: '🧪', style: ButtonStyle.Primary },
   heroine: { title: 'Taxe Héroïne', emoji: '💉', style: ButtonStyle.Primary },
-  fertilisant: { title: 'Taxe Fertilisant', emoji: '🌱', style: ButtonStyle.Primary },
+  venia: { title: 'Taxe Vénia', emoji: '🥀', style: ButtonStyle.Primary },
   cannabis: { title: 'Taxe Cannabis', emoji: '🌿', style: ButtonStyle.Primary },
   mexicana: { title: 'Taxe Mexicana', emoji: '🌵', style: ButtonStyle.Primary },
   cocaine: { title: 'Taxe Cocaïne', emoji: '⚪', style: ButtonStyle.Primary },
-  salvia: { title: 'Taxe Salvia', emoji: '🍃', style: ButtonStyle.Primary },
   vente: { title: 'Taxe Vente', emoji: '💊', style: ButtonStyle.Secondary },
 };
 
@@ -129,13 +128,11 @@ const FIXED_TYPE_META: Record<FixedType, { title: string; emoji: string; style: 
  * LABO_TIERS dans config-store.ts pour ces drogues, mais indépendante :
  * Mexicana est produite par Gang ET Organisation via LABO_TIERS, alors que
  * sa taxe reste réservée à Organisation — décision métier, pas un miroir
- * automatique de LABO_TIERS). Petite Frappe a la taxe Salvia, réservée à ce
- * tier même si le labo Salvia (LABO_TIERS) est lui accessible à Indépendant
- * — même logique d'indépendance que Mexicana/Cocaïne ci-dessus.
+ * automatique de LABO_TIERS).
  */
 const TAXES_FIXES_BY_TIER: Record<GroupTier, readonly FixedType[]> = {
   independant: [],
-  petite_frappe: ['sporex', 'heroine', 'fertilisant', 'salvia'],
+  petite_frappe: ['sporex', 'heroine', 'venia'],
   gang: ['cannabis'],
   organisation: ['mexicana', 'cocaine'],
 };
@@ -239,7 +236,7 @@ async function currentTypesRecherche(guildId: string): Promise<string[]> {
   return all.slice(0, 25);
 }
 
-/** Vrai si `type` est une clé de zone (voir ZONE_BY_KEY), par opposition à un type fixe (sporex/heroine/vente/fertilisant). */
+/** Vrai si `type` est une clé de zone (voir ZONE_BY_KEY), par opposition à un type fixe (voir {@link FIXED_TYPES}). */
 export function isZoneType(type: string): boolean {
   return ZONE_BY_KEY.has(type);
 }

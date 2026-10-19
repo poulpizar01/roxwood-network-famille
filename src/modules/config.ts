@@ -81,7 +81,7 @@ function canonicalItem(guildId: string, saisie: string): string | null {
   return configStore.get(guildId).ALLOWED_ITEMS.find(name => name.toLowerCase() === lower) ?? null;
 }
 
-/** Déclare la commande `/config` et tous ses sous-groupes (channel, role, item, quota, salaire, palier, classement, category, type-groupe, site-externe). `guildId` : les choix de `labo_lie` viennent du registre d'activités de CETTE guilde (déjà chargé en cache à ce stade — voir `prepareGuild` dans index.ts, qui appelle `configStore.reload()` avant `deployCommandsForGuild`). */
+/** Déclare la commande `/config` et tous ses sous-groupes (channel, role, item, quota, salaire, palier, classement, type-groupe, option, category, site-externe). `guildId` : les choix de `labo_lie` viennent du registre d'activités de CETTE guilde (déjà chargé en cache à ce stade — voir `prepareGuild` dans index.ts, qui appelle `configStore.reload()` avant `deployCommandsForGuild`). */
 export function getCommands(guildId: string) {
   const cmd = new SlashCommandBuilder()
     .setName('config')
@@ -235,6 +235,18 @@ export function getCommands(guildId: string) {
     .addSubcommand(s => s.setName('list').setDescription("Affiche le type actuel et le barème de chaque type")));
 
   cmd.addSubcommandGroup(g => g
+    .setName('option')
+    .setDescription('Options du bot à activer ou désactiver (toutes désactivées par défaut)')
+    .addSubcommand(s => s
+      .setName('set')
+      .setDescription('Active ou désactive une option')
+      .addStringOption(o => o.setName('option').setDescription('Option').setRequired(true)
+        .addChoices(...Object.entries(configStore.OPTIONS).map(([key, label]) => ({ name: label, value: key }))))
+      .addStringOption(o => o.setName('etat').setDescription('Nouvel état').setRequired(true)
+        .addChoices({ name: 'Activer', value: 'activer' }, { name: 'Désactiver', value: 'desactiver' })))
+    .addSubcommand(s => s.setName('list').setDescription("Affiche l'état de chaque option")));
+
+  cmd.addSubcommandGroup(g => g
     .setName('category')
     .setDescription('Création automatique des salons manquants dans une catégorie')
     .addSubcommand(s => s
@@ -292,6 +304,7 @@ export async function handleCommand(interaction: ChatInputCommandInteraction): P
   if (group === 'palier') return handlePalier(interaction, guildId, sub);
   if (group === 'classement') return handleClassement(interaction, guildId, sub);
   if (group === 'type-groupe') return handleTypeGroupe(interaction, guildId, sub);
+  if (group === 'option') return handleOption(interaction, guildId, sub);
   if (group === 'category') return handleCategory(interaction, guildId, sub);
   if (group === 'site-externe') return handleSiteExterne(interaction, guildId, sub);
 }
@@ -558,22 +571,16 @@ async function handlePalier(interaction: ChatInputCommandInteraction, guildId: s
     }
     const jusqua = interaction.options.getInteger('jusqua');
     const valeur = interaction.options.getNumber('valeur', true);
-    const existing = await db.getSalaryTiersFor(guildId, item);
     const cible = item ? `**${item}**` : 'général "vente"';
 
-    if (existing.some(t => t.upTo === null)) {
-      await interaction.reply({ content: `❌ Le barème ${cible} a déjà une tranche finale (sans limite) — retire-la d'abord (\`/config palier remove\`, \`jusqua\` omis) avant d'en ajouter une autre.`, flags: MessageFlags.Ephemeral });
+    const result = await configStore.mutate(guildId, () => db.addSalaryTierIfFree(guildId, item, jusqua, valeur));
+    if (!result.ok) {
+      const content = result.reason === 'final-exists'
+        ? `❌ Le barème ${cible} a déjà une tranche finale (sans limite) — retire-la d'abord (\`/config palier remove\`, \`jusqua\` omis) avant d'en ajouter une autre.`
+        : `❌ La borne doit être strictement supérieure à la dernière tranche existante du barème ${cible} (\`${result.maxFinite}\`).`;
+      await interaction.reply({ content, flags: MessageFlags.Ephemeral });
       return;
     }
-    if (jusqua != null) {
-      const maxFinite = existing.reduce((max, t) => Math.max(max, t.upTo ?? 0), 0);
-      if (jusqua <= maxFinite) {
-        await interaction.reply({ content: `❌ La borne doit être strictement supérieure à la dernière tranche existante du barème ${cible} (\`${maxFinite}\`).`, flags: MessageFlags.Ephemeral });
-        return;
-      }
-    }
-
-    await configStore.mutate(guildId, () => db.addSalaryTier(guildId, item, jusqua, valeur));
     const tranche = jusqua != null ? `jusqu'à ${jusqua} unités` : 'au-delà (tranche finale, sans limite)';
     const sansFinale = jusqua != null ? `\nℹ️ Pas encore de tranche finale (sans limite) : au-delà de ${jusqua} unités, le taux de cette tranche s'applique.` : '';
     await interaction.reply({ content: `✅ Tranche ajoutée au barème ${cible} : ${tranche} → ${valeur}$/unité.${sansFinale}`, flags: MessageFlags.Ephemeral });
@@ -666,6 +673,30 @@ async function handleClassement(interaction: ChatInputCommandInteraction, guildI
   }
 }
 
+/**
+ * `/config option set|list`. Aucun panneau à rafraîchir : les options de
+ * saisie d'argent sont lues au clic (bouton d'activité, "Déclarer la Vente"),
+ * pas affichées dans un message permanent.
+ */
+async function handleOption(interaction: ChatInputCommandInteraction, guildId: string, sub: string): Promise<void> {
+  if (sub === 'set') {
+    const option = interaction.options.getString('option', true) as configStore.OptionKey;
+    const active = interaction.options.getString('etat', true) === 'activer';
+    await configStore.mutate(guildId, () => active
+      ? db.setSetting(guildId, configStore.optionSettingKey(option), '1')
+      : db.deleteSetting(guildId, configStore.optionSettingKey(option)));
+    await interaction.reply({ content: `✅ ${configStore.OPTIONS[option]} : **${active ? 'activée' : 'désactivée'}**.`, flags: MessageFlags.Ephemeral });
+    return;
+  }
+  if (sub === 'list') {
+    const actives = configStore.get(guildId).OPTIONS;
+    const lines = (Object.entries(configStore.OPTIONS) as Array<[configStore.OptionKey, string]>)
+      .map(([key, label]) => `${actives[key] ? '🟢' : '⚪'} ${label} — **${actives[key] ? 'activée' : 'désactivée'}**`);
+    const embed = new EmbedBuilder().setTitle('⚙️ Options').setDescription(lines.join('\n')).setColor(0x5865f2);
+    await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+  }
+}
+
 /** `/config type-groupe set|list`. */
 async function handleTypeGroupe(interaction: ChatInputCommandInteraction, guildId: string, sub: string): Promise<void> {
   if (sub === 'set') {
@@ -753,7 +784,7 @@ const CHANNEL_NAME_BY_ROLE: Partial<Record<configStore.ChannelRole, string>> = {
   labo_mexicana: 'labo-mexicana',
   labo_cannabis: 'labo-cannabis',
   labo_cocaine: 'labo-cocaine',
-  labo_salvia: 'labo-salvia',
+  labo_venia: 'labo-venia',
   labo_branche_cannabis: 'labo-branche-cannabis',
 };
 
@@ -813,7 +844,7 @@ export async function initDocumentationMessage(client: Client, guildId: string):
 const CHANNEL_DISPLAY_ORDER: readonly configStore.ChannelRole[] = [
   'documentation',
   'quotas', 'ventes_drogue', 'taxes', 'armurerie',
-  'labo_sporex', 'labo_heroine', 'labo_mexicana', 'labo_cannabis', 'labo_cocaine', 'labo_salvia', 'labo_branche_cannabis',
+  'labo_venia', 'labo_sporex', 'labo_heroine', 'labo_mexicana', 'labo_cannabis', 'labo_cocaine', 'labo_branche_cannabis',
   'stock_general', 'paie', 'bilan',
   'alertes_taxes', 'alertes_braquages', 'alertes_actions',
   'historique_stock', 'log_ventes', 'logs_activites', 'admin',
@@ -834,7 +865,7 @@ async function applyChannelOrder(guild: Guild, guildId: string): Promise<void> {
 /** Cherche la catégorie d'un salon de labo/panneau déjà existant, pour y créer un nouveau salon de labo au même endroit — `null` si aucun repère (création hors catégorie plutôt que d'échouer). */
 async function resolveLaboCategoryId(interaction: ChatInputCommandInteraction, guildId: string): Promise<string | null> {
   const c = configStore.get(guildId).CHANNELS;
-  const reperes = [c.labo_heroine, c.labo_sporex, c.labo_mexicana, c.labo_cannabis, c.labo_cocaine, c.labo_salvia, c.labo_branche_cannabis, c.quotas, c.stock_general];
+  const reperes = [c.labo_heroine, c.labo_sporex, c.labo_mexicana, c.labo_cannabis, c.labo_cocaine, c.labo_venia, c.labo_branche_cannabis, c.quotas, c.stock_general];
   for (const id of reperes) {
     if (!id) continue;
     const channel = await interaction.guild?.channels.fetch(id).catch(() => null);

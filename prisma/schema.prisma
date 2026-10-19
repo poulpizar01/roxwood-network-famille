@@ -272,6 +272,10 @@ model Transaction {
   type         String?
   partenaires  String   @default("[]")
   tempsRestant String?  @map("temps_restant")
+  /// Argent sale déclaré (action ou vente), purement indicatif — `null` quand
+  /// la saisie était désactivée ou que l'activité n'en demande pas. Voir
+  /// `/config option` et `ActivityTypeConfig.montant`.
+  montant      Int?
   timestamp    DateTime @default(now())
   deleted      Boolean  @default(false)
   deletedBy    String?  @map("deleted_by")
@@ -318,7 +322,7 @@ model Taxe {
   guildId    String   @map("guild_id")
   id         Int      @id @default(autoincrement())
   nom        String
-  /// Type fixe ('sporex', 'heroine', 'vente', 'fertilisant') OU, pour une
+  /// Type fixe (voir FIXED_TYPES dans src/modules/taxes.ts) OU, pour une
   /// taxe de zone, le nom exact de la zone (ex. 'Roxwood Village') — le
   /// regroupement par zone se fait uniquement via ce champ, pas de colonne
   /// séparée. Voir ZONES dans src/modules/taxes.ts.
@@ -372,6 +376,8 @@ model PendingSale {
   quantiteRetiree Int @map("quantite_retiree")
   timestamp  DateTime @default(now())
   statut     String   @default("en_attente")
+  /// Argent sale saisi au clic sur "Déclarer la Vente" (si la saisie est
+  /// activée), reporté sur la `Transaction` de vente à la confirmation.
   montant    Int?
   messageId  String?  @map("message_id")
   channelId  String?  @map("channel_id")
@@ -425,4 +431,33 @@ model MunitionVente {
 
   @@index([guildId, timestamp])
   @@map("munitions_ventes")
+}
+
+/// Ancien cumul hebdomadaire des dépôts/retraits. Conservé pour ne pas perdre
+/// l'historique antérieur au suivi par instantanés ; plus aucun code ne le lit
+/// ni ne l'alimente.
+model ArgentSemaine {
+  guildId String   @map("guild_id")
+  semaine DateTime
+  type    String
+  depose  Float    @default(0)
+  retire  Float    @default(0)
+
+  @@id([guildId, semaine, type])
+  @@map("argent_semaines")
+}
+
+/// Stock d'argent constaté à une frontière hebdomadaire (dimanche 19h,
+/// heure de Paris). Une ligne est créée juste avant le premier mouvement du
+/// type concerné dans la semaine ; sans mouvement, la première valeur d'une
+/// semaine ultérieure (ou le stock courant) vaut aussi pour cette frontière.
+model ArgentStockSnapshot {
+  guildId  String   @map("guild_id")
+  semaine DateTime
+  type     String
+  quantite Int
+
+  @@id([guildId, semaine, type])
+  @@index([guildId, type, semaine])
+  @@map("argent_stock_snapshots")
 }

@@ -116,9 +116,11 @@ async function traiterLigne(guildId: string, ligne: string, chargerAmendes: bool
  * déjà été appliqué par `catchUpMissedMessages` — le rejouer ici fausserait
  * l'état : une ligne "sorti de la fourrière" déjà appliquée a fait du joueur
  * qui l'a récupéré le responsable courant, et serait facturée à lui-même.
- * Sans curseur (salon configuré à chaud, jamais rattrapé), rien n'est créé
- * ici : c'est son absence qui déclenche la reconstruction complète de l'état
- * depuis l'historique au prochain rattrapage.
+ * Sans curseur (salon configuré à chaud, jamais rattrapé), les amendes
+ * réelles sont quand même traitées une par une ; c'est seulement tant que le
+ * salon n'a encore jamais été rattrapé une première fois (voir
+ * `rejouerHistorique`) qu'un redémarrage referait une reconstruction complète
+ * au lieu d'un rattrapage incrémental.
  */
 export async function handleMessage(message: Message): Promise<void> {
   const guildId = message.guildId;
@@ -210,7 +212,10 @@ async function rejouerHistorique(channel: HistoryChannel, guildId: string): Prom
         total++;
       }
     }
-    if (sortedInit.length) await db.setSetting(guildId, 'last_garages_msg', sortedInit[sortedInit.length - 1].id);
+    // Posé même si le salon est vide (sentinelle '0') : sans ça, chaque
+    // redémarrage avant le premier message réel referait une reconstruction
+    // complète au lieu de traiter le salon comme déjà rattrapé.
+    await db.setSetting(guildId, 'last_garages_msg', sortedInit.length ? sortedInit[sortedInit.length - 1].id : '0');
     console.log(`[garages] Premier démarrage (${guildId}) : ${total} ligne(s) sur ${sortedInit.length} message(s) d'historique traitée(s) pour reconstruire l'état (aucune amende rétroactive).`);
     return total;
   }

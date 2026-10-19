@@ -47,6 +47,7 @@ import ventesRouter from './routes/ventes';
 import usersRouter from './routes/users';
 import garagesRouter from './routes/garages';
 import rolesRouter from './routes/roles';
+import argentRouter from './routes/argent';
 
 /** Démarre l'API REST. N'a d'effet que si `API_PORT` est défini dans `.env` — absent = API désactivée, déploiement existant inchangé. */
 export function startApiServer(client: Client): void {
@@ -137,6 +138,7 @@ export function startApiServer(client: Client): void {
   api.use('/taxes', taxesRouter);
   api.use('/armurerie', armurerieRouter);
   api.use('/ventes', ventesRouter);
+  api.use('/argent', argentRouter);
   api.use('/garages', garagesRouter);
   api.use('/roles', rolesRouter(client));
   app.use('/api', api);
@@ -155,13 +157,15 @@ export function startApiServer(client: Client): void {
   // 127.0.0.1 côté hôte.
   const API_HOST = process.env.API_HOST || '127.0.0.1';
 
-  // Express 5 transmet l'erreur d'écoute (port déjà pris…) à ce callback —
-  // seule l'API est alors indisponible, le bot Discord continue.
-  app.listen(API_PORT, API_HOST, (err?: Error) => {
-    if (err) {
-      console.error(`❌ API REST indisponible (${API_HOST}:${API_PORT}) :`, err.message);
-      return;
-    }
+  // http.Server.listen() n'appelle son callback que sur l'événement
+  // 'listening', jamais avec une erreur : une erreur de bind (port déjà
+  // pris…) est émise séparément sur 'error'. Sans listener dédié, ça lève
+  // une exception non interceptée qui ferait tomber tout le process, pas
+  // seulement l'API.
+  const server = app.listen(API_PORT, API_HOST, () => {
     console.log(`✅ API REST en écoute sur ${API_HOST}:${API_PORT}`);
+  });
+  server.on('error', (err: Error) => {
+    console.error(`❌ API REST indisponible (${API_HOST}:${API_PORT}) :`, err.message);
   });
 }
