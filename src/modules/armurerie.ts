@@ -150,21 +150,31 @@ export function weightedStockSum(items: string[], stockByItem: Record<string, nu
   }, 0);
 }
 
-/** Stock total (pondéré, voir {@link weightedStockSum}) des items regroupés sous {@link MUNITIONS_STOCK_GROUP} (0 si aucun item n'est configuré avec ce groupe). */
-async function getMunitionsStock(guildId: string): Promise<number> {
+/** Stock total (pondéré, voir {@link weightedStockSum}) des items regroupés sous un groupe donné (0 si aucun item n'est configuré avec ce groupe). */
+async function getWeightedGroupStock(guildId: string, group: string): Promise<number> {
   const c = configStore.get(guildId);
-  const items = c.STOCK_GROUPS[MUNITIONS_STOCK_GROUP] ?? [];
+  const items = c.STOCK_GROUPS[group] ?? [];
   const stockByItem = await db.getStocksByItems(guildId, items, configStore.coffreChannelIds(guildId));
   return weightedStockSum(items, stockByItem, c.ITEMS_BY_NAME);
 }
 
+/** Stock total (pondéré, voir {@link weightedStockSum}) des items regroupés sous {@link MUNITIONS_STOCK_GROUP} (0 si aucun item n'est configuré avec ce groupe). */
+async function getMunitionsStock(guildId: string): Promise<number> {
+  return getWeightedGroupStock(guildId, MUNITIONS_STOCK_GROUP);
+}
+
 /**
  * Nom exact de l'item de munitions SMG (voir piège n°1, docstring de
- * `default-items.ts`) — contrairement à {@link MUNITIONS_STOCK_GROUP}, juste
- * un stock affiché tel quel dans l'armurerie, sans quota de fabrication ni
- * compteur de vente hebdomadaire (pas demandé pour ce calibre).
+ * `default-items.ts`), aussi utilisé comme libellé de groupe (même principe
+ * que {@link MUNITIONS_STOCK_GROUP}) pour regrouper "Munition de SMG" et
+ * "Boîte mun. SMG" (`stockMultiplier`) dans un même total pondéré — stock
+ * affiché dans l'armurerie, sans quota de fabrication ni compteur de vente
+ * hebdomadaire (pas demandé pour ce calibre).
  */
 export const MUNITIONS_SMG_ITEM = 'Munition de SMG';
+
+/** Libellé de regroupement pour les munitions SMG (voir {@link MUNITIONS_STOCK_GROUP} pour le même principe côté pistolet). */
+export const MUNITIONS_SMG_STOCK_GROUP = MUNITIONS_SMG_ITEM;
 
 /**
  * Calibre que le tier courant peut FABRIQUER (déclaration indicative avec
@@ -201,7 +211,7 @@ export async function getMunitionsSummary(guildId: string) {
     getMunitionsStock(guildId),
     db.getMunitionsFabriqueesDepuis(guildId, sinceReset),
     db.getMunitionsVenduesDepuis(guildId, sinceReset),
-    db.getStock(guildId, MUNITIONS_SMG_ITEM, configStore.coffreChannelIds(guildId)),
+    getWeightedGroupStock(guildId, MUNITIONS_SMG_STOCK_GROUP),
   ]);
   return {
     stock,

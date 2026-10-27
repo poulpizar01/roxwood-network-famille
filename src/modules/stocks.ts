@@ -158,7 +158,7 @@ function schedulePanelRefresh(client: Client, guildId: string, entries: StockEnt
   // `entry.item` est en minuscules (voir parseLine), comme les items comparés ici.
   const munitionsItems = new Set([
     ...(configStore.get(guildId).STOCK_GROUPS[armurerie.MUNITIONS_STOCK_GROUP] ?? []),
-    armurerie.MUNITIONS_SMG_ITEM,
+    ...(configStore.get(guildId).STOCK_GROUPS[armurerie.MUNITIONS_SMG_STOCK_GROUP] ?? []),
   ].map(i => i.toLowerCase()));
   const munitions = entries.some(e => munitionsItems.has(e.item));
 

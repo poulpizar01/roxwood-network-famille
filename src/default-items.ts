@@ -22,18 +22,18 @@
  */
 import * as db from './db';
 import * as configStore from './config-store';
-import { MUNITIONS_STOCK_GROUP, MUNITIONS_SMG_ITEM } from './modules/armurerie';
+import { MUNITIONS_STOCK_GROUP, MUNITIONS_SMG_ITEM, MUNITIONS_SMG_STOCK_GROUP } from './modules/armurerie';
 import { CONFIRME_VENTE_ITEM } from './modules/ventes';
 
-// Les 5 premiers items reçoivent un `display_order` négatif explicite, dans
+// Les 6 premiers items reçoivent un `display_order` négatif explicite, dans
 // l'ordre où ils sont déclarés ci-dessous — ce sont les seuls à apparaître
 // individuellement dans le corps principal du Stock Général (les items de
 // labo plus bas sont masqués, visibles seulement via les champs dynamiques
 // Drogues de production/Matériaux, voir stocks.buildStockEmbed). Négatif,
-// pas juste 1-5 : garantit qu'ils restent TOUJOURS avant un item ajouté par
+// pas juste 1-6 : garantit qu'ils restent TOUJOURS avant un item ajouté par
 // un admin (qui reste au défaut 0), même après une correction manuelle de
-// display_order sur un de ces 5 (voir db.upsertItem, qui ne touche pas
-// display_order si `display_order` est omis — un simple 1-5 se ferait
+// display_order sur un de ces 6 (voir db.upsertItem, qui ne touche pas
+// display_order si `display_order` est omis — un simple 1-6 se ferait
 // dépasser par le premier item admin qui recevrait un jour un display_order
 // positif bas).
 const DEFAULT_ITEMS: db.ItemInput[] = [
@@ -42,17 +42,21 @@ const DEFAULT_ITEMS: db.ItemInput[] = [
   // migration `ordre_argent_stock` les a alignées sur celles-ci.
   // Distinct de CONFIRME_VENTE_ITEM ("Argent Sale") : simple item de stock,
   // ne joue aucun rôle dans le cycle de vente.
-  { name: 'Argent', display_order: -5 },
+  { name: 'Argent', display_order: -7 },
   // CONFIRME_VENTE_ITEM (voir ventes.ts) — simple item de stock ici, son rôle
   // de confirmation de vente est fixe dans le code, pas un flag à poser.
-  { name: CONFIRME_VENTE_ITEM, display_order: -4 },
-  { name: 'Munition de pistolet', stock_group: MUNITIONS_STOCK_GROUP, display_order: -3 },
+  { name: CONFIRME_VENTE_ITEM, display_order: -6 },
+  { name: 'Munition de pistolet', stock_group: MUNITIONS_STOCK_GROUP, display_order: -5 },
   // Vaut 24x "Munition de pistolet" (stock_multiplier) — même groupe, comptée
   // en conséquence dans le total munitions pondéré (voir armurerie.weightedStockSum).
-  { name: 'Boîte mun. pistolet', stock_group: MUNITIONS_STOCK_GROUP, stock_multiplier: 24, display_order: -2 },
-  // Simple item de stock, sans groupe : affiché dans l'armurerie via
-  // MUNITIONS_SMG_ITEM (stock brut uniquement, pas de quota fabrication/vente).
-  { name: MUNITIONS_SMG_ITEM, display_order: -1 },
+  { name: 'Boîte mun. pistolet', stock_group: MUNITIONS_STOCK_GROUP, stock_multiplier: 24, display_order: -4 },
+  // Même principe que "Munition de pistolet"/"Boîte mun. pistolet" ci-dessus,
+  // affiché dans l'armurerie via MUNITIONS_SMG_ITEM (pas de quota
+  // fabrication/vente pour ce calibre, juste le stock pondéré).
+  { name: MUNITIONS_SMG_ITEM, stock_group: MUNITIONS_SMG_STOCK_GROUP, display_order: -3 },
+  // Vaut 24x "Munition de SMG" (stock_multiplier) — même groupe, comptée en
+  // conséquence dans le total munitions SMG pondéré (voir armurerie.weightedStockSum).
+  { name: 'Boîte mun. SMG', stock_group: MUNITIONS_SMG_STOCK_GROUP, stock_multiplier: 24, display_order: -2 },
   // Butin/outils de casse — simple suivi de stock, pas de vente:true (pas
   // déclarables via le circuit de vente PNJ, contrairement aux drogues).
   // Noms vérifiés avec l'utilisateur (piège n°1).
